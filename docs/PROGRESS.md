@@ -20,7 +20,9 @@ Open questions for the user:
 Done:
 - Wrote CLAUDE.md, the `core-windows` and `ui` agent definitions (both Opus), this log and the ADR template.
 Next:
-- Phase 0: brief `core-windows` on the repo scaffold and Spikes A-C, and `ui` on the test sprite and JS tooling.
+- Phase 0 task 1 (branch `phase-0/scaffold` created): brief `core-windows` on the Rust workspace + CI skeleton, and `ui` on the pnpm/TS/Vite tooling and root scripts, in parallel. Then Spikes A-C.
+Clarifications (lead):
+- Vite is the dev-only bundler for the UI pages (dev tool, not a runtime dependency).
 Dependencies added: none
 Clarifications (user decisions):
 - Files not listed in §7.1: Rust files go to `core-windows`, UI and JS tooling files go to `ui`, README.md goes to the lead.
