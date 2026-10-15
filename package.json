@@ -6,9 +6,11 @@
 		"node": "22.18.0"
 	},
 	"scripts": {
+		"dev": "tauri dev",
 		"check": "biome check . && pnpm --filter @knock/ui typecheck && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @knock/ui test"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.15"
+		"@biomejs/biome": "2.5.15",
+		"@tauri-apps/cli": "2.12.3"
 	}
 }

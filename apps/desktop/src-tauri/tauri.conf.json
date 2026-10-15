@@ -1,0 +1,22 @@
+{
+	"productName": "Knock",
+	"version": "0.0.0",
+	"identifier": "dev.knock.desktop",
+	"build": {
+		"devUrl": "http://localhost:5173/overlay/index.html",
+		"frontendDist": "../ui/dist",
+		"beforeDevCommand": "pnpm --filter @knock/ui dev",
+		"beforeBuildCommand": "pnpm --filter @knock/ui build"
+	},
+	"app": {
+		"withGlobalTauri": true,
+		"windows": [],
+		"security": {
+			"csp": null
+		}
+	},
+	"bundle": {
+		"active": false,
+		"icon": ["icons/icon.ico"]
+	}
+}
