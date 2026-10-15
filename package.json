@@ -1,0 +1,14 @@
+{
+	"name": "knock",
+	"private": true,
+	"packageManager": "pnpm@11.5.3",
+	"engines": {
+		"node": "22.18.0"
+	},
+	"scripts": {
+		"check": "biome check . && pnpm --filter @knock/ui typecheck && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @knock/ui test"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.15"
+	}
+}

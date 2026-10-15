@@ -1,0 +1,13 @@
+{
+	"name": "@knock/ui",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run --passWithNoTests"
+	},
+	"devDependencies": {
+		"typescript": "7.0.2",
+		"vitest": "5.0.4"
+	}
+}
