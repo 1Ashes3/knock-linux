@@ -37,10 +37,10 @@ pub trait Platform: Send + Sync {
     /// §9.4 step 1: the process that owns the client end of the loopback TCP
     /// connection from `client_port` to Knock's `server_port`.
     fn connection_owner(&self, client_port: u16, server_port: u16) -> Option<ProcessId>;
-    /// §9.4 step 2: exe names from `process` up its parents (for the log),
-    /// and the window to focus, if any.
-    fn find_window(&self, process: ProcessId, project: &str) -> (Vec<String>, Option<Target>);
-    /// §9.6: brings `window` to the front. If Windows refuses, flashes its
-    /// taskbar button instead. Returns whether it came to the front.
+    /// §9.4 step 2: the window to focus for `process`, if any.
+    fn find_window(&self, process: ProcessId, project: &str) -> Option<Target>;
+    /// §9.6, ADR 0013: `SetForegroundWindow`, restoring a minimized window.
+    /// If Windows refuses, flashes its taskbar button instead. Returns
+    /// whether `SetForegroundWindow` succeeded. Never blocks or sleeps.
     fn focus_window(&self, window: isize) -> bool;
 }

@@ -28,6 +28,8 @@ use tokio::sync::mpsc;
 pub const BODY_LIMIT: usize = 16 * 1024 * 1024;
 pub const PORTS: RangeInclusive<u16> = 49152..=65535;
 const TOKEN_HEADER: &str = "x-knock-token";
+/// `X-Knock-Sim: 1` marks a request from `knock sim` (§8.1).
+const SIM_HEADER: &str = "x-knock-sim";
 
 /// `%APPDATA%\Knock\server.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -254,12 +256,18 @@ async fn hook(
     req: Request,
 ) -> Response {
     let start = Instant::now();
+    let sim = req.headers().get(SIM_HEADER).is_some_and(|v| v == "1");
     // Queue before any further await: if the client gives up, the event is
     // still processed. `reply` is the time to here (§6: under 100 ms).
     match read_capped(req.into_body()).await {
         Ok(Some(body)) => {
             let head = serde_json::from_slice::<Head>(&body).ok();
-            let lookup = head.as_ref().and_then(|h| lookup(&s, h, peer.port()));
+            // A simulated session has no real process: no lookup, so its
+            // precision stays `none` (§8.1).
+            let lookup = head
+                .as_ref()
+                .filter(|_| !sim)
+                .and_then(|h| lookup(&s, h, peer.port()));
             enqueue(&s, start, body, head, lookup);
         }
         // Never an error status for a request with a valid token (ADR 0011).
@@ -371,7 +379,7 @@ async fn worker(s: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Received>, mut o
 }
 
 /// §9.4 step 2 for a fresh lookup: walks up to the window and logs the
-/// result (exe names only) for Phase 0 evidence.
+/// owner exe and precision.
 fn resolve(
     s: &Shared,
     session: &str,
@@ -384,14 +392,13 @@ fn resolve(
         return None;
     };
     let t = Instant::now();
-    let (chain, target) = s.platform.as_ref()?.find_window(process, project);
+    let target = s.platform.as_ref()?.find_window(process, project);
     tracing::info!(
         session = ?session,
         project = ?project,
         pid = process.pid,
         lookup_us,
         walk_us = t.elapsed().as_micros() as u64,
-        chain = ?chain,
         owner = ?target.as_ref().map(|t| &t.owner),
         precision = ?target.as_ref().map(|t| t.precision),
         "session process"
@@ -537,9 +544,21 @@ mod tests {
         token: Option<&str>,
         body: &[u8],
     ) -> (u16, String) {
+        request_with(addr, method, path, token, "", body)
+    }
+
+    /// `request` with `extra` header lines, each ending in CRLF.
+    fn request_with(
+        addr: SocketAddr,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        extra: &str,
+        body: &[u8],
+    ) -> (u16, String) {
         let mut s = TcpStream::connect(addr).unwrap();
         let mut head = format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: {}\r\n",
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: {}\r\n{extra}",
             body.len()
         );
         if let Some(t) = token {
@@ -634,13 +653,12 @@ mod tests {
                 start: 1,
             })
         }
-        fn find_window(&self, _: ProcessId, _: &str) -> (Vec<String>, Option<jump::Target>) {
-            let target = jump::Target {
+        fn find_window(&self, _: ProcessId, _: &str) -> Option<jump::Target> {
+            Some(jump::Target {
                 window: 1,
                 owner: "WindowsTerminal.exe".into(),
                 precision: jump::Precision::AppWindow,
-            };
-            (vec!["claude.exe".into()], Some(target))
+            })
         }
         fn focus_window(&self, _: isize) -> bool {
             false
@@ -693,6 +711,48 @@ mod tests {
         let (p, _, owner) = sessions.jump_info("a").unwrap();
         assert_eq!(p.pid, u32::from(calls[0].0));
         assert_eq!(owner.as_deref(), Some("WindowsTerminal.exe"));
+    }
+
+    #[test]
+    fn simulated_requests_skip_the_process_lookup() {
+        let fake = Arc::new(FakePlatform::default());
+        let sessions = Arc::new(Sessions::default());
+        let opts = Options {
+            platform: Some(fake.clone()),
+            sessions: Arc::clone(&sessions),
+            ..Options::default()
+        };
+        let addr = spawn_server_with(opts, None);
+        let hook = "/v1/hooks/claude-code";
+        let body = |id: &str| format!(r#"{{"session_id":"{id}","hook_event_name":"Stop"}}"#);
+        for _ in 0..2 {
+            let sim = "X-Knock-Sim: 1\r\n";
+            let r = request_with(addr, "POST", hook, Some(TOKEN), sim, body("sim").as_bytes());
+            assert_eq!(r, (200, "{}".into()));
+        }
+        // Any other value is not a sim request: looked up as usual.
+        let not_sim = "X-Knock-Sim: 0\r\n";
+        request_with(
+            addr,
+            "POST",
+            hook,
+            Some(TOKEN),
+            not_sim,
+            body("real").as_bytes(),
+        );
+        wait_for_sessions(addr, 2);
+        for _ in 0..100 {
+            if sessions.has_process("real") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(sessions.has_process("real"));
+        assert_eq!(fake.0.lock().unwrap().len(), 1, "only the real session");
+        assert!(!sessions.has_process("sim"));
+        assert!(sessions.jump_info("sim").is_none());
+        let view = sessions.views().into_iter().find(|v| v.id == "sim");
+        assert_eq!(view.unwrap().precision, jump::Precision::None);
     }
 
     /// The worker processes after the reply; poll health briefly.

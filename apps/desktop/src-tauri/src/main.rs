@@ -46,12 +46,12 @@ fn jump_to_session(
     sessions: tauri::State<'_, Arc<Sessions>>,
     platform: tauri::State<'_, Arc<dyn Platform>>,
 ) {
-    let Some((process, project, owner)) = sessions.jump_info(&id) else {
+    let Some((process, project, _)) = sessions.jump_info(&id) else {
         return;
     };
     let t = Instant::now();
     // Looked up again on every jump: the window may have closed or moved.
-    let (_, target) = platform.find_window(process, &project);
+    let target = platform.find_window(process, &project);
     let Some(target) = target else {
         tracing::info!(session = ?id, "jump: no window");
         return;
@@ -59,11 +59,10 @@ fn jump_to_session(
     let front = platform.focus_window(target.window);
     tracing::info!(
         session = ?id,
-        owner = ?owner,
         precision = ?target.precision,
         front,
+        flashed = !front,
         took_us = t.elapsed().as_micros() as u64,
-        thread = ?std::thread::current().name(),
         "jump"
     );
 }

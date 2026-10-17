@@ -13,25 +13,23 @@ use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, TCP_TABLE_OWNER_PID_CONNECTIONS,
 };
 use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
-use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Shell::{
     ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA, SHAppBarMessage,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AllowSetForegroundWindow, EnumWindows, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx,
-    GA_ROOTOWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetCursorPos, GetForegroundWindow,
-    GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow,
-    IsWindowVisible, SW_RESTORE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowPos, ShowWindowAsync, WS_EX_APPWINDOW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    EnumWindows, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, GA_ROOTOWNER,
+    GWL_EXSTYLE, GetAncestor, GetClassNameW, GetCursorPos, GetWindowLongPtrW, GetWindowTextW,
+    GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible, SW_RESTORE,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+    ShowWindowAsync, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TRANSPARENT,
 };
 use windows::core::BOOL;
 
@@ -194,21 +192,6 @@ unsafe extern "system" fn enum_window(h: HWND, l: LPARAM) -> BOOL {
     true.into()
 }
 
-/// Windows UI Automation `SetFocus` on `h`. Returns whether the call itself
-/// succeeded; the caller checks the foreground window.
-fn uia_focus(h: HWND) -> bool {
-    // SAFETY: COM calls on the calling thread; tao has already initialized
-    // COM on the main thread, where commands run.
-    unsafe {
-        let Ok(uia) =
-            CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
-        else {
-            return false;
-        };
-        uia.ElementFromHandle(h).and_then(|e| e.SetFocus()).is_ok()
-    }
-}
-
 fn rect(r: RECT) -> Rect {
     Rect {
         left: r.left,
@@ -307,45 +290,23 @@ impl Platform for WindowsPlatform {
         })
     }
 
-    fn find_window(&self, process: ProcessId, project: &str) -> (Vec<String>, Option<Target>) {
+    fn find_window(&self, process: ProcessId, project: &str) -> Option<Target> {
         let procs = processes();
         let chain = jump::chain(&procs, process);
         let pids: Vec<u32> = chain.iter().map(|p| p.pid).collect();
-        let target = jump::pick(&procs, &chain, &windows_of(&pids, project));
-        (chain.iter().map(|p| p.exe.clone()).collect(), target)
+        jump::pick(&procs, &chain, &windows_of(&pids, project))
     }
 
     fn focus_window(&self, window: isize) -> bool {
         let h = HWND(window as _);
         // SAFETY: plain calls on a window handle; a stale handle just fails.
+        // None of them waits on the target's process (§9.6, ADR 0013).
         unsafe {
             if !IsWindow(Some(h)).as_bool() {
                 return false;
             }
             let minimized = IsIconic(h).as_bool();
-            let mut pid = 0;
-            GetWindowThreadProcessId(h, Some(&mut pid));
-            // Phase 0 (V-9): documented options in turn, each result logged.
-            // SetForegroundWindow first: calling AllowSetForegroundWindow
-            // before it may hand Knock's foreground right to the target.
-            let set_returned = SetForegroundWindow(h).as_bool();
-            // Activation of another thread's window is asynchronous: give it
-            // up to 200 ms before judging (Phase 0 diagnostic).
-            let mut set = false;
-            for _ in 0..20 {
-                if GetForegroundWindow() == h {
-                    set = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            // Diagnostic only after a failure: it succeeds only while Knock
-            // itself may set the foreground.
-            let allowed = set || AllowSetForegroundWindow(pid).is_ok();
-            // Phase 0 (V-9): KNOCK_NO_UIA=1 turns the UIA fallback off.
-            let no_uia = std::env::var_os("KNOCK_NO_UIA").is_some();
-            let uia = (!set && !no_uia).then(|| uia_focus(h));
-            let front = set || GetForegroundWindow() == h;
+            let front = SetForegroundWindow(h).as_bool();
             if front && minimized {
                 // Async, so a hung target can't block the caller.
                 let _ = ShowWindowAsync(h, SW_RESTORE);
@@ -360,17 +321,6 @@ impl Platform for WindowsPlatform {
                 };
                 let _ = FlashWindowEx(&info);
             }
-            tracing::info!(
-                minimized,
-                allowed,
-                set_returned,
-                set_foreground = set,
-                no_uia,
-                uia_call_ok = ?uia,
-                front,
-                flashed = !front,
-                "focus attempts"
-            );
             front
         }
     }
