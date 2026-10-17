@@ -26,7 +26,7 @@ Done:
 - ADRs 0012 (V-7, V-8) and 0013 (V-9) were approved by the user on 2026-10-18. SPEC.md §9.4 and §9.6 were updated to match.
 - User manual tests passed in four runs: classic console (normal and minimized), Windows Terminal (normal and minimized) and VS Code's terminal. The final run used the cleaned-up code.
 Next:
-- User decision: re-check a session's window on every prompt? (Fresh-review finding 3.)
+- ADR 0014: re-check the process on every prompt (user approved on 2026-10-18). It goes to `core-windows` together with V-12.
 - Remaining Phase 0 work:
   - V-12, clicking a toast to jump.
   - Fixtures from 10+ real sessions, sanitized.
@@ -38,7 +38,7 @@ Clarifications (lead):
 - The `simulated` flag lands with the engine snapshot (Phase 1).
 - The stored owner exe stays (§11.4); SessionView will use it later.
 Open questions for the user:
-- Re-check which window a session lives in every time the user sends it a prompt?
+- none
 
 ---
 

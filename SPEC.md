@@ -499,7 +499,7 @@ Stored in `%APPDATA%\Knock\settings.json`:
 
 ### 9.4 From a hook request to the session's process and window
 
-1. **Process.** On the first request for a session, look up which process owns the client end of that loopback connection using the TCP connection table (**VERIFY V-7**). This should be the Claude Code process. Record its PID and start time, so a reused PID is not mistaken for the same process.
+1. **Process.** On the first request for a session, and on every `UserPromptSubmit` (ADR 0014), look up which process owns the client end of that loopback connection using the TCP connection table (**VERIFY V-7**). This should be the Claude Code process. Record its PID and start time, so a reused PID is not mistaken for the same process.
 2. **Window.** Walk up the parent processes to the first one that owns a visible top-level window. Map every window to its root owner; never pick a `PseudoConsoleWindow`; stop at `explorer.exe`; among several windows prefer one whose title contains the project (ADR 0012). Record the window handle's owning executable and a precision level.
 3. **Fallback.** If step 1 fails, use a `SessionStart` command hook that runs `knock` (built so it never opens a console window) to report its own parent chain. Adopting this needs an ADR, because command hooks on Windows run through Git Bash or PowerShell depending on the machine.
 
