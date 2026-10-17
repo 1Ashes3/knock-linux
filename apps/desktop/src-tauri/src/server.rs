@@ -21,7 +21,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::mpsc;
 
-pub const BODY_LIMIT: usize = 256 * 1024;
+/// Over this, the event is dropped but the reply is still `200 {}` (ADR 0011).
+pub const BODY_LIMIT: usize = 16 * 1024 * 1024;
 pub const PORTS: RangeInclusive<u16> = 49152..=65535;
 const TOKEN_HEADER: &str = "x-knock-token";
 
@@ -215,13 +216,15 @@ fn json(body: String) -> Response {
 
 async fn hook(State(s): State<Arc<Shared>>, req: Request) -> Response {
     let start = Instant::now();
-    let Ok(body) = to_bytes(req.into_body(), BODY_LIMIT).await else {
-        tracing::warn!("hook rejected: body over 256 KB or unreadable");
-        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
-    };
-    // Queue before any further await: if the client gives up, the event is
-    // still processed. `reply` is the time to here (§6: under 100 ms).
-    enqueue(&s, start, body);
+    // Reading stops at the limit, so at most the limit (plus one in-flight
+    // frame) is ever held. Queue before any further await: if the client
+    // gives up, the event is still processed. `reply` is the time to here
+    // (§6: under 100 ms).
+    match to_bytes(req.into_body(), BODY_LIMIT).await {
+        Ok(body) => enqueue(&s, start, body),
+        // Never an error status for a request with a valid token (ADR 0011).
+        Err(_) => tracing::warn!("hook dropped: body over 16 MB or unreadable"),
+    }
     if !s.delay.is_zero() {
         tokio::time::sleep(s.delay).await;
     }
@@ -393,14 +396,16 @@ mod tests {
     }
 
     fn spawn_server() -> SocketAddr {
-        spawn_server_with(Options::default())
+        spawn_server_with(Options::default(), None)
     }
 
-    fn spawn_server_with(opts: Options) -> SocketAddr {
+    /// `log`: write this server's log lines to that folder.
+    fn spawn_server_with(opts: Options, log: Option<PathBuf>) -> SocketAddr {
         let listener = bind(0).unwrap();
         listener.set_nonblocking(true).unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
+            let _log = log.map(|d| tracing::subscriber::set_default(crate::log::FileLog::new(d)));
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -462,7 +467,7 @@ mod tests {
         assert_eq!(request(addr, "GET", "/v1/health", None, b"").0, 401);
         assert_eq!(request(addr, "GET", "/v1/health", Some("nope"), b"").0, 401);
         request(addr, "POST", "/v1/hooks/claude-code", Some(TOKEN), PAYLOAD);
-        let health = wait_for_one_session(addr);
+        let health = wait_for_sessions(addr, 1);
         assert_eq!(health["version"], env!("CARGO_PKG_VERSION"));
         assert!(health["uptimeS"].is_u64());
         assert!(health["lastEventAt"].as_str().unwrap().ends_with('Z'));
@@ -472,10 +477,13 @@ mod tests {
     // Release builds have no recorder field, so the update is a no-op there.
     #[allow(clippy::needless_update)]
     fn event_is_kept_when_the_client_gives_up_on_a_slow_reply() {
-        let addr = spawn_server_with(Options {
-            delay: Duration::from_secs(5),
-            ..Options::default()
-        });
+        let addr = spawn_server_with(
+            Options {
+                delay: Duration::from_secs(5),
+                ..Options::default()
+            },
+            None,
+        );
         let mut s = TcpStream::connect(addr).unwrap();
         write!(
             s,
@@ -487,33 +495,56 @@ mod tests {
         // Like Claude Code's hook timeout: hang up before the reply.
         std::thread::sleep(Duration::from_millis(100));
         drop(s);
-        wait_for_one_session(addr);
+        wait_for_sessions(addr, 1);
     }
 
     /// The worker processes after the reply; poll health briefly.
-    fn wait_for_one_session(addr: SocketAddr) -> serde_json::Value {
+    fn wait_for_sessions(addr: SocketAddr, n: u64) -> serde_json::Value {
         let mut health = serde_json::Value::Null;
         for _ in 0..100 {
             let (status, body) = request(addr, "GET", "/v1/health", Some(TOKEN), b"");
             assert_eq!(status, 200);
             health = serde_json::from_str(&body).unwrap();
-            if health["sessionCount"] == 1 {
+            if health["sessionCount"] == n {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(health["sessionCount"], 1);
+        assert_eq!(health["sessionCount"], n);
         health
     }
 
+    /// A valid hook payload for `session`, padded with spaces to `len` bytes.
+    fn padded(session: &str, len: usize) -> Vec<u8> {
+        let mut b =
+            format!(r#"{{"session_id":"{session}","hook_event_name":"Stop"}}"#).into_bytes();
+        b.resize(len, b' ');
+        b
+    }
+
     #[test]
-    fn body_limit_is_256_kb() {
-        let addr = spawn_server();
+    fn body_over_16_mb_gets_200_and_is_dropped_with_a_warning() {
+        assert_eq!(BODY_LIMIT, 16 * 1024 * 1024);
+        let dir = temp_dir("body-limit-log");
+        let addr = spawn_server_with(Options::default(), Some(dir.clone()));
         let hook = "/v1/hooks/claude-code";
-        let at_limit = vec![b' '; BODY_LIMIT];
-        assert_eq!(request(addr, "POST", hook, Some(TOKEN), &at_limit).0, 200);
-        let over = vec![b' '; BODY_LIMIT + 1];
-        assert_eq!(request(addr, "POST", hook, Some(TOKEN), &over).0, 413);
+        let ok = (200, "{}".to_owned());
+        let at_limit = padded("at-limit", BODY_LIMIT);
+        assert_eq!(request(addr, "POST", hook, Some(TOKEN), &at_limit), ok);
+        wait_for_sessions(addr, 1);
+        let over = padded("over-limit", BODY_LIMIT + 1);
+        assert_eq!(request(addr, "POST", hook, Some(TOKEN), &over), ok);
+        // One worker, in order: once "after" counts, "over-limit" would have.
+        request(addr, "POST", hook, Some(TOKEN), &padded("after", 64));
+        wait_for_sessions(addr, 2);
+        let mut log = String::new();
+        for e in std::fs::read_dir(&dir).unwrap() {
+            log += &std::fs::read_to_string(e.unwrap().path()).unwrap();
+        }
+        assert_eq!(log.matches("WARN").count(), 1, "{log}");
+        assert!(log.contains("hook dropped: body over 16 MB"));
+        assert!(!log.contains("over-limit"), "the body must not be logged");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

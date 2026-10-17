@@ -31,6 +31,8 @@ Done:
   - 0008: rules for the Phase 0 raw recorder.
   - SPEC.md §6, §8.2, §8.3 and §8.4 were updated to match.
 - Incident (ADR 0008): for about 5 minutes, a test wrote hook config into this repo's `.claude\settings.local.json`. The file was deleted, the token rotated, and every test recording deleted with the user's approval on 2026-10-18. The real `%USERPROFILE%\.claude\settings.json` was never touched.
+- More ADRs, approved by the user on 2026-10-18: 0009 (V-3, V-5), 0010 (state-model fixes from the recordings), 0011 (16 MB body limit, never an error reply). SPEC.md §8.1, §8.2, §8.3 and §8.4 were updated to match.
+- User manual tests on 2026-10-17 and 2026-10-18 passed: a real interactive session, Knock stopped mid-session, the window closed with X, no firewall prompt, and two permission prompts in default mode.
 - Follow-up brief sent to `core-windows` for fresh-review findings 3-5 and the recorder rules: token check before routing, `server.json` validation and a durable write, event timestamps taken in queue order, recorder only under `%LOCALAPPDATA%`.
 Next:
 - Review the follow-up.
@@ -48,7 +50,7 @@ Clarifications (lead):
   - Handle the case where the fixed port can't bind: Hyper-V, WSL2 and Docker reserve blocks of ports in 49152-65535, and those blocks can change at reboot. This needs the Repair flow and a visible error (fresh-review finding 7).
 - `sessionCount` and `lastEventAt` are spike-only and get redone in Phase 2.
 Open questions for the user:
-- Body limit: what should happen when an event's payload is over 256 KB?
+- none (body limit decided: ADR 0011)
 
 ## 2026-10-17: Phase 0 (Spike A)
 Done:

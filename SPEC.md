@@ -163,7 +163,7 @@ Owner: **CW** = `core-windows` agent, **UI** = `ui` agent.
 
 | Endpoint                     | Purpose                         | Rules                                                                                                                                                                                                 |
 | ---------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /v1/hooks/claude-code` | Receive Claude Code hook events | Requires header `X-Knock-Token`; body limit 256 KB; reply `200` with body `{}` within 100 ms, then process asynchronously; never return decision fields; wrong token → `401`, logged without the body |
+| `POST /v1/hooks/claude-code` | Receive Claude Code hook events | Requires header `X-Knock-Token`; body limit 16 MB, and over the limit reply `200 {}`, drop the event and log a warning without the body (ADR 0011); reply `200` with body `{}` within 100 ms, then process asynchronously; never return decision fields; wrong token → `401`, logged without the body |
 | `GET /v1/health`             | Health check                    | Token required; returns `{ version, uptimeS, sessionCount, lastEventAt }`                                                                                                                             |
 | `GET /v1/debug/snapshot`     | Tests only                      | Debug builds only; returns the full engine snapshot                                                                                                                                                   |
 
@@ -190,11 +190,11 @@ Owner: **CW** = `core-windows` agent, **UI** = `ui` agent.
 
 **Setup MUST:**
 
-1. Read the file. If it is not valid JSON, stop and explain in plain language; write nothing.
+1. Read the file, ignoring a leading UTF-8 BOM (ADR 0010). If it is not valid JSON, stop and explain in plain language; write nothing.
 2. Show the user a preview of exactly what will be added or changed.
 3. Write only after the user confirms.
 4. Back up the original to `%APPDATA%\Knock\backups\settings.<timestamp>.json` before every write.
-5. Write atomically (temporary file, then replace).
+5. Write atomically (temporary file, then replace), without a BOM.
 6. Preserve every non-Knock entry and every other key unchanged.
 7. Be idempotent: re-running replaces Knock's old entries rather than adding duplicates.
 
@@ -212,13 +212,14 @@ During development, agents MUST NOT modify the user's real settings file. Use a 
   "ts": "2026-10-16T14:02:11.120Z",
   "kind": "needs.permission",
   "detail": { "tool": "PowerShell", "category": "run" },
-  "context": { "cwd": "C:\\path\\repo-name", "project": "repo-name", "pid": 12345 }
+  "context": { "cwd": "C:\\path\\repo-name", "project": "repo-name", "pid": 12345, "agentId": "string" }
 }
 ```
 
 - `ts` is the server receive time.
 - `project` is the last segment of `cwd`.
 - `pid` is present when known (§9.4).
+- `agentId` is present when the payload has `agent_id` (a sub-agent or background agent, ADR 0010).
 
 **Kinds:**
 
@@ -247,13 +248,14 @@ During development, agents MUST NOT modify the user's real settings file. Use a 
 | `web`    | WebFetch, WebSearch                  |
 | `other`  | Anything else, including MCP tools   |
 
-**Hook → event mapping** (field names are **VERIFY V-3**):
+**Hook → event mapping** (field names confirmed in ADR 0009):
 
 | Claude Code hook                              | Matcher or field                         | Normalized event   |
 | --------------------------------------------- | ---------------------------------------- | ------------------ |
 | `SessionStart`                                | `source`                                 | `session.started` (not available over HTTP; no producer in v1, ADR 0005) |
 | `UserPromptSubmit`                            | —                                        | `turn.started`     |
-| `PreToolUse`, `PostToolUse`                   | `tool_name`                              | `activity`         |
+| `PreToolUse`, `PermissionRequest`             | `tool_name = AskUserQuestion`            | `needs.answer` (ADR 0010) |
+| `PreToolUse`, `PostToolUse`                   | `tool_name` (any other)                  | `activity`         |
 | `PermissionRequest`                           | `tool_name`                              | `needs.permission` |
 | `Notification`                                | `notification_type = permission_prompt`  | `needs.permission` |
 | `Notification`                                | `notification_type = elicitation_dialog` | `needs.answer`     |
@@ -264,7 +266,7 @@ During development, agents MUST NOT modify the user's real settings file. Use a 
 | `SubagentStart`, `SubagentStop`, `PreCompact` | —                                        | `activity`         |
 | `SessionEnd`                                  | —                                        | `session.ended`    |
 
-The adapter MUST drop `message`, `prompt`, `tool_input`, `tool_response` and any other free text at parse time. These fields never enter the engine, the snapshot, the logs or the fixtures.
+The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_event_name`, `tool_name`, `notification_type`, `error`, `agent_id`; ADR 0009) and drop everything else at parse time, including `message`, `prompt`, `tool_input`, `tool_response`, `last_assistant_message`, `custom_instructions` and every path field other than `cwd`. Dropped fields never enter the engine, the snapshot, the logs or the fixtures.
 
 ### 8.4 State model
 
@@ -294,7 +296,8 @@ The adapter MUST drop `message`, `prompt`, `tool_input`, `tool_response` and any
 | `working`, `stalled`           | `activity`                                                    | `working`                                | Reset stall timer                |
 | `working`, `idle`, `ready`     | `needs.permission`, `needs.answer`                            | `needs_input`                            | New episode; `Notify`            |
 | `needs_input`                  | `needs.permission`, `needs.answer`                            | `needs_input`                            | None (same episode)              |
-| `needs_input`                  | `activity`, `turn.started`                                    | `working`                                | Close episode                    |
+| `idle`, `ready`                | `activity`                                                    | unchanged                                | None (ADR 0010)                  |
+| `needs_input`                  | `activity` from the same agent (ADR 0010), `turn.started`     | `working`                                | Close episode                    |
 | `needs_input`                  | `turn.completed`                                              | `ready`                                  | Close episode; `ReadyBatchAdd`   |
 | `working`, `stalled`           | `turn.completed`                                              | `ready`                                  | `ReadyBatchAdd`                  |
 | `ready`                        | `turn.idle`                                                   | `ready`                                  | None                             |
@@ -312,7 +315,7 @@ The adapter MUST drop `message`, `prompt`, `tool_input`, `tool_response` and any
 - Defaults: `stallMinutes` 10, `escalationMinutes` 5.
 - A session with no events and no live process for 6 hours is removed.
 
-**Deduplication:** a `PermissionRequest` and a `permission_prompt` notification for the same session within 2 s are one episode, with one `Notify`.
+**Deduplication:** a `PermissionRequest` and a `permission_prompt` notification for the same session within 10 s are one episode, with one `Notify`, even if the episode closed in between (ADR 0010). An episode's `needs.kind` is set by the event that opened it.
 
 **Effects:**
 
