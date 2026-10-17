@@ -38,13 +38,13 @@ impl Sessions {
         self.lock().1.len()
     }
 
-    /// Whether the session's process is already known (§9.4: look up once).
-    pub fn has_process(&self, id: &str) -> bool {
-        self.lock().1.get(id).is_some_and(|s| s.process.is_some())
+    /// The session's recorded process, if known (§9.4, ADR 0014).
+    pub fn process(&self, id: &str) -> Option<ProcessId> {
+        self.lock().1.get(id)?.process
     }
 
-    /// Records an event for `id`. `found` is the process and window from a
-    /// lookup, if one was made; a known process is never replaced.
+    /// Records an event for `id`. `found` is a newly found process and its
+    /// window; it replaces the recorded ones (ADR 0014: the owner changed).
     pub fn record(&self, id: &str, project: &str, found: Option<(ProcessId, Option<Target>)>) {
         let mut g = self.lock();
         g.0 += 1;
@@ -57,9 +57,7 @@ impl Sessions {
             last,
         });
         s.last = last;
-        if s.process.is_none()
-            && let Some((process, target)) = found
-        {
+        if let Some((process, target)) = found {
             s.process = Some(process);
             s.owner = target.as_ref().map(|t| t.owner.clone());
             s.precision = target.map_or(Precision::None, |t| t.precision);
@@ -101,17 +99,16 @@ mod tests {
     }
 
     #[test]
-    fn most_recent_first_and_process_recorded_once() {
+    fn most_recent_first_and_a_found_process_replaces_the_old_one() {
         let s = Sessions::default();
         let p1 = ProcessId { pid: 10, start: 1 };
         s.record("a", "alpha", Some((p1, Some(target(Precision::AppWindow)))));
         s.record("b", "beta", None);
-        assert!(s.has_process("a") && !s.has_process("b"));
+        assert_eq!((s.process("a"), s.process("b")), (Some(p1), None));
         let ids = |s: &Sessions| s.views().into_iter().map(|v| v.id).collect::<Vec<_>>();
         assert_eq!(ids(&s), ["b", "a"]);
-        // A later lookup never replaces the first one.
-        let p2 = ProcessId { pid: 20, start: 2 };
-        s.record("a", "alpha", Some((p2, None)));
+        // No lookup: the recorded process stays.
+        s.record("a", "alpha", None);
         assert_eq!(ids(&s), ["a", "b"]);
         let (p, project, owner) = s.jump_info("a").unwrap();
         assert_eq!((p, project.as_str()), (p1, "alpha"));
@@ -121,9 +118,11 @@ mod tests {
         assert!(s.jump_info("b").is_none());
         assert!(s.jump_info("zzz").is_none());
         assert_eq!(s.views()[1].precision, Precision::None);
-        // Found later (first lookup failed): recorded then.
-        s.record("b", "beta", Some((p2, None)));
-        assert!(s.has_process("b"));
+        // A new owner (ADR 0014) replaces process, owner and precision.
+        let p2 = ProcessId { pid: 20, start: 2 };
+        s.record("a", "alpha", Some((p2, None)));
+        assert_eq!(s.jump_info("a").unwrap(), (p2, "alpha".into(), None));
+        assert_eq!(s.views()[0].precision, Precision::None);
         assert_eq!(s.len(), 2);
     }
 

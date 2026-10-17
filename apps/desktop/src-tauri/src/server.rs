@@ -1,7 +1,8 @@
 //! Local server (SPEC.md §8.1, §11). Binds 127.0.0.1 only, requires the token
 //! on every request, answers hooks with `200 {}` at once and processes them
 //! afterwards on a single worker, in arrival order. On a session's first
-//! request it records which process sent it (§7.2 step 2, §9.4).
+//! request, and on every `UserPromptSubmit`, it records which process sent it
+//! (§7.2 step 2, §9.4, ADR 0014).
 
 use crate::jump::{self, ProcessId};
 use crate::log::utc;
@@ -301,11 +302,13 @@ async fn read_capped(mut body: Body) -> Result<Option<Bytes>, axum::Error> {
     Ok((!over).then(|| buf.into()))
 }
 
-/// §9.4 step 1, until a session's process is known. Runs before the reply:
-/// once the client closes, its end of the connection no longer has an owner.
+/// §9.4 step 1, until a session's process is known and again on every
+/// `UserPromptSubmit` (ADR 0014). Runs before the reply: once the client
+/// closes, its end of the connection no longer has an owner.
 fn lookup(s: &Shared, head: &Head, client_port: u16) -> Option<Lookup> {
     let platform = s.platform.as_ref()?;
-    if s.sessions.has_process(&head.session_id) {
+    if head.hook_event_name != "UserPromptSubmit" && s.sessions.process(&head.session_id).is_some()
+    {
         return None;
     }
     let t = Instant::now();
@@ -349,6 +352,9 @@ struct Head {
     session_id: String,
     hook_event_name: String,
     cwd: Option<String>,
+    /// Read only by the Phase 0 toast (V-12).
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    tool_name: Option<String>,
 }
 
 #[cfg_attr(not(debug_assertions), allow(unused_mut, unused_variables))]
@@ -369,17 +375,24 @@ async fn worker(s: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Received>, mut o
             reply_us = r.reply.as_micros() as u64,
             "hook"
         );
+        // Walk only when the owner changed, PID or start time (ADR 0014).
         let found = r
             .lookup
+            .filter(|l| l.process != s.sessions.process(&head.session_id))
             .and_then(|l| resolve(&s, &head.session_id, project, l));
         s.sessions.record(&head.session_id, project, found);
+        #[cfg(debug_assertions)]
+        if head.hook_event_name == "PermissionRequest" {
+            let tool = head.tool_name.as_deref().unwrap_or("a tool");
+            crate::toast::permission_request(&head.session_id, project, tool);
+        }
         let mut stats = s.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.last_event_at = Some(SystemTime::now());
     }
 }
 
-/// §9.4 step 2 for a fresh lookup: walks up to the window and logs the
-/// owner exe and precision.
+/// §9.4 step 2 for a new or changed owner: walks up to the window and logs
+/// the owner exe and precision.
 fn resolve(
     s: &Shared,
     session: &str,
@@ -631,9 +644,16 @@ mod tests {
         wait_for_sessions(addr, 1);
     }
 
-    /// Records every connection-owner lookup; the "process" is the client port.
+    /// Records every connection-owner lookup and window walk.
     #[derive(Default)]
-    struct FakePlatform(Mutex<Vec<(u16, u16)>>);
+    struct FakePlatform {
+        lookups: Mutex<Vec<(u16, u16)>>,
+        /// What every lookup returns when set; otherwise the "PID" is the
+        /// client port.
+        owner: Mutex<Option<ProcessId>>,
+        /// The PID of every `find_window` call.
+        walks: Mutex<Vec<u32>>,
+    }
 
     impl Platform for FakePlatform {
         fn primary_display(&self) -> io::Result<crate::platform::Display> {
@@ -647,13 +667,14 @@ mod tests {
         }
         fn set_click_through(&self, _: bool) {}
         fn connection_owner(&self, client: u16, server: u16) -> Option<ProcessId> {
-            self.0.lock().unwrap().push((client, server));
-            Some(ProcessId {
+            self.lookups.lock().unwrap().push((client, server));
+            Some(self.owner.lock().unwrap().unwrap_or(ProcessId {
                 pid: client.into(),
                 start: 1,
-            })
+            }))
         }
-        fn find_window(&self, _: ProcessId, _: &str) -> Option<jump::Target> {
+        fn find_window(&self, p: ProcessId, _: &str) -> Option<jump::Target> {
+            self.walks.lock().unwrap().push(p.pid);
             Some(jump::Target {
                 window: 1,
                 owner: "WindowsTerminal.exe".into(),
@@ -695,7 +716,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        let calls = fake.0.lock().unwrap().clone();
+        let calls = fake.lookups.lock().unwrap().clone();
         assert_eq!(calls.len(), 2, "one lookup per session: {calls:?}");
         for (client, server) in &calls {
             assert_eq!(*server, addr.port());
@@ -742,17 +763,102 @@ mod tests {
         );
         wait_for_sessions(addr, 2);
         for _ in 0..100 {
-            if sessions.has_process("real") {
+            if sessions.process("real").is_some() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(sessions.has_process("real"));
-        assert_eq!(fake.0.lock().unwrap().len(), 1, "only the real session");
-        assert!(!sessions.has_process("sim"));
+        assert!(sessions.process("real").is_some());
+        assert_eq!(
+            fake.lookups.lock().unwrap().len(),
+            1,
+            "only the real session"
+        );
+        assert!(sessions.process("sim").is_none());
         assert!(sessions.jump_info("sim").is_none());
         let view = sessions.views().into_iter().find(|v| v.id == "sim");
         assert_eq!(view.unwrap().precision, jump::Precision::None);
+    }
+
+    #[test]
+    fn owner_is_rechecked_on_every_prompt_and_rewalked_only_when_it_changed() {
+        let fake = Arc::new(FakePlatform::default());
+        let sessions = Arc::new(Sessions::default());
+        let opts = Options {
+            platform: Some(fake.clone()),
+            sessions: Arc::clone(&sessions),
+            ..Options::default()
+        };
+        let addr = spawn_server_with(opts, None);
+        let send = |event: &str, extra: &str| {
+            let body = format!(r#"{{"session_id":"a","hook_event_name":"{event}"}}"#);
+            let r = request_with(
+                addr,
+                "POST",
+                "/v1/hooks/claude-code",
+                Some(TOKEN),
+                extra,
+                body.as_bytes(),
+            );
+            assert_eq!(r, (200, "{}".into()));
+        };
+        // The worker runs in arrival order: once a sim marker for another
+        // session is counted, every earlier event has been processed.
+        let mut markers = 1;
+        let mut settle = || {
+            markers += 1;
+            let body = format!(r#"{{"session_id":"m{markers}","hook_event_name":"Stop"}}"#);
+            let sim = "X-Knock-Sim: 1
+";
+            request_with(
+                addr,
+                "POST",
+                "/v1/hooks/claude-code",
+                Some(TOKEN),
+                sim,
+                body.as_bytes(),
+            );
+            wait_for_sessions(addr, markers);
+        };
+        let lookups = || fake.lookups.lock().unwrap().len();
+        let walks = || fake.walks.lock().unwrap().clone();
+        let p1 = ProcessId { pid: 100, start: 1 };
+        let p2 = ProcessId { pid: 200, start: 2 };
+
+        *fake.owner.lock().unwrap() = Some(p1);
+        send("UserPromptSubmit", "");
+        settle();
+        assert_eq!((lookups(), walks()), (1, vec![100]));
+        // Not a prompt, process known: no lookup.
+        send("PreToolUse", "");
+        settle();
+        assert_eq!(lookups(), 1);
+        // Same owner on the next prompt: looked up, not re-walked.
+        send("UserPromptSubmit", "");
+        settle();
+        assert_eq!((lookups(), walks()), (2, vec![100]));
+        // Same PID, new start time (a reused PID): a different owner.
+        *fake.owner.lock().unwrap() = Some(ProcessId { pid: 100, start: 9 });
+        send("UserPromptSubmit", "");
+        settle();
+        assert_eq!((lookups(), walks()), (3, vec![100, 100]));
+        // Same session id from a different owner: replaced.
+        *fake.owner.lock().unwrap() = Some(p2);
+        send("UserPromptSubmit", "");
+        settle();
+        assert_eq!((lookups(), walks()), (4, vec![100, 100, 200]));
+        let (p, _, owner) = sessions.jump_info("a").unwrap();
+        assert_eq!(p, p2);
+        assert_eq!(owner.as_deref(), Some("WindowsTerminal.exe"));
+        // Sim prompts skip all of it.
+        send(
+            "UserPromptSubmit",
+            "X-Knock-Sim: 1
+",
+        );
+        settle();
+        assert_eq!((lookups(), walks().len()), (4, 3));
+        assert_eq!(sessions.process("a"), Some(p2));
     }
 
     /// The worker processes after the reply; poll health briefly.

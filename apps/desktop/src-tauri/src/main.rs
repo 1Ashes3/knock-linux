@@ -1,5 +1,6 @@
 //! Knock desktop shell. Phase 0: the overlay strip (Spike A, SPEC.md §9.1-9.3),
-//! the hook server (Spike B, §8.1) and jumping to a session (Spike C, §9.4-9.6).
+//! the hook server (Spike B, §8.1), jumping to a session (Spike C, §9.4-9.6)
+//! and, in debug builds, the toast click spike (V-12, §9.7).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -9,6 +10,8 @@ mod platform;
 mod server;
 mod sessions;
 mod strip;
+#[cfg(debug_assertions)]
+mod toast;
 
 use platform::{Platform, WindowsPlatform};
 use sessions::{SessionView, Sessions};
@@ -46,19 +49,26 @@ fn jump_to_session(
     sessions: tauri::State<'_, Arc<Sessions>>,
     platform: tauri::State<'_, Arc<dyn Platform>>,
 ) {
-    let Some((process, project, _)) = sessions.jump_info(&id) else {
+    jump(&sessions, &**platform, &id, "strip");
+}
+
+/// `jump_to_session`'s work; `via` names what was clicked, for the log.
+fn jump(sessions: &Sessions, platform: &dyn Platform, id: &str, via: &str) {
+    let Some((process, project, _)) = sessions.jump_info(id) else {
+        tracing::info!(session = ?id, via, "jump: no process");
         return;
     };
     let t = Instant::now();
     // Looked up again on every jump: the window may have closed or moved.
     let target = platform.find_window(process, &project);
     let Some(target) = target else {
-        tracing::info!(session = ?id, "jump: no window");
+        tracing::info!(session = ?id, via, "jump: no window");
         return;
     };
     let front = platform.focus_window(target.window);
     tracing::info!(
         session = ?id,
+        via,
         precision = ?target.precision,
         front,
         flashed = !front,
@@ -70,7 +80,10 @@ fn jump_to_session(
 fn main() {
     log::init();
     let sessions = Arc::new(Sessions::default());
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(debug_assertions)]
+    let builder = builder.plugin(tauri_plugin_notification::init());
+    builder
         .manage(HitRegions::default())
         .manage(Arc::clone(&sessions))
         .invoke_handler(tauri::generate_handler![
@@ -97,6 +110,8 @@ fn main() {
 
             let platform: Arc<dyn Platform> = Arc::new(WindowsPlatform::new(&window)?);
             app.manage(Arc::clone(&platform));
+            #[cfg(debug_assertions)]
+            toast::init(app.handle());
             // The Repair flow for a port that can't bind is not built yet (§8.1).
             if let Err(e) = server::start(Arc::clone(&platform), sessions) {
                 tracing::error!(kind = ?e.kind(), "server failed to start");
