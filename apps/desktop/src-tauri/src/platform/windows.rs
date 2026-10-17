@@ -328,11 +328,23 @@ impl Platform for WindowsPlatform {
             // Phase 0 (V-9): documented options in turn, each result logged.
             // SetForegroundWindow first: calling AllowSetForegroundWindow
             // before it may hand Knock's foreground right to the target.
-            let set = SetForegroundWindow(h).as_bool() && GetForegroundWindow() == h;
+            let set_returned = SetForegroundWindow(h).as_bool();
+            // Activation of another thread's window is asynchronous: give it
+            // up to 200 ms before judging (Phase 0 diagnostic).
+            let mut set = false;
+            for _ in 0..20 {
+                if GetForegroundWindow() == h {
+                    set = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             // Diagnostic only after a failure: it succeeds only while Knock
             // itself may set the foreground.
             let allowed = set || AllowSetForegroundWindow(pid).is_ok();
-            let uia = (!set).then(|| uia_focus(h));
+            // Phase 0 (V-9): KNOCK_NO_UIA=1 turns the UIA fallback off.
+            let no_uia = std::env::var_os("KNOCK_NO_UIA").is_some();
+            let uia = (!set && !no_uia).then(|| uia_focus(h));
             let front = set || GetForegroundWindow() == h;
             if front && minimized {
                 // Async, so a hung target can't block the caller.
@@ -351,7 +363,9 @@ impl Platform for WindowsPlatform {
             tracing::info!(
                 minimized,
                 allowed,
+                set_returned,
                 set_foreground = set,
+                no_uia,
                 uia_call_ok = ?uia,
                 front,
                 flashed = !front,
