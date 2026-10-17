@@ -326,10 +326,12 @@ impl Platform for WindowsPlatform {
             let mut pid = 0;
             GetWindowThreadProcessId(h, Some(&mut pid));
             // Phase 0 (V-9): documented options in turn, each result logged.
-            // AllowSetForegroundWindow succeeds only while Knock itself may
-            // set the foreground, so it shows whether Windows granted that.
-            let allowed = AllowSetForegroundWindow(pid).is_ok();
+            // SetForegroundWindow first: calling AllowSetForegroundWindow
+            // before it may hand Knock's foreground right to the target.
             let set = SetForegroundWindow(h).as_bool() && GetForegroundWindow() == h;
+            // Diagnostic only after a failure: it succeeds only while Knock
+            // itself may set the foreground.
+            let allowed = set || AllowSetForegroundWindow(pid).is_ok();
             let uia = (!set).then(|| uia_focus(h));
             let front = set || GetForegroundWindow() == h;
             if front && minimized {
