@@ -3,7 +3,7 @@
 
 mod windows;
 
-pub use self::windows::WindowsPlatform;
+pub use self::windows::{WindowsPlatform, fill_random};
 use crate::strip::Rect;
 
 /// Taskbar geometry, logged for V-13.

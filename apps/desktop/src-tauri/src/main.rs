@@ -2,7 +2,9 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod log;
 mod platform;
+mod server;
 mod strip;
 
 use platform::{Platform, WindowsPlatform};
@@ -26,10 +28,16 @@ fn set_hit_regions(regions: Vec<Region>, state: tauri::State<'_, HitRegions>) {
 }
 
 fn main() {
+    log::init();
     tauri::Builder::default()
         .manage(HitRegions::default())
         .invoke_handler(tauri::generate_handler![set_hit_regions])
         .setup(|app| {
+            // The Repair flow for a port that can't bind is not built yet (§8.1).
+            if let Err(e) = server::start() {
+                tracing::error!(kind = ?e.kind(), "server failed to start");
+            }
+
             // Created visible but unfocused, so tao shows it with
             // SW_SHOWNOACTIVATE. Never call anything that focuses it (§9.1).
             let url = WebviewUrl::App("/overlay/index.html".into());

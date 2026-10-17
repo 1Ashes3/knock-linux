@@ -6,6 +6,7 @@ use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
 };
+use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Shell::{
     ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA, SHAppBarMessage,
@@ -32,6 +33,14 @@ impl WindowsPlatform {
     fn hwnd(&self) -> HWND {
         HWND(self.strip as _)
     }
+}
+
+/// Fills `buf` from the system's cryptographic RNG (used for the §8.1 token
+/// and port). Not on [`Platform`] because the server needs it without a window.
+pub fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
+    // SAFETY: valid mutable buffer; no algorithm handle with the system RNG flag.
+    unsafe { BCryptGenRandom(None, buf, BCRYPT_USE_SYSTEM_PREFERRED_RNG) }.ok()?;
+    Ok(())
 }
 
 fn rect(r: RECT) -> Rect {
