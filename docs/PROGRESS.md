@@ -16,6 +16,32 @@ Open questions for the user:
 
 ---
 
+## 2026-10-18: Phase 0 (Spike C)
+Done:
+- Spike C (branch `phase-0/spike-c`, dd87727 to 5fc4624):
+  - `core-windows` built the connection-owner lookup and the parent walk to the window, plus `get_sessions` and `jump_to_session`.
+  - `ui` updated the test page: a session label, and click to jump.
+- The fresh review is done. Its findings were fixed: ADR 0013 cleanup, sim requests skip the lookup, the log is trimmed to the owner, and ADR 0012's evidence wording was corrected.
+- The lead made small integration fixes to the V-9 diagnostics (712fdbb, a67b3a5). They showed the first "SetForegroundWindow failed" readings were a check made too early.
+- ADRs 0012 (V-7, V-8) and 0013 (V-9) were approved by the user on 2026-10-18. SPEC.md §9.4 and §9.6 were updated to match.
+- User manual tests passed in four runs: classic console (normal and minimized), Windows Terminal (normal and minimized) and VS Code's terminal. The final run used the cleaned-up code.
+Next:
+- User decision: re-check a session's window on every prompt? (Fresh-review finding 3.)
+- Remaining Phase 0 work:
+  - V-12, clicking a toast to jump.
+  - Fixtures from 10+ real sessions, sanitized.
+  - Remove the recorder and the raw recordings (ADR 0008).
+- Then the Gate G0 decision.
+Dependencies added: none. Only `windows` crate features changed.
+Clarifications (lead):
+- Before UI work builds on it, the TypeScript `SessionView` type must match §8.5 exactly (fresh-review finding 5).
+- The `simulated` flag lands with the engine snapshot (Phase 1).
+- The stored owner exe stays (§11.4); SessionView will use it later.
+Open questions for the user:
+- Re-check which window a session lives in every time the user sends it a prompt?
+
+---
+
 ## 2026-10-18: Phase 0 (Spike B)
 Done:
 - Spike B (branch `phase-0/spike-b`, cdec79b): `core-windows` built the §8.1 server inside the desktop app.
