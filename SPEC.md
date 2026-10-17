@@ -500,7 +500,7 @@ Stored in `%APPDATA%\Knock\settings.json`:
 ### 9.4 From a hook request to the session's process and window
 
 1. **Process.** On the first request for a session, look up which process owns the client end of that loopback connection using the TCP connection table (**VERIFY V-7**). This should be the Claude Code process. Record its PID and start time, so a reused PID is not mistaken for the same process.
-2. **Window.** Walk up the parent processes to the first one that owns a visible top-level window. For console processes, also try the console's root owner window (**VERIFY V-8**). Record the window handle's owning executable and a precision level.
+2. **Window.** Walk up the parent processes to the first one that owns a visible top-level window. Map every window to its root owner; never pick a `PseudoConsoleWindow`; stop at `explorer.exe`; among several windows prefer one whose title contains the project (ADR 0012). Record the window handle's owning executable and a precision level.
 3. **Fallback.** If step 1 fails, use a `SessionStart` command hook that runs `knock` (built so it never opens a console window) to report its own parent chain. Adopting this needs an ADR, because command hooks on Windows run through Git Bash or PowerShell depending on the machine.
 
 ### 9.5 Jump precision
@@ -519,7 +519,7 @@ Selecting the exact Windows Terminal tab is out of scope for v1.
 
 Windows limits which apps may bring another window to the front.
 
-- Phase 0 MUST find a supported way to do this from a click on the non-activating strip (**VERIFY V-9**) and record it in an ADR.
+- From the click on the strip, call `SetForegroundWindow` on the target, then restore it if it was minimized (ADR 0013).
 - If none works, flash the target window's taskbar button instead.
 - Never simulate keyboard input to work around this.
 

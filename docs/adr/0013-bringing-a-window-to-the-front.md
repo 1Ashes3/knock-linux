@@ -1,6 +1,6 @@
 # 0013: Bringing the session's window to the front
 
-- **Status:** Proposed
+- **Status:** Approved by user on 2026-10-18
 - **Date:** 2026-10-18
 - **Spec sections:** §9.6
 - **VERIFY item:** V-9

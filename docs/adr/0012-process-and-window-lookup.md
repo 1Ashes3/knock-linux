@@ -1,6 +1,6 @@
 # 0012: Finding a session's process and window
 
-- **Status:** Proposed
+- **Status:** Approved by user on 2026-10-18
 - **Date:** 2026-10-18
 - **Spec sections:** §9.4, §9.5
 - **VERIFY item:** V-7, V-8
@@ -48,4 +48,4 @@ Spike C tested both on the user's machine with a classic console, Windows Termin
 | VS Code terminal | `claude.exe`, `cmd.exe`, `Code.exe`, `Code.exe` | `Code.exe` | `app_window` |
 
 - In the automated tests, one `WindowsTerminal.exe` hosted 3 windows, and mapping to the root owner picked the session's own window. Walking by process alone would have been ambiguous.
-- 16 unit tests on recorded process trees cover these rules, including PID reuse checked by start time.
+- Unit tests in `jump.rs` cover these rules, including PID reuse checked by start time: 12 on process trees and windows, some with recorded trees and some synthetic (cycles, an unreadable parent, the explorer stop). Another 4 cover the TCP-table row, the project name and precision naming, and one makes real OS calls. Corrected after the fresh review.
