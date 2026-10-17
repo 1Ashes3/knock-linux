@@ -8,11 +8,12 @@ use axum::Router;
 use axum::body::{Bytes, to_bytes};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
+use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::io;
+use std::io::{self, Write};
 use std::net::{Ipv4Addr, TcpListener};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
@@ -52,10 +53,7 @@ pub fn listen(dir: &Path) -> io::Result<(ServerConfig, TcpListener)> {
     let path = dir.join("server.json");
     match std::fs::read(&path) {
         Ok(bytes) => {
-            let cfg: ServerConfig = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-            if !PORTS.contains(&cfg.port) {
-                return Err(io::Error::other("server.json port out of range"));
-            }
+            let cfg = parse_config(&bytes)?;
             let listener = bind(cfg.port)?;
             Ok((cfg, listener))
         }
@@ -64,8 +62,12 @@ pub fn listen(dir: &Path) -> io::Result<(ServerConfig, TcpListener)> {
                 let cfg = ServerConfig::generate()?;
                 if let Ok(listener) = bind(cfg.port) {
                     std::fs::create_dir_all(dir)?;
+                    // Durable: temp file, flush to disk, then rename.
                     let tmp = dir.join("server.json.tmp");
-                    std::fs::write(&tmp, serde_json::to_vec_pretty(&cfg)?)?;
+                    let mut f = std::fs::File::create(&tmp)?;
+                    f.write_all(&serde_json::to_vec_pretty(&cfg)?)?;
+                    f.sync_all()?;
+                    drop(f);
                     std::fs::rename(&tmp, &path)?;
                     return Ok((cfg, listener));
                 }
@@ -74,6 +76,23 @@ pub fn listen(dir: &Path) -> io::Result<(ServerConfig, TcpListener)> {
         }
         Err(e) => Err(e),
     }
+}
+
+/// Parses `server.json` and rejects anything `generate` could not have made:
+/// a port outside 49152-65535 or a token that isn't 43 base64url characters
+/// (32 bytes, §8.1).
+fn parse_config(bytes: &[u8]) -> io::Result<ServerConfig> {
+    let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_owned());
+    let cfg: ServerConfig =
+        serde_json::from_slice(bytes).map_err(|_| bad("server.json is not valid"))?;
+    if !PORTS.contains(&cfg.port) {
+        return Err(bad("server.json port out of range"));
+    }
+    let base64url = |c: u8| c.is_ascii_alphanumeric() || c == b'-' || c == b'_';
+    if cfg.token.len() != 43 || !cfg.token.bytes().all(base64url) {
+        return Err(bad("server.json token is not 43 base64url characters"));
+    }
+    Ok(cfg)
 }
 
 fn bind(port: u16) -> io::Result<TcpListener> {
@@ -132,7 +151,9 @@ struct Shared {
     started: Instant,
     delay: Duration,
     stats: Mutex<Stats>,
-    tx: mpsc::UnboundedSender<Received>,
+    /// Locked so `at` is taken and the event queued in one step: queue order
+    /// then always matches timestamp order.
+    tx: Mutex<mpsc::UnboundedSender<Received>>,
 }
 
 #[derive(Default)]
@@ -142,7 +163,8 @@ struct Stats {
 }
 
 struct Received {
-    /// Arrival time; read only by the Phase 0 recorder.
+    /// Time the event was queued, after its body finished arriving. Never
+    /// decreases in queue order. Read only by the Phase 0 recorder for now.
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     at: Instant,
     reply: Duration,
@@ -157,12 +179,15 @@ pub async fn serve(listener: TcpListener, token: String, opts: Options) -> io::R
         started: Instant::now(),
         delay: opts.delay,
         stats: Mutex::default(),
-        tx,
+        tx: Mutex::new(tx),
     });
     tokio::spawn(worker(Arc::clone(&shared), rx, opts));
     let app = Router::new()
         .route("/v1/hooks/claude-code", post(hook))
         .route("/v1/health", get(health))
+        // Token check before routing, so unknown paths and wrong methods get
+        // 401 too (§11.1).
+        .layer(from_fn_with_state(Arc::clone(&shared), require_token))
         .with_state(shared);
     axum::serve(listener, app).await
 }
@@ -175,28 +200,28 @@ fn authorized(token: &str, headers: &HeaderMap) -> bool {
     })
 }
 
+async fn require_token(State(s): State<Arc<Shared>>, req: Request, next: Next) -> Response {
+    if !authorized(&s.token, req.headers()) {
+        // Never log the body, the path or the header value.
+        tracing::warn!("request rejected: missing or wrong token");
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    next.run(req).await
+}
+
 fn json(body: String) -> Response {
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
 async fn hook(State(s): State<Arc<Shared>>, req: Request) -> Response {
-    let at = Instant::now();
-    if !authorized(&s.token, req.headers()) {
-        // Never log the body or the header value.
-        tracing::warn!("hook rejected: missing or wrong token");
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
+    let start = Instant::now();
     let Ok(body) = to_bytes(req.into_body(), BODY_LIMIT).await else {
         tracing::warn!("hook rejected: body over 256 KB or unreadable");
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     };
     // Queue before any further await: if the client gives up, the event is
     // still processed. `reply` is the time to here (§6: under 100 ms).
-    let _ = s.tx.send(Received {
-        at,
-        reply: at.elapsed(),
-        body,
-    });
+    enqueue(&s, start, body);
     if !s.delay.is_zero() {
         tokio::time::sleep(s.delay).await;
     }
@@ -204,11 +229,17 @@ async fn hook(State(s): State<Arc<Shared>>, req: Request) -> Response {
     json("{}".into())
 }
 
-async fn health(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
-    if !authorized(&s.token, &headers) {
-        tracing::warn!("health rejected: missing or wrong token");
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
+fn enqueue(s: &Shared, start: Instant, body: Bytes) {
+    let tx = s.tx.lock().unwrap_or_else(|e| e.into_inner());
+    let at = Instant::now();
+    let _ = tx.send(Received {
+        at,
+        reply: at - start,
+        body,
+    });
+}
+
+async fn health(State(s): State<Arc<Shared>>) -> Response {
     let stats = s.stats.lock().unwrap_or_else(|e| e.into_inner());
     json(
         serde_json::json!({
@@ -271,8 +302,9 @@ fn base64url(bytes: &[u8]) -> String {
 ///
 /// Appends `{ "tMs", "hook", "payload" }` per request, with the RAW payload,
 /// which contains agent free text. Hence: debug builds only, off unless
-/// `KNOCK_RECORD_DIR` names an existing directory, and refused if that
-/// directory is inside a git repository. Recordings must be sanitized before
+/// `KNOCK_RECORD_DIR` names an existing directory, and refused unless that
+/// directory is under `%LOCALAPPDATA%` (not synced by OneDrive) and outside
+/// any git repository (ADR 0008). Recordings must be sanitized before
 /// anything goes into `fixtures/`.
 #[cfg(debug_assertions)]
 pub mod recorder {
@@ -301,7 +333,18 @@ pub mod recorder {
     }
 
     pub fn open(dir: &Path) -> io::Result<Recorder> {
+        let local = std::env::var_os("LOCALAPPDATA")
+            .ok_or_else(|| io::Error::other("LOCALAPPDATA not set"))?;
+        open_under(dir, Path::new(&local))
+    }
+
+    /// `open` with the allowed root passed in, so tests can use a temp root.
+    pub(super) fn open_under(dir: &Path, root: &Path) -> io::Result<Recorder> {
+        // Canonical on both sides, so short names, `..` and links can't slip out.
         let dir = dir.canonicalize()?;
+        if !dir.starts_with(root.canonicalize()?) {
+            return Err(io::Error::other("directory is not under %LOCALAPPDATA%"));
+        }
         if dir.ancestors().any(|a| a.join(".git").exists()) {
             return Err(io::Error::other("directory is inside a git repository"));
         }
@@ -516,13 +559,126 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn every_path_and_method_needs_the_token() {
+        let addr = spawn_server();
+        for (method, path) in [
+            ("GET", "/nope"),
+            ("POST", "/v1/hooks/other"),
+            ("GET", "/v1/hooks/claude-code"),
+            ("POST", "/v1/health"),
+        ] {
+            for token in [None, Some("wrong")] {
+                let status = request(addr, method, path, token, b"").0;
+                assert_eq!(status, 401, "{method} {path} {token:?}");
+            }
+        }
+        // With the token, routing answers as before.
+        assert_eq!(request(addr, "GET", "/nope", Some(TOKEN), b"").0, 404);
+        let hook = "/v1/hooks/claude-code";
+        assert_eq!(request(addr, "GET", hook, Some(TOKEN), b"").0, 405);
+    }
+
+    #[test]
+    fn server_json_with_a_bad_token_or_port_is_rejected() {
+        const GOOD: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ-_01234";
+        let cfg = |port: u16, token: &str| {
+            let token = token.into();
+            serde_json::to_vec(&ServerConfig { port, token }).unwrap()
+        };
+        assert!(parse_config(&cfg(50000, GOOD)).is_ok());
+        let long = format!("{GOOD}A");
+        let plus = GOOD.replace('-', "+");
+        let padded = format!("{}=", &GOOD[..42]);
+        for token in [
+            "",
+            &GOOD[..42],
+            &long,
+            &plus,
+            &padded,
+            &GOOD.replace('a', "é"),
+        ] {
+            let e = parse_config(&cfg(50000, token)).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{token:?}");
+        }
+        for port in [0, 80, 49151] {
+            assert!(parse_config(&cfg(port, GOOD)).is_err());
+        }
+        assert!(parse_config(b"{}").is_err());
+        // And `listen` refuses to start on one.
+        let dir = temp_dir("bad-server-json");
+        std::fs::write(dir.join("server.json"), cfg(50000, "")).unwrap();
+        let e = listen(&dir).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn queued_timestamps_never_go_backwards() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let s = Arc::new(Shared {
+            token: TOKEN.into(),
+            started: Instant::now(),
+            delay: Duration::ZERO,
+            stats: Mutex::default(),
+            tx: Mutex::new(tx),
+        });
+        // Every request "started" at the same moment; queue order follows
+        // when each one is queued, across racing threads.
+        let start = Instant::now();
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let s = Arc::clone(&s);
+                std::thread::spawn(move || {
+                    for _ in 0..500 {
+                        enqueue(&s, start, Bytes::new());
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let (mut last, mut n) = (start, 0);
+        while let Ok(r) = rx.try_recv() {
+            assert!(r.at >= last, "timestamp went backwards in queue order");
+            assert_eq!(r.reply, r.at - start);
+            last = r.at;
+            n += 1;
+        }
+        assert_eq!(n, 8 * 500);
+    }
+
     #[cfg(debug_assertions)]
     #[test]
-    fn recorder_refuses_a_directory_inside_the_repo() {
-        let in_repo = Path::new(env!("CARGO_MANIFEST_DIR"));
-        assert!(recorder::open(in_repo).is_err());
-        let outside = temp_dir("recorder");
-        assert!(recorder::open(&outside).is_ok());
-        std::fs::remove_dir_all(&outside).unwrap();
+    fn recorder_needs_localappdata_and_no_git_repo() {
+        let root = temp_dir("recorder-root");
+        let outside = temp_dir("recorder-outside");
+        let inside = root.join("rec");
+        let repo = root.join("repo");
+        std::fs::create_dir(&inside).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir(repo.join("sub")).unwrap();
+
+        let err = |d: &Path| recorder::open_under(d, &root).err().map(|e| e.to_string());
+        assert!(err(&outside).unwrap().contains("LOCALAPPDATA"));
+        // `..` can't climb out of the root.
+        let climb = inside.join("..").join("..");
+        assert!(err(&climb).unwrap().contains("LOCALAPPDATA"));
+        assert!(err(&repo.join("sub")).unwrap().contains("git"));
+        assert!(err(&inside).is_none());
+
+        // Against the real %LOCALAPPDATA%: this repo is refused, a fresh
+        // folder directly under it is accepted.
+        assert!(recorder::open(Path::new(env!("CARGO_MANIFEST_DIR"))).is_err());
+        let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
+            .join(format!("knock-test-recorder-{}", std::process::id()));
+        std::fs::create_dir_all(&local).unwrap();
+        let ok = recorder::open(&local);
+        assert!(ok.is_ok());
+        drop(ok);
+        for d in [&local, &root, &outside] {
+            std::fs::remove_dir_all(d).unwrap();
+        }
     }
 }

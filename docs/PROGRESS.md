@@ -16,6 +16,40 @@ Open questions for the user:
 
 ---
 
+## 2026-10-18: Phase 0 (Spike B)
+Done:
+- Spike B (branch `phase-0/spike-b`, cdec79b): `core-windows` built the §8.1 server inside the desktop app.
+  - The server binds 127.0.0.1 only, keeps its port and token in `server.json`, and serves the token-checked hook and health endpoints.
+  - Hooks get `200 {}` at once and are processed on a worker afterwards.
+  - Logs rotate daily (a small hand-written `tracing` subscriber).
+  - A debug-only recorder is included for Phase 0 (ADR 0008).
+  - Lead review and `pnpm check` passed, and the fresh review is done.
+- ADRs, all approved by the user on 2026-10-18 except 0008, which the user approved on 2026-10-16:
+  - 0005: no SessionStart HTTP hook (V-1).
+  - 0006: handler schema and a 1 s timeout (V-1, V-2, V-6, V-11).
+  - 0007: StopFailure is the source of `agent.failed` (V-4).
+  - 0008: rules for the Phase 0 raw recorder.
+  - SPEC.md §6, §8.2, §8.3 and §8.4 were updated to match.
+- Incident (ADR 0008): for about 5 minutes, a test wrote hook config into this repo's `.claude\settings.local.json`. The file was deleted, the token rotated, and every test recording deleted with the user's approval on 2026-10-18. The real `%USERPROFILE%\.claude\settings.json` was never touched.
+- Follow-up brief sent to `core-windows` for fresh-review findings 3-5 and the recorder rules: token check before routing, `server.json` validation and a durable write, event timestamps taken in queue order, recorder only under `%LOCALAPPDATA%`.
+Next:
+- Review the follow-up.
+- User decision on the body limit (fresh-review finding 1).
+- User manual test with a real interactive session. It covers notification types, PreCompact, on-screen hook errors, closing the window (V-5), the firewall (V-11), and the PermissionRequest-to-Notification gap (the §8.4 dedup window).
+- Then Spike C.
+Dependencies added: serde_json 1.0.154 (user-approved), axum 0.8.9, tokio 1.53.3, tracing 0.1.44 (§13.2). New transitive crates: axum-core, matchit, httpdate, tokio-macros.
+Clarifications (lead):
+- An over-limit body currently returns `413`; this is pending the user's decision.
+- `fill_random` is a free function in `platform/`, not a trait method. That's accepted for Stage A.
+- Logging uses a hand-written subscriber, because `tracing-subscriber` and `tracing-appender` aren't on the §13.2 list.
+- Gate G0 items carried forward:
+  - Remove the Phase 0 recorder and all raw recordings (ADR 0008).
+- Must be settled before Phase 2:
+  - Handle the case where the fixed port can't bind: Hyper-V, WSL2 and Docker reserve blocks of ports in 49152-65535, and those blocks can change at reboot. This needs the Repair flow and a visible error (fresh-review finding 7).
+- `sessionCount` and `lastEventAt` are spike-only and get redone in Phase 2.
+Open questions for the user:
+- Body limit: what should happen when an event's payload is over 256 KB?
+
 ## 2026-10-17: Phase 0 (Spike A)
 Done:
 - Spike A (branch `phase-0/spike-a`, d81fc40):

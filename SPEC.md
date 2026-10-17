@@ -107,7 +107,7 @@ Owner: **CW** = `core-windows` agent, **UI** = `ui` agent.
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Ease of use    | Install plus setup under 2 minutes; no command line, no file editing; every screen in plain language                                                           |
 | Latency        | Hook received to frame drawn: p95 under 500 ms                                                                                                                 |
-| Agent impact   | Hook request answered in under 100 ms; if Knock is not running the hook fails fast and silently; no console window ever appears                                |
+| Agent impact   | Hook request answered in under 100 ms; if Knock is not running the hook fails fast and silently; if Knock is hung, each hook waits at most the 1 s timeout (ADR 0006); no console window ever appears                                |
 | CPU            | Under 1% when nothing animates (render loop stopped); under 5% while 5 characters animate at 30 fps                                                            |
 | Memory         | Under 150 MB total, including WebView2                                                                                                                         |
 | Installer size | Under 25 MB                                                                                                                                                    |
@@ -173,19 +173,19 @@ Owner: **CW** = `core-windows` agent, **UI** = `ui` agent.
 ### 8.2 Claude Code hook configuration (written by setup)
 
 - File: `%USERPROFILE%\.claude\settings.json`.
-- Events registered: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Notification`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `SessionEnd`.
-- Each event gets one HTTP handler. Shape (exact field names and units are **VERIFY V-1**):
+- Events registered: `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Notification`, `Stop`, `StopFailure`, `SubagentStart`, `SubagentStop`, `PreCompact`, `SessionEnd`. `SessionStart` is not registered: Claude Code does not support HTTP hooks for it (ADR 0005). `StopFailure` is the `agent.failed` source (ADR 0007).
+- Each event gets one HTTP handler. Shape (`timeout` is in seconds, ADR 0006):
 
 ```json
 {
   "type": "http",
   "url": "http://127.0.0.1:<port>/v1/hooks/claude-code",
   "headers": { "X-Knock-Token": "<token>" },
-  "timeout": 2
+  "timeout": 1
 }
 ```
 
-- Tool events (`PreToolUse`, `PostToolUse`, `PermissionRequest`) use a match-all matcher; the other events use no matcher. Exact matcher syntax is **VERIFY V-1**.
+- Tool events (`PreToolUse`, `PostToolUse`, `PermissionRequest`) use the match-all matcher `"*"`; the other events use no matcher (ADR 0006).
 - **Ownership:** Knock's entries are identified by a URL starting with `http://127.0.0.1:` and containing `/v1/hooks/claude-code`.
 
 **Setup MUST:**
@@ -231,7 +231,7 @@ During development, agents MUST NOT modify the user's real settings file. Use a 
 | `needs.answer`     | Claude Code asked the user a question                                           | —                                                   |
 | `turn.idle`        | Claude Code is idle, waiting for the next prompt                                | —                                                   |
 | `turn.completed`   | Claude Code finished its turn                                                   | —                                                   |
-| `agent.failed`     | Claude Code reported an error it will not recover from (source: **VERIFY V-4**) | `reason` code only, no text                         |
+| `agent.failed`     | Claude Code reported an error it will not recover from (source: `StopFailure`, ADR 0007) | `reason` code only, no text                |
 | `session.ended`    | The session ended normally                                                      | —                                                   |
 | `user.ack`         | Internal: the user clicked, jumped to or marked the session reviewed            | —                                                   |
 | `user.dismiss`     | Internal: the user dismissed a Failed or ended session                          | —                                                   |
@@ -251,7 +251,7 @@ During development, agents MUST NOT modify the user's real settings file. Use a 
 
 | Claude Code hook                              | Matcher or field                         | Normalized event   |
 | --------------------------------------------- | ---------------------------------------- | ------------------ |
-| `SessionStart`                                | `source`                                 | `session.started`  |
+| `SessionStart`                                | `source`                                 | `session.started` (not available over HTTP; no producer in v1, ADR 0005) |
 | `UserPromptSubmit`                            | —                                        | `turn.started`     |
 | `PreToolUse`, `PostToolUse`                   | `tool_name`                              | `activity`         |
 | `PermissionRequest`                           | `tool_name`                              | `needs.permission` |
@@ -260,6 +260,7 @@ During development, agents MUST NOT modify the user's real settings file. Use a 
 | `Notification`                                | `notification_type = idle_prompt`        | `turn.idle`        |
 | `Notification`                                | any other type                           | ignored            |
 | `Stop`                                        | —                                        | `turn.completed`   |
+| `StopFailure`                                 | `error` (code)                           | `agent.failed` (ADR 0007) |
 | `SubagentStart`, `SubagentStop`, `PreCompact` | —                                        | `activity`         |
 | `SessionEnd`                                  | —                                        | `session.ended`    |
 
@@ -272,7 +273,7 @@ The adapter MUST drop `message`, `prompt`, `tool_input`, `tool_response` and any
 | State                | Tier      | Produced in v1?                   |
 | -------------------- | --------- | --------------------------------- |
 | `needs_input`        | Needs you | Yes                               |
-| `failed`             | Needs you | Yes, once V-4 identifies a source |
+| `failed`             | Needs you | Yes (`StopFailure`, ADR 0007)     |
 | `stalled`            | Needs you | Yes (timer)                       |
 | `blocked_fixable`    | Needs you | Unused in v1                      |
 | `ready`              | Ready     | Yes                               |
