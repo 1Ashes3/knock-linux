@@ -13,7 +13,8 @@
 
 - The body limit is 16 MB.
 - A body over the limit still gets `200 {}`. It is dropped and logged as a warning without the body.
-- The server never returns an error status for a request that has a valid token.
+- `POST /v1/hooks/claude-code` with a valid token never gets an error status. That's the only request Claude Code makes. Other paths and methods may still get `404` or `405`. The wording was narrowed on 2026-10-18 after the second fresh review; it matches what the user approved: "never send Claude Code an error".
+- Over the limit, the server reads and discards the rest of the body before replying, so the client's upload is never reset.
 
 ## Consequences
 

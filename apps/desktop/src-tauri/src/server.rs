@@ -5,7 +5,7 @@
 use crate::log::utc;
 use crate::platform::fill_random;
 use axum::Router;
-use axum::body::{Bytes, to_bytes};
+use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{Next, from_fn_with_state};
@@ -17,6 +17,7 @@ use std::io::{self, Write};
 use std::net::{Ipv4Addr, TcpListener};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::mpsc;
@@ -216,20 +217,39 @@ fn json(body: String) -> Response {
 
 async fn hook(State(s): State<Arc<Shared>>, req: Request) -> Response {
     let start = Instant::now();
-    // Reading stops at the limit, so at most the limit (plus one in-flight
-    // frame) is ever held. Queue before any further await: if the client
-    // gives up, the event is still processed. `reply` is the time to here
-    // (§6: under 100 ms).
-    match to_bytes(req.into_body(), BODY_LIMIT).await {
-        Ok(body) => enqueue(&s, start, body),
+    // Queue before any further await: if the client gives up, the event is
+    // still processed. `reply` is the time to here (§6: under 100 ms).
+    match read_capped(req.into_body()).await {
+        Ok(Some(body)) => enqueue(&s, start, body),
         // Never an error status for a request with a valid token (ADR 0011).
-        Err(_) => tracing::warn!("hook dropped: body over 16 MB or unreadable"),
+        _ => tracing::warn!("hook dropped: body over 16 MB or unreadable"),
     }
     if !s.delay.is_zero() {
         tokio::time::sleep(s.delay).await;
     }
     // Never any decision fields (§11.2).
     json("{}".into())
+}
+
+/// Reads the whole body but keeps at most `BODY_LIMIT` bytes (plus one
+/// in-flight frame). Over the limit the rest is read and discarded, then
+/// `None`: replying before the upload ends would reset the client's
+/// connection on Windows.
+async fn read_capped(mut body: Body) -> Result<Option<Bytes>, axum::Error> {
+    let mut buf = Vec::new();
+    let mut over = false;
+    while let Some(frame) = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
+        let Ok(data) = frame?.into_data() else {
+            continue; // trailers
+        };
+        if !over && buf.len() + data.len() <= BODY_LIMIT {
+            buf.extend_from_slice(&data);
+        } else if !over {
+            over = true;
+            buf = Vec::new();
+        }
+    }
+    Ok((!over).then(|| buf.into()))
 }
 
 fn enqueue(s: &Shared, start: Instant, body: Bytes) {
@@ -544,6 +564,70 @@ mod tests {
         assert_eq!(log.matches("WARN").count(), 1, "{log}");
         assert!(log.contains("hook dropped: body over 16 MB"));
         assert!(!log.contains("over-limit"), "the body must not be logged");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Streams a `len`-byte hook body in 64 KB writes on one thread while
+    /// reading the reply on this one, like a client still uploading when the
+    /// server answers. Returns (upload result, reply).
+    fn stream_hook(addr: SocketAddr, session: &str, len: usize) -> (io::Result<()>, String) {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        let mut w = s.try_clone().unwrap();
+        let first = padded(session, 64 * 1024);
+        let writer = std::thread::spawn(move || {
+            write!(
+                w,
+                "POST /v1/hooks/claude-code HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nX-Knock-Token: {TOKEN}\r\nContent-Length: {len}\r\n\r\n"
+            )?;
+            w.write_all(&first)?;
+            let spaces = [b' '; 64 * 1024];
+            let mut left = len - first.len();
+            while left > 0 {
+                let n = left.min(spaces.len());
+                w.write_all(&spaces[..n])?;
+                left -= n;
+            }
+            Ok(())
+        });
+        let mut out = Vec::new();
+        let read = s.read_to_end(&mut out);
+        let upload = writer.join().unwrap();
+        let reply = match read {
+            Ok(_) => String::from_utf8_lossy(&out).into_owned(),
+            Err(e) => format!("read failed: {:?}", e.kind()),
+        };
+        (upload, reply)
+    }
+
+    #[test]
+    fn body_far_over_the_limit_is_read_to_the_end_then_gets_200() {
+        // A log here too: a callsite first hit on a thread with no subscriber
+        // can be cached as off for the other tests' logs.
+        let dir = temp_dir("far-over-log");
+        let addr = spawn_server_with(Options::default(), Some(dir.clone()));
+        // Under the limit, streamed the same way, is still queued.
+        let (upload, reply) = stream_hook(addr, "under", 1024 * 1024);
+        assert!(upload.is_ok() && reply.ends_with("\r\n\r\n{}"), "{reply}");
+        wait_for_sessions(addr, 1);
+        for i in 0..3 {
+            for mult in [2, 4] {
+                let (upload, reply) = stream_hook(addr, "far-over", mult * BODY_LIMIT);
+                assert!(upload.is_ok(), "{mult}x run {i}: upload {upload:?}");
+                assert!(
+                    reply.starts_with("HTTP/1.1 200"),
+                    "{mult}x run {i}: {reply}"
+                );
+                assert!(reply.ends_with("\r\n\r\n{}"), "{mult}x run {i}: {reply}");
+            }
+        }
+        let mut log = String::new();
+        for e in std::fs::read_dir(&dir).unwrap() {
+            log += &std::fs::read_to_string(e.unwrap().path()).unwrap();
+        }
+        assert_eq!(log.matches("hook dropped").count(), 6, "{log}");
+        assert_eq!(log.matches("WARN").count(), 6, "{log}");
+        assert!(!log.contains("far-over"), "the body must not be logged");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

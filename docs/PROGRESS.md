@@ -34,11 +34,12 @@ Done:
 - More ADRs, approved by the user on 2026-10-18: 0009 (V-3, V-5), 0010 (state-model fixes from the recordings), 0011 (16 MB body limit, never an error reply). SPEC.md §8.1, §8.2, §8.3 and §8.4 were updated to match.
 - User manual tests on 2026-10-17 and 2026-10-18 passed: a real interactive session, Knock stopped mid-session, the window closed with X, no firewall prompt, and two permission prompts in default mode.
 - Follow-up brief sent to `core-windows` for fresh-review findings 3-5 and the recorder rules: token check before routing, `server.json` validation and a durable write, event timestamps taken in queue order, recorder only under `%LOCALAPPDATA%`.
+- Second fresh review (21ec9eb, 704dcdc):
+  - Finding 1, an over-limit upload was reset: fixed. The server now reads and discards the rest of the body before replying, and a test covers it.
+  - Finding 2: ADR 0011's wording was narrowed to the hook endpoint.
+- Spike B is complete.
 Next:
-- Review the follow-up.
-- User decision on the body limit (fresh-review finding 1).
-- User manual test with a real interactive session. It covers notification types, PreCompact, on-screen hook errors, closing the window (V-5), the firewall (V-11), and the PermissionRequest-to-Notification gap (the §8.4 dedup window).
-- Then Spike C.
+- Spike C: request → process → window → focus (V-7, V-8, V-9).
 Dependencies added: serde_json 1.0.154 (user-approved), axum 0.8.9, tokio 1.53.3, tracing 0.1.44 (§13.2). New transitive crates: axum-core, matchit, httpdate, tokio-macros.
 Clarifications (lead):
 - An over-limit body currently returns `413`; this is pending the user's decision.
