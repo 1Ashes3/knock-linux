@@ -368,7 +368,7 @@ The adapter MUST drop `message`, `prompt`, `tool_input`, `tool_response` and any
 | `acknowledge(id)`                             | Mark Ready as reviewed (`user.ack`)                                                     |
 | `dismiss(id)`                                 | Dismiss Failed or ended (`user.dismiss`)                                                |
 | `dismiss_away_summary()`                      | Close the summary card                                                                  |
-| `set_hit_regions(regions)`                    | Character rectangles in logical pixels, relative to the strip, for click-through (§9.3) |
+| `set_hit_regions(regions)`                    | `regions: [{ x, y, width, height }]`: character rectangles in logical px, relative to the strip; replaces the previous set; empty means fully click-through (§9.3, ADR 0003) |
 | `request_strip_size(width, height)`           | UI asks for the size it needs; core positions the window (§9.2)                         |
 | `get_settings()`, `update_settings(patch)`    | Read and change settings (§8.6)                                                         |
 | `setup_status()`                              | Hooks installed? Server OK? Monitors available?                                         |
@@ -484,7 +484,7 @@ Stored in `%APPDATA%\Knock\settings.json`:
 
 - Use the chosen monitor's work area (the monitor minus the taskbar). The strip's bottom edge sits on the work area's bottom edge, its right edge 8 logical px from the work area's right edge. It grows leftward.
 - Strip height by size setting: small 48, medium 64, large 80 logical px. One character slot is as wide as the strip is tall.
-- **Taskbar auto-hide:** detect it and keep the strip above the reveal zone (**VERIFY V-13**).
+- **Taskbar auto-hide:** detect it and rest the strip on the top edge of the shown taskbar, as reported by the shell even while hidden (ADR 0002).
 - **Reposition** on display changes, scaling (DPI) changes and work-area changes, with a 5-second polling fallback (FR-15).
 - **Maximum width:** 6 slots (5 characters plus the den). Beyond that, the den absorbs the rest.
 

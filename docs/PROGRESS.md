@@ -16,6 +16,31 @@ Open questions for the user:
 
 ---
 
+## 2026-10-17: Phase 0 (Spike A)
+Done:
+- Spike A (branch `phase-0/spike-a`, d81fc40):
+  - `core-windows` built the Tauri shell (`knock-desktop`): the §9.1 strip window, placement on the primary work area, and Win32 click-through driven by a 30 Hz cursor poll.
+  - `ui` built the test page with one target.
+  - Lead review passed, the fresh-session review is done, and the user's manual checks 1-5 passed.
+- Fresh-review finding 1 (tao can rewrite the strip's styles): fixed by the lead with a small integration fix. The styles are now re-asserted every poll tick (ADR 0001).
+- `cargo deny check` was run locally for the first time (cargo-deny 0.20.2): advisories, bans, licenses and sources are all OK. It only warned about duplicate crate versions and unused license allow-list entries.
+- ADRs, all approved by the user on 2026-10-17: 0001 V-10 strip behavior, 0002 V-13 auto-hide placement, 0003 hit-region shape for §8.5, 0004 allow MPL-2.0. SPEC.md §8.5 and §9.2 were updated to match ADRs 0003 and 0002.
+Next:
+- Spike B: hook → server round trip (V-1, V-2, V-3, V-6, V-11).
+Dependencies added: tauri 2.12.4, tauri-build 2.7.3, windows 0.62.2 (named in §13.2). serde 1.0.229 (approved by the user 2026-10-16; serde_json is approved too but not used yet). Dev tools: Vite 8.3.4, @tauri-apps/cli 2.12.3.
+Clarifications (lead):
+- Deferred from the Spike A review, to Phase 2 (§9.2) and Phase 4 (FR-15), not lost:
+  - repositioning on display, DPI and work-area changes, with the 5 s polling fallback
+  - auto-hide placement, per ADR 0002
+  - the chosen monitor instead of always the primary one
+- Before Phase 2:
+  - set a real CSP in `tauri.conf.json`; it is `null` in the spike (§11)
+  - replace `eprintln!` with tracing logs (§11.5)
+  - final identifier and icon
+- Memory was 154 MB in a dev build, against the 150 MB budget in §6. Measure a release build in Phase 3.
+Open questions for the user:
+- none
+
 ## 2026-10-16: Phase 0 (session 2)
 Done:
 - Phase 0 task 1, repo scaffold. `core-windows` set up the Cargo workspace (`knock-core`, `knock-cli`), pinned Rust to 1.99.0, and added `deny.toml` and the CI skeleton (`ci.yml`). `ui` set up the pnpm workspace (`@knock/ui`), TypeScript (strict), Biome, Vitest and the root `pnpm check`. The lead reviewed the diff and `pnpm check` passed.

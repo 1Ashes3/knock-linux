@@ -66,17 +66,14 @@ fn main() {
 
             let regions = Arc::clone(&app.state::<HitRegions>().0);
             std::thread::spawn(move || {
-                let mut inside = false;
                 loop {
                     std::thread::sleep(POLL);
-                    let now = platform.cursor_pos().is_some_and(|c| {
+                    let inside = platform.cursor_pos().is_some_and(|c| {
                         strip::hit(&regions.lock().unwrap(), rect, display.scale, c)
                     });
-                    // Touch the window only when the hit state changes (§9.3).
-                    if now != inside {
-                        inside = now;
-                        platform.set_click_through(!inside);
-                    }
+                    // Every tick, so styles tao rewrites are repaired within
+                    // one tick (ADR 0001). It writes only when they differ.
+                    platform.set_click_through(!inside);
                 }
             });
             Ok(())
