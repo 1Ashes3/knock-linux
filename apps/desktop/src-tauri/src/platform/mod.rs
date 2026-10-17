@@ -4,6 +4,7 @@
 mod windows;
 
 pub use self::windows::{WindowsPlatform, fill_random};
+use crate::jump::{ProcessId, Target};
 use crate::strip::Rect;
 
 /// Taskbar geometry, logged for V-13.
@@ -33,4 +34,13 @@ pub trait Platform: Send + Sync {
     fn cursor_pos(&self) -> Option<(i32, i32)>;
     /// `true`: the strip ignores the mouse (§9.3).
     fn set_click_through(&self, on: bool);
+    /// §9.4 step 1: the process that owns the client end of the loopback TCP
+    /// connection from `client_port` to Knock's `server_port`.
+    fn connection_owner(&self, client_port: u16, server_port: u16) -> Option<ProcessId>;
+    /// §9.4 step 2: exe names from `process` up its parents (for the log),
+    /// and the window to focus, if any.
+    fn find_window(&self, process: ProcessId, project: &str) -> (Vec<String>, Option<Target>);
+    /// §9.6: brings `window` to the front. If Windows refuses, flashes its
+    /// taskbar button instead. Returns whether it came to the front.
+    fn focus_window(&self, window: isize) -> bool;
 }

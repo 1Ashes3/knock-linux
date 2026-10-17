@@ -1,15 +1,19 @@
-//! Knock desktop shell. Phase 0 Spike A: the overlay strip (SPEC.md §9.1-9.3).
+//! Knock desktop shell. Phase 0: the overlay strip (Spike A, SPEC.md §9.1-9.3),
+//! the hook server (Spike B, §8.1) and jumping to a session (Spike C, §9.4-9.6).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod jump;
 mod log;
 mod platform;
 mod server;
+mod sessions;
 mod strip;
 
 use platform::{Platform, WindowsPlatform};
+use sessions::{SessionView, Sessions};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use strip::{MEDIUM_HEIGHT, Region};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -27,17 +31,55 @@ fn set_hit_regions(regions: Vec<Region>, state: tauri::State<'_, HitRegions>) {
     *state.0.lock().unwrap() = regions;
 }
 
+/// §8.5: sessions, most recent event first.
+#[tauri::command]
+fn get_sessions(sessions: tauri::State<'_, Arc<Sessions>>) -> Vec<SessionView> {
+    sessions.views()
+}
+
+/// §8.5, §9.5, §9.6: focuses the session's window. An unknown id, or a session
+/// with no known process or window, is a no-op. Sync, so it runs on the main
+/// thread, the one that received the click. `user.ack` comes with the engine.
+#[tauri::command]
+fn jump_to_session(
+    id: String,
+    sessions: tauri::State<'_, Arc<Sessions>>,
+    platform: tauri::State<'_, Arc<dyn Platform>>,
+) {
+    let Some((process, project, owner)) = sessions.jump_info(&id) else {
+        return;
+    };
+    let t = Instant::now();
+    // Looked up again on every jump: the window may have closed or moved.
+    let (_, target) = platform.find_window(process, &project);
+    let Some(target) = target else {
+        tracing::info!(session = ?id, "jump: no window");
+        return;
+    };
+    let front = platform.focus_window(target.window);
+    tracing::info!(
+        session = ?id,
+        owner = ?owner,
+        precision = ?target.precision,
+        front,
+        took_us = t.elapsed().as_micros() as u64,
+        thread = ?std::thread::current().name(),
+        "jump"
+    );
+}
+
 fn main() {
     log::init();
+    let sessions = Arc::new(Sessions::default());
     tauri::Builder::default()
         .manage(HitRegions::default())
-        .invoke_handler(tauri::generate_handler![set_hit_regions])
-        .setup(|app| {
-            // The Repair flow for a port that can't bind is not built yet (§8.1).
-            if let Err(e) = server::start() {
-                tracing::error!(kind = ?e.kind(), "server failed to start");
-            }
-
+        .manage(Arc::clone(&sessions))
+        .invoke_handler(tauri::generate_handler![
+            set_hit_regions,
+            get_sessions,
+            jump_to_session
+        ])
+        .setup(move |app| {
             // Created visible but unfocused, so tao shows it with
             // SW_SHOWNOACTIVATE. Never call anything that focuses it (§9.1).
             let url = WebviewUrl::App("/overlay/index.html".into());
@@ -54,7 +96,13 @@ fn main() {
                 .no_redirection_bitmap(true)
                 .build()?;
 
-            let platform = WindowsPlatform::new(&window)?;
+            let platform: Arc<dyn Platform> = Arc::new(WindowsPlatform::new(&window)?);
+            app.manage(Arc::clone(&platform));
+            // The Repair flow for a port that can't bind is not built yet (§8.1).
+            if let Err(e) = server::start(Arc::clone(&platform), sessions) {
+                tracing::error!(kind = ?e.kind(), "server failed to start");
+            }
+
             let display = platform.primary_display()?;
             let rect = strip::place(display.work_area, display.scale, MEDIUM_HEIGHT, SLOTS);
             // Spike logging for V-13: geometry only, no paths or agent data.

@@ -1,20 +1,22 @@
 //! Local server (SPEC.md §8.1, §11). Binds 127.0.0.1 only, requires the token
 //! on every request, answers hooks with `200 {}` at once and processes them
-//! afterwards on a single worker, in arrival order.
+//! afterwards on a single worker, in arrival order. On a session's first
+//! request it records which process sent it (§7.2 step 2, §9.4).
 
+use crate::jump::{self, ProcessId};
 use crate::log::utc;
-use crate::platform::fill_random;
+use crate::platform::{Platform, fill_random};
+use crate::sessions::Sessions;
 use axum::Router;
 use axum::body::{Body, Bytes, HttpBody};
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::io::{self, Write};
-use std::net::{Ipv4Addr, TcpListener};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -103,12 +105,16 @@ fn bind(port: u16) -> io::Result<TcpListener> {
 }
 
 /// Starts the server on Tauri's async runtime. Called once by the app.
-pub fn start() -> io::Result<()> {
+pub fn start(platform: Arc<dyn Platform>, sessions: Arc<Sessions>) -> io::Result<()> {
     let base = std::env::var_os("APPDATA").ok_or_else(|| io::Error::other("APPDATA not set"))?;
     let (cfg, listener) = listen(&PathBuf::from(base).join("Knock"))?;
     listener.set_nonblocking(true)?;
     tracing::info!(port = cfg.port, "server listening on 127.0.0.1");
-    let opts = Options::from_env();
+    let opts = Options {
+        platform: Some(platform),
+        sessions,
+        ..Options::from_env()
+    };
     tauri::async_runtime::spawn(async move {
         if let Err(e) = serve(listener, cfg.token, opts).await {
             tracing::error!(kind = ?e.kind(), "server stopped");
@@ -117,9 +123,13 @@ pub fn start() -> io::Result<()> {
     Ok(())
 }
 
-/// Debug-build knobs for Phase 0 tests.
+/// What the server works with. Tests leave `platform` out, so no process
+/// lookups happen; the rest are debug-build knobs for Phase 0 tests.
 #[derive(Default)]
 pub struct Options {
+    /// For process and window lookups (§9.4).
+    pub platform: Option<Arc<dyn Platform>>,
+    pub sessions: Arc<Sessions>,
     /// Sleep this long before replying, to test a slow Knock (V-2).
     pub delay: Duration,
     #[cfg(debug_assertions)]
@@ -141,6 +151,7 @@ impl Options {
             Self {
                 delay,
                 recorder: recorder::from_env(),
+                ..Self::default()
             }
         }
         #[cfg(not(debug_assertions))]
@@ -150,6 +161,10 @@ impl Options {
 
 struct Shared {
     token: String,
+    /// The port clients connect to, for the connection-owner lookup.
+    port: u16,
+    platform: Option<Arc<dyn Platform>>,
+    sessions: Arc<Sessions>,
     started: Instant,
     delay: Duration,
     stats: Mutex<Stats>,
@@ -160,7 +175,6 @@ struct Shared {
 
 #[derive(Default)]
 struct Stats {
-    sessions: HashSet<String>,
     last_event_at: Option<SystemTime>,
 }
 
@@ -170,14 +184,28 @@ struct Received {
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     at: Instant,
     reply: Duration,
+    /// Raw body, read only by the Phase 0 recorder.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     body: Bytes,
+    head: Option<Head>,
+    lookup: Option<Lookup>,
 }
 
-pub async fn serve(listener: TcpListener, token: String, opts: Options) -> io::Result<()> {
+/// A connection-owner lookup made before the reply.
+struct Lookup {
+    process: Option<ProcessId>,
+    took: Duration,
+}
+
+pub async fn serve(listener: TcpListener, token: String, mut opts: Options) -> io::Result<()> {
+    let port = listener.local_addr()?.port();
     let listener = tokio::net::TcpListener::from_std(listener)?;
     let (tx, rx) = mpsc::unbounded_channel();
     let shared = Arc::new(Shared {
         token,
+        port,
+        platform: opts.platform.take(),
+        sessions: Arc::clone(&opts.sessions),
         started: Instant::now(),
         delay: opts.delay,
         stats: Mutex::default(),
@@ -191,7 +219,12 @@ pub async fn serve(listener: TcpListener, token: String, opts: Options) -> io::R
         // 401 too (§11.1).
         .layer(from_fn_with_state(Arc::clone(&shared), require_token))
         .with_state(shared);
-    axum::serve(listener, app).await
+    // Peer addresses give the client port for the connection-owner lookup.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
 }
 
 fn authorized(token: &str, headers: &HeaderMap) -> bool {
@@ -215,12 +248,20 @@ fn json(body: String) -> Response {
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
-async fn hook(State(s): State<Arc<Shared>>, req: Request) -> Response {
+async fn hook(
+    State(s): State<Arc<Shared>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request,
+) -> Response {
     let start = Instant::now();
     // Queue before any further await: if the client gives up, the event is
     // still processed. `reply` is the time to here (§6: under 100 ms).
     match read_capped(req.into_body()).await {
-        Ok(Some(body)) => enqueue(&s, start, body),
+        Ok(Some(body)) => {
+            let head = serde_json::from_slice::<Head>(&body).ok();
+            let lookup = head.as_ref().and_then(|h| lookup(&s, h, peer.port()));
+            enqueue(&s, start, body, head, lookup);
+        }
         // Never an error status for a request with a valid token (ADR 0011).
         _ => tracing::warn!("hook dropped: body over 16 MB or unreadable"),
     }
@@ -252,13 +293,30 @@ async fn read_capped(mut body: Body) -> Result<Option<Bytes>, axum::Error> {
     Ok((!over).then(|| buf.into()))
 }
 
-fn enqueue(s: &Shared, start: Instant, body: Bytes) {
+/// §9.4 step 1, until a session's process is known. Runs before the reply:
+/// once the client closes, its end of the connection no longer has an owner.
+fn lookup(s: &Shared, head: &Head, client_port: u16) -> Option<Lookup> {
+    let platform = s.platform.as_ref()?;
+    if s.sessions.has_process(&head.session_id) {
+        return None;
+    }
+    let t = Instant::now();
+    let process = platform.connection_owner(client_port, s.port);
+    Some(Lookup {
+        process,
+        took: t.elapsed(),
+    })
+}
+
+fn enqueue(s: &Shared, start: Instant, body: Bytes, head: Option<Head>, lookup: Option<Lookup>) {
     let tx = s.tx.lock().unwrap_or_else(|e| e.into_inner());
     let at = Instant::now();
     let _ = tx.send(Received {
         at,
         reply: at - start,
         body,
+        head,
+        lookup,
     });
 }
 
@@ -268,7 +326,7 @@ async fn health(State(s): State<Arc<Shared>>) -> Response {
         serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
             "uptimeS": s.started.elapsed().as_secs(),
-            "sessionCount": stats.sessions.len(),
+            "sessionCount": s.sessions.len(),
             "lastEventAt": stats.last_event_at.map(utc),
         })
         .to_string(),
@@ -276,11 +334,13 @@ async fn health(State(s): State<Arc<Shared>>) -> Response {
 }
 
 /// The only fields read from a payload in this spike. Everything else,
-/// including all free text, is skipped by the parser and never kept.
+/// including all free text, is skipped by the parser and never kept. `cwd` is
+/// reduced to `project` and never stored or logged (§11.4, §11.5).
 #[derive(Deserialize)]
 struct Head {
     session_id: String,
     hook_event_name: String,
+    cwd: Option<String>,
 }
 
 #[cfg_attr(not(debug_assertions), allow(unused_mut, unused_variables))]
@@ -290,20 +350,53 @@ async fn worker(s: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Received>, mut o
         if let Some(rec) = opts.recorder.as_mut() {
             rec.append(r.at, &r.body);
         }
-        let Ok(head) = serde_json::from_slice::<Head>(&r.body) else {
+        let Some(head) = r.head else {
             tracing::warn!("hook payload not understood");
             continue;
         };
+        let project = jump::project(head.cwd.as_deref().unwrap_or(""));
         tracing::info!(
             event = ?head.hook_event_name,
             session = ?head.session_id,
             reply_us = r.reply.as_micros() as u64,
             "hook"
         );
+        let found = r
+            .lookup
+            .and_then(|l| resolve(&s, &head.session_id, project, l));
+        s.sessions.record(&head.session_id, project, found);
         let mut stats = s.stats.lock().unwrap_or_else(|e| e.into_inner());
-        stats.sessions.insert(head.session_id);
         stats.last_event_at = Some(SystemTime::now());
     }
+}
+
+/// §9.4 step 2 for a fresh lookup: walks up to the window and logs the
+/// result (exe names only) for Phase 0 evidence.
+fn resolve(
+    s: &Shared,
+    session: &str,
+    project: &str,
+    l: Lookup,
+) -> Option<(ProcessId, Option<jump::Target>)> {
+    let lookup_us = l.took.as_micros() as u64;
+    let Some(process) = l.process else {
+        tracing::warn!(session = ?session, lookup_us, "connection owner not found");
+        return None;
+    };
+    let t = Instant::now();
+    let (chain, target) = s.platform.as_ref()?.find_window(process, project);
+    tracing::info!(
+        session = ?session,
+        project = ?project,
+        pid = process.pid,
+        lookup_us,
+        walk_us = t.elapsed().as_micros() as u64,
+        chain = ?chain,
+        owner = ?target.as_ref().map(|t| &t.owner),
+        precision = ?target.as_ref().map(|t| t.precision),
+        "session process"
+    );
+    Some((process, target))
 }
 
 fn base64url(bytes: &[u8]) -> String {
@@ -403,6 +496,7 @@ pub mod recorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpStream};
 
@@ -516,6 +610,89 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         drop(s);
         wait_for_sessions(addr, 1);
+    }
+
+    /// Records every connection-owner lookup; the "process" is the client port.
+    #[derive(Default)]
+    struct FakePlatform(Mutex<Vec<(u16, u16)>>);
+
+    impl Platform for FakePlatform {
+        fn primary_display(&self) -> io::Result<crate::platform::Display> {
+            unimplemented!()
+        }
+        fn place_strip(&self, _: crate::strip::Rect) -> io::Result<()> {
+            unimplemented!()
+        }
+        fn cursor_pos(&self) -> Option<(i32, i32)> {
+            None
+        }
+        fn set_click_through(&self, _: bool) {}
+        fn connection_owner(&self, client: u16, server: u16) -> Option<ProcessId> {
+            self.0.lock().unwrap().push((client, server));
+            Some(ProcessId {
+                pid: client.into(),
+                start: 1,
+            })
+        }
+        fn find_window(&self, _: ProcessId, _: &str) -> (Vec<String>, Option<jump::Target>) {
+            let target = jump::Target {
+                window: 1,
+                owner: "WindowsTerminal.exe".into(),
+                precision: jump::Precision::AppWindow,
+            };
+            (vec!["claude.exe".into()], Some(target))
+        }
+        fn focus_window(&self, _: isize) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn process_is_looked_up_once_per_session_with_the_peer_port() {
+        let fake = Arc::new(FakePlatform::default());
+        let sessions = Arc::new(Sessions::default());
+        let opts = Options {
+            platform: Some(fake.clone()),
+            sessions: Arc::clone(&sessions),
+            ..Options::default()
+        };
+        let addr = spawn_server_with(opts, None);
+        let hook = "/v1/hooks/claude-code";
+        let body = |id: &str| {
+            format!(
+                r#"{{"session_id":"{id}","hook_event_name":"Stop","cwd":"C:\\work\\repo-{id}","prompt":"secret"}}"#
+            )
+        };
+        for id in ["a", "a", "b", "a"] {
+            assert_eq!(
+                request(addr, "POST", hook, Some(TOKEN), body(id).as_bytes()).0,
+                200
+            );
+        }
+        wait_for_sessions(addr, 2);
+        // Wait for the worker to finish the last event.
+        for _ in 0..100 {
+            if sessions.views().first().is_some_and(|v| v.id == "a") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let calls = fake.0.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2, "one lookup per session: {calls:?}");
+        for (client, server) in &calls {
+            assert_eq!(*server, addr.port());
+            assert!(*client != 0 && client != server);
+        }
+        let views = sessions.views();
+        let json = serde_json::to_string(&views).unwrap();
+        assert_eq!(
+            json,
+            r#"[{"id":"a","project":"repo-a","precision":"app_window"},{"id":"b","project":"repo-b","precision":"app_window"}]"#
+        );
+        // The first request's client port is the recorded "process".
+        let (p, _, owner) = sessions.jump_info("a").unwrap();
+        assert_eq!(p.pid, u32::from(calls[0].0));
+        assert_eq!(owner.as_deref(), Some("WindowsTerminal.exe"));
     }
 
     /// The worker processes after the reply; poll health briefly.
@@ -733,6 +910,9 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let s = Arc::new(Shared {
             token: TOKEN.into(),
+            port: 0,
+            platform: None,
+            sessions: Arc::default(),
             started: Instant::now(),
             delay: Duration::ZERO,
             stats: Mutex::default(),
@@ -746,7 +926,7 @@ mod tests {
                 let s = Arc::clone(&s);
                 std::thread::spawn(move || {
                     for _ in 0..500 {
-                        enqueue(&s, start, Bytes::new());
+                        enqueue(&s, start, Bytes::new(), None, None);
                     }
                 })
             })
