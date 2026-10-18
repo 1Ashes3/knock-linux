@@ -54,7 +54,7 @@ pub fn init(app: &AppHandle) {
 
 /// Shows the permission toast for `session`, unless one was shown in the last
 /// 10 s. A no-op before `init` (as in server tests).
-pub fn permission_request(session: &str, project: &str, tool: &str) {
+pub fn permission_request(session: &str, project: &str, tool: Option<&str>) {
     let Some(s) = SPIKE.get() else {
         return;
     };
@@ -71,15 +71,22 @@ pub fn permission_request(session: &str, project: &str, tool: &str) {
         .notification()
         .builder()
         .title(format!("{project} needs you"))
-        .body(format!(
-            "Claude Code is asking for permission to use {tool}."
-        ))
+        .body(body(tool))
         .extra("session", session)
         .show();
     tracing::info!(session = ?session, ok = shown.is_ok(), "toast shown");
 }
 
 /// Whether `session` may get a toast at `now`; if so, records `now`.
+/// §10.2 body. The question tool arrives as a `PermissionRequest` (ADR 0010).
+fn body(tool: Option<&str>) -> String {
+    match tool {
+        Some("AskUserQuestion") => "Claude Code has a question for you.".into(),
+        Some(t) => format!("Claude Code is asking for permission to use {t}."),
+        None => "Claude Code is asking for permission.".into(),
+    }
+}
+
 fn due(last: &mut HashMap<String, Instant>, session: &str, now: Instant) -> bool {
     if last
         .get(session)
@@ -105,5 +112,18 @@ mod tests {
         assert!(due(&mut last, "b", t + s(9)));
         assert!(due(&mut last, "a", t + s(10)));
         assert!(!due(&mut last, "a", t + s(19)));
+    }
+
+    #[test]
+    fn question_tool_gets_the_question_text() {
+        assert_eq!(
+            body(Some("AskUserQuestion")),
+            "Claude Code has a question for you."
+        );
+        assert_eq!(
+            body(Some("Write")),
+            "Claude Code is asking for permission to use Write."
+        );
+        assert_eq!(body(None), "Claude Code is asking for permission.");
     }
 }

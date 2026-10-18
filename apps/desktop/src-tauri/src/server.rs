@@ -375,16 +375,16 @@ async fn worker(s: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Received>, mut o
             reply_us = r.reply.as_micros() as u64,
             "hook"
         );
-        // Walk only when the owner changed, PID or start time (ADR 0014).
+        // Walk only when the owner changed, PID or start time (ADR 0014). A
+        // failed lookup always goes through, so its warning is logged.
         let found = r
             .lookup
-            .filter(|l| l.process != s.sessions.process(&head.session_id))
+            .filter(|l| l.process.is_none() || l.process != s.sessions.process(&head.session_id))
             .and_then(|l| resolve(&s, &head.session_id, project, l));
         s.sessions.record(&head.session_id, project, found);
         #[cfg(debug_assertions)]
         if head.hook_event_name == "PermissionRequest" {
-            let tool = head.tool_name.as_deref().unwrap_or("a tool");
-            crate::toast::permission_request(&head.session_id, project, tool);
+            crate::toast::permission_request(&head.session_id, project, head.tool_name.as_deref());
         }
         let mut stats = s.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.last_event_at = Some(SystemTime::now());
@@ -808,8 +808,7 @@ mod tests {
         let mut settle = || {
             markers += 1;
             let body = format!(r#"{{"session_id":"m{markers}","hook_event_name":"Stop"}}"#);
-            let sim = "X-Knock-Sim: 1
-";
+            let sim = "X-Knock-Sim: 1\r\n";
             request_with(
                 addr,
                 "POST",
@@ -851,11 +850,7 @@ mod tests {
         assert_eq!(p, p2);
         assert_eq!(owner.as_deref(), Some("WindowsTerminal.exe"));
         // Sim prompts skip all of it.
-        send(
-            "UserPromptSubmit",
-            "X-Knock-Sim: 1
-",
-        );
+        send("UserPromptSubmit", "X-Knock-Sim: 1\r\n");
         settle();
         assert_eq!((lookups(), walks().len()), (4, 3));
         assert_eq!(sessions.process("a"), Some(p2));

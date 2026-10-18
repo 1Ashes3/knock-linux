@@ -16,6 +16,35 @@ Open questions for the user:
 
 ---
 
+## 2026-10-18: Phase 0 (V-12 toast spike)
+Done:
+- Branch `phase-0/v12-toast`:
+  - ADR 0014 is implemented: the owner is looked up on every prompt and re-walked only when it changed.
+  - A debug-only toast is shown for each PermissionRequest, and clicking it jumps to the session (a94132d).
+- The fresh review is done. The lead fixed its 3 findings as small integration fixes:
+  - A failed first lookup is logged again.
+  - Toasts use the question text for AskUserQuestion.
+  - Test header strings now end in CRLF.
+- User manual test passed:
+  - A click on the on-screen toast brought the console to the front (SetForegroundWindow).
+  - Clicks in Win+N do nothing.
+  - Do Not Disturb holds back the pop-up, and the notification stays listed.
+  - The dev build shows as "Windows PowerShell".
+- ADR 0015 (V-12) approved by the user on 2026-10-18. SPEC.md §9.7 updated.
+- **All 13 VERIFY items are now answered in approved ADRs:** 0001, 0002, 0005-0007, 0009, 0010, 0012, 0013, 0015.
+Next:
+- Fixtures: record 10+ of the user's real sessions, then sanitize them per §8.8 and ADR 0008.
+- Remove the Phase 0 recorder and the raw recordings.
+- Gate G0 decision (user).
+Dependencies added: tauri-plugin-notification 2.7.0 (named in §13.2; it brings in notify-rust 4.18.2 and tauri-winrt-notification 0.8.1).
+Clarifications (lead):
+- §10.2 doesn't cover a permission request with no tool name. The body is then "Claude Code is asking for permission." The question tool uses §10.2's question text (ADR 0010).
+- Phase 2: check that the NSIS installer's Start menu shortcut carries the app identity, so toasts show "Knock" (ADR 0015).
+Open questions for the user:
+- none
+
+---
+
 ## 2026-10-18: Phase 0 (Spike C)
 Done:
 - Spike C (branch `phase-0/spike-c`, dd87727 to 5fc4624):
