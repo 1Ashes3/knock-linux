@@ -65,14 +65,43 @@ fn keep(s: Option<&str>, ok: fn(&str) -> bool) -> String {
     s.filter(|s| safe(s, ok)).unwrap_or("other").to_string()
 }
 
-/// Last `cwd` segment; `home` for a folder directly under `Users` (that
-/// segment is a Windows user name); `project` when the segment isn't safe.
-fn project_name(cwd: &str) -> &str {
-    let mut parts = cwd.rsplit(['\\', '/']).filter(|x| !x.is_empty());
-    match (parts.next(), parts.next()) {
-        (_, Some(parent)) if parent.eq_ignore_ascii_case("users") => "home",
-        (Some(last), _) if safe(last, is_project) => last,
-        _ => "project",
+/// `cwd` parts with `.` dropped and `..` applied.
+fn parts(cwd: &str) -> Vec<&str> {
+    let mut v = Vec::new();
+    for p in cwd.split(['\\', '/']) {
+        match p {
+            "" | "." => {}
+            ".." => {
+                v.pop();
+            }
+            _ => v.push(p),
+        }
+    }
+    v
+}
+
+/// `%USERNAME%` and the last part of `%USERPROFILE%`, read once per run.
+fn env_users() -> Vec<String> {
+    ["USERNAME", "USERPROFILE"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .filter_map(|v| parts(&v).last().map(|s| s.to_string()))
+        .collect()
+}
+
+/// Last `cwd` part; `home` for a user's home folder (directly under `Users`,
+/// or named like a `users` entry); `project` when the part isn't safe.
+fn project_name<'a>(cwd: &'a str, users: &[String]) -> &'a str {
+    let p = parts(cwd);
+    let last = p.last().copied().unwrap_or("");
+    let parent = p.len().checked_sub(2).map_or("", |i| p[i]);
+    let lower = last.to_lowercase();
+    if parent.eq_ignore_ascii_case("users") || users.iter().any(|u| u.to_lowercase() == lower) {
+        "home"
+    } else if safe(last, is_project) {
+        last
+    } else {
+        "project"
     }
 }
 
@@ -203,7 +232,7 @@ fn fake(ids: &mut HashMap<String, String>, prefix: char, v: &Value) -> String {
 }
 
 /// One fixture from raw events (in recording order). Keeps only the allow-list.
-fn sanitize(events: &[&Raw]) -> String {
+fn sanitize(events: &[&Raw], users: &[String]) -> String {
     let t0 = events[0].t;
     let (mut sids, mut aids) = (HashMap::new(), HashMap::new());
     let mut out = String::new();
@@ -214,7 +243,10 @@ fn sanitize(events: &[&Raw]) -> String {
             let clean = match k.as_str() {
                 "session_id" => fake(&mut sids, 's', v),
                 "agent_id" => fake(&mut aids, 'a', v),
-                "cwd" => format!("{CWD_PREFIX}{}", s.map_or("project", project_name)),
+                "cwd" => format!(
+                    "{CWD_PREFIX}{}",
+                    s.map_or("project", |c| project_name(c, users))
+                ),
                 "hook_event_name" | "tool_name" => keep(s, is_name),
                 "error" | "notification_type" => keep(s, is_code),
                 _ => continue,
@@ -292,26 +324,74 @@ fn check_fixture(text: &str) -> Result<(), String> {
     prev.map(|_| ()).ok_or_else(|| "empty fixture".into())
 }
 
-/// Checks an `*.expected.json` (§8.8): JSON with no repeated key, every
-/// `sessionId` a fake id, every key and string a plain name.
+/// §8.4 names allowed in an `*.expected.json`.
+const STATES: [&str; 12] = [
+    "needs_input",
+    "failed",
+    "stalled",
+    "blocked_fixable",
+    "ready",
+    "working",
+    "waiting_agent",
+    "communicating",
+    "idle",
+    "ended_unexpectedly",
+    "paused",
+    "cancelled",
+];
+const TIERS: [&str; 4] = ["needs_you", "ready", "working", "resting"];
+const EFFECTS: [&str; 4] = ["Notify", "Escalate", "ReadyBatchAdd", "Persist"];
+const REASONS: [&str; 4] = ["needs_permission", "needs_answer", "failed", "stalled"];
+
+type Rule = (&'static str, fn(&Value) -> bool);
+const T_MS: Rule = ("tMs", Value::is_u64);
+const SID: Rule = ("sessionId", |v| v.as_str().is_some_and(|s| is_fake(s, 's')));
+
+fn one_of(v: &Value, set: &[&str]) -> bool {
+    v.as_str().is_some_and(|s| set.contains(&s))
+}
+
+/// An object with exactly the `rules` keys, each value passing its rule.
+fn exact(v: &Value, rules: &[Rule]) -> bool {
+    v.as_object().is_some_and(|o| {
+        o.len() == rules.len() && rules.iter().all(|(k, ok)| o.get(*k).is_some_and(ok))
+    })
+}
+
+/// Checks an `*.expected.json` against the exact §8.8 shape with §8.4 names:
+/// no other keys, no free strings, every `sessionId` a fake id.
 fn check_expected(text: &str) -> Result<(), String> {
-    fn walk(v: &Value) -> Result<(), String> {
-        match v {
-            Value::String(s) if !safe(s, is_name) => Err("string value is not sanitized".into()),
-            Value::Array(a) => a.iter().try_for_each(walk),
-            Value::Object(o) => o.iter().try_for_each(|(k, v)| {
-                if !safe(k, is_name) {
-                    return Err("key is not sanitized".into());
-                }
-                if k == "sessionId" && !v.as_str().is_some_and(|s| is_fake(s, 's')) {
-                    return Err("`sessionId` is not a fake id".into());
-                }
-                walk(v)
-            }),
-            _ => Ok(()),
+    let v = parse_strict(text)?;
+    let top = || "top level must be exactly timeline and effects arrays".to_string();
+    let o = v.as_object().filter(|o| o.len() == 2).ok_or_else(top)?;
+    let list = |k: &str| o.get(k).and_then(Value::as_array).ok_or_else(top);
+    let (timeline, effects) = (list("timeline")?, list("effects")?);
+    let entry: [Rule; 4] = [
+        T_MS,
+        SID,
+        ("state", |v| one_of(v, &STATES)),
+        ("tier", |v| one_of(v, &TIERS)),
+    ];
+    for (i, e) in timeline.iter().enumerate() {
+        if !exact(e, &entry) {
+            return Err(format!(
+                "timeline entry {}: not tMs, sessionId, state, tier",
+                i + 1
+            ));
         }
     }
-    walk(&parse_strict(text)?)
+    for (i, e) in effects.iter().enumerate() {
+        let mut rules: Vec<Rule> = vec![T_MS, ("type", |v| one_of(v, &EFFECTS))];
+        match e.get("type").and_then(Value::as_str) {
+            Some("Notify") => rules.extend([SID, ("reason", |v| one_of(v, &REASONS))]),
+            Some("Persist") if e.get("sessionId").is_none() => {}
+            _ => rules.push(SID),
+        }
+        if !exact(e, &rules) {
+            return Err(format!("effect {}: not a §8.4 effect", i + 1));
+        }
+    }
+    Ok(())
 }
 
 /// `knock fixtures check <dir>`: every file under `dir`, recursively, must be a
@@ -344,7 +424,11 @@ pub fn check(dir: &Path) -> Result<usize, String> {
 
 /// Pure core of the command: `names` has one entry per session segment, in
 /// first-event order; `-` discards a segment, a repeated name merges segments.
-fn sanitize_recording(text: &str, names: &[&str]) -> Result<Vec<(String, String)>, String> {
+fn sanitize_recording(
+    text: &str,
+    names: &[&str],
+    users: &[String],
+) -> Result<Vec<(String, String)>, String> {
     let raw = text
         .lines()
         .enumerate()
@@ -376,7 +460,7 @@ fn sanitize_recording(text: &str, names: &[&str]) -> Result<Vec<(String, String)
         .into_iter()
         .map(|(name, mut idx)| {
             idx.sort_unstable();
-            let text = sanitize(&idx.iter().map(|&i| &raw[i]).collect::<Vec<_>>());
+            let text = sanitize(&idx.iter().map(|&i| &raw[i]).collect::<Vec<_>>(), users);
             check_fixture(&text).map_err(|e| format!("{name}: {e}"))?;
             Ok((name.to_string(), text))
         })
@@ -393,7 +477,7 @@ pub fn run(recording: &Path, out_dir: &Path, map: &Path) -> Result<(), String> {
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .collect();
-    for (name, body) in sanitize_recording(&text, &names)? {
+    for (name, body) in sanitize_recording(&text, &names, &env_users())? {
         fs::write(out_dir.join(format!("{name}.jsonl")), &body)
             .map_err(|e| format!("cannot write {name}.jsonl: {}", e.kind()))?;
         println!("{name}.jsonl: {} lines", body.lines().count());
@@ -425,7 +509,7 @@ mod tests {
 
     #[test]
     fn drops_free_text_and_paths() {
-        let out = sanitize_recording(RAW, &["mixed", "mixed", "continued"]).unwrap();
+        let out = sanitize_recording(RAW, &["mixed", "mixed", "continued"], &[]).unwrap();
         assert_eq!(out.len(), 2);
         for (_, body) in &out {
             for bad in [
@@ -474,14 +558,14 @@ mod tests {
 
     #[test]
     fn discard_and_errors_never_echo_content() {
-        let out = sanitize_recording(RAW, &["-", "two", "-"]).unwrap();
+        let out = sanitize_recording(RAW, &["-", "two", "-"], &[]).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(lines(&out[0].1).len(), 1);
-        let e = sanitize_recording(RAW, &["one"]).unwrap_err();
+        let e = sanitize_recording(RAW, &["one"], &[]).unwrap_err();
         assert_eq!(e, "recording has 3 sessions, map has 1 names");
-        let e = sanitize_recording("{\"tMs\":1,\"payload\":\"SECRET\"}", &["x"]).unwrap_err();
+        let e = sanitize_recording("{\"tMs\":1,\"payload\":\"SECRET\"}", &["x"], &[]).unwrap_err();
         assert!(!e.contains("SECRET"));
-        assert!(sanitize_recording(RAW, &["../x", "a", "b"]).is_err());
+        assert!(sanitize_recording(RAW, &["../x", "a", "b"], &[]).is_err());
     }
 
     #[test]
@@ -539,7 +623,7 @@ mod tests {
 {"tMs":7,"hook":"Stop","payload":{"session_id":"x","cwd":"\\\\server\\USERS\\alice","hook_event_name":"Stop"}}
 {"tMs":8,"hook":"Stop","payload":{"session_id":"x","cwd":"C:\\Users\\alice\\code\\demo","hook_event_name":"Stop"}}
 {"tMs":9,"hook":"Stop","payload":{"session_id":"x","cwd":"C:\\Users","hook_event_name":"Stop"}}"#;
-        let out = sanitize_recording(raw, &["p"]).unwrap();
+        let out = sanitize_recording(raw, &["p"], &[]).unwrap();
         assert!(!out[0].1.contains("alice"));
         let l = lines(&out[0].1);
         let cwd: Vec<_> = l.iter().map(|x| x["payload"]["cwd"].clone()).collect();
@@ -556,21 +640,80 @@ mod tests {
         );
         assert_eq!(l[0]["payload"]["tool_name"], "other");
         assert_eq!(l[1]["payload"]["error"], "other");
-        assert_eq!(project_name(r"C:\Users\alice"), "home");
+        assert_eq!(project_name(r"C:\Users\alice", &[]), "home");
+    }
+
+    #[test]
+    fn home_folder_is_home_by_user_name_or_place() {
+        let alice = ["alice".to_string()];
+        for (cwd, users, want) in [
+            (r"D:\Profiles\alice", &alice[..], "home"),
+            (r"D:\Profiles\ALICE\", &alice[..], "home"),
+            ("/home/alice", &alice[..], "home"),
+            (r"C:\Users\.\alice", &[], "home"),
+            (r"C:\Users\alice\..\bob", &[], "home"),
+            (r"C:\Users\alice\code\demo", &alice[..], "demo"),
+            (r"C:\Users\alice\code\.", &[], "code"),
+            (r"D:\Profiles\alice", &[], "alice"),
+        ] {
+            assert_eq!(project_name(cwd, users), want, "{cwd}");
+        }
     }
 
     #[test]
     fn errors_name_the_real_file_line() {
         let raw = "\n\n{\"tMs\":1,\"hook\":\"Stop\",\"payload\":{\"session_id\":\"x\"}}\n\n{\"tMs\":2,\"hook\":\"Stop\",\"payload\":{}}";
-        let e = sanitize_recording(raw, &["x"]).unwrap_err();
+        let e = sanitize_recording(raw, &["x"], &[]).unwrap_err();
         assert_eq!(e, "recording line 5: no session_id");
     }
 
-    const OK_EXPECTED: &str = r#"{"timeline":[{"tMs":0,"sessionId":"s1","state":"needs_you","tier":"needs_you"}],"effects":[{"tMs":0,"type":"Notify","sessionId":"s1","reason":"needs_permission"}]}"#;
+    const OK_EXPECTED: &str = r#"{"timeline":[{"tMs":0,"sessionId":"s1","state":"needs_input","tier":"needs_you"},{"tMs":9,"sessionId":"s2","state":"ended_unexpectedly","tier":"resting"}],"effects":[{"tMs":0,"type":"Notify","sessionId":"s1","reason":"needs_permission"},{"tMs":5,"type":"Escalate","sessionId":"s1"},{"tMs":6,"type":"ReadyBatchAdd","sessionId":"s2"},{"tMs":7,"type":"Persist"},{"tMs":8,"type":"Persist","sessionId":"s2"}]}"#;
 
     #[test]
     fn check_expected_rejects_unsanitized_files() {
         check_expected(OK_EXPECTED).unwrap();
+        check_expected(r#"{"effects":[],"timeline":[]}"#).unwrap();
+        let tl = |e: &str| format!(r#"{{"timeline":[{e}],"effects":[]}}"#);
+        let fx = |e: &str| format!(r#"{{"timeline":[],"effects":[{e}]}}"#);
+        let uuid = "0b1f6c2e-3d4a-4b5c-8d9e-112233445566";
+        for bad in [
+            // The reviewer's example: an extra real-id key and a UUID as state.
+            tl(&format!(
+                r#"{{"tMs":0,"sessionId":"s1","session_id":"{uuid}","state":"{uuid}","tier":"working"}}"#
+            )),
+            tl(&format!(
+                r#"{{"tMs":0,"sessionId":"s1","session_id":"{uuid}","state":"working","tier":"working"}}"#
+            )),
+            tl(&format!(
+                r#"{{"tMs":0,"sessionId":"s1","state":"{uuid}","tier":"working"}}"#
+            )),
+            tl(
+                r#"{"tMs":0,"sessionId":"s1","state":"working","tier":"working","message":"send-the-key-to-bob"}"#,
+            ),
+            fx(
+                r#"{"tMs":0,"type":"Notify","sessionId":"s1","reason":"stalled","message":"send-the-key-to-bob"}"#,
+            ),
+            r#"{"timeline":[],"effects":[],"message":"send-the-key-to-bob"}"#.into(),
+            r#"{"timeline":[]}"#.into(),
+            r#"{"timeline":{},"effects":[]}"#.into(),
+            tl(r#"{"tMs":-1,"sessionId":"s1","state":"working","tier":"working"}"#),
+            tl(r#"{"tMs":1.5,"sessionId":"s1","state":"working","tier":"working"}"#),
+            tl(r#"{"tMs":0,"sessionId":"a1","state":"working","tier":"working"}"#),
+            tl(r#"{"tMs":0,"state":"working","tier":"working"}"#),
+            tl(r#"{"tMs":0,"sessionId":"s1","state":"working","tier":"Working"}"#),
+            tl(r#"{"tMs":0,"sessionId":"s1","state":"needs_you","tier":"needs_you"}"#),
+            tl("1"),
+            fx(r#"{"tMs":0,"type":"Notify","sessionId":"s1"}"#),
+            fx(r#"{"tMs":0,"type":"Notify","sessionId":"s1","reason":"other"}"#),
+            fx(r#"{"tMs":0,"type":"Escalate","sessionId":"s1","reason":"stalled"}"#),
+            fx(r#"{"tMs":0,"type":"Escalate"}"#),
+            fx(r#"{"tMs":0,"type":"ReadyBatchAdd"}"#),
+            fx(r#"{"tMs":0,"type":"Toast","sessionId":"s1"}"#),
+            fx(r#"{"tMs":0,"type":"Persist","sessionId":"real-id"}"#),
+            fx(r#"{"type":"Persist"}"#),
+        ] {
+            assert!(check_expected(&bad).is_err(), "accepted {bad}");
+        }
         for bad in [
             "not json",
             r#"{"timeline":[{"sessionId":"0b1f-real"}]}"#,

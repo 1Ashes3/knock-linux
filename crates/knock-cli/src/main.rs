@@ -11,9 +11,13 @@ fn main() -> ExitCode {
         ["fixtures", "sanitize", rec, out, "--map", map] => {
             fixtures::run(rec.as_ref(), out.as_ref(), map.as_ref())
         }
-        ["fixtures", "check", dir] => {
-            fixtures::check(dir.as_ref()).map(|n| println!("{n} files checked, all sanitized"))
-        }
+        ["fixtures", "check", dir] => fixtures::check(dir.as_ref()).and_then(|n| match n {
+            0 => Err("no fixture files found, 0 checked".into()),
+            n => {
+                println!("{n} files checked, all sanitized");
+                Ok(())
+            }
+        }),
         _ => {
             eprintln!(
                 "usage: knock <sim <scenario> | replay <fixture> | doctor \
