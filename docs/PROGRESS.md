@@ -24,7 +24,8 @@ Done:
 - ADR 0016, approved by the user on 2026-10-25: clicking a Needs-you character marks it seen, with no knock and no escalation. Reason: deny and Esc send no hook. SPEC.md §8.4, §8.5 and §10.1 were updated to match.
 Next:
 - Review the follow-up.
-- With the user's OK, delete the raw recordings (`%LOCALAPPDATA%\Knock\phase0-rec` and `%LOCALAPPDATA%\Knock\fixtures-rec`).
+- Done 2026-10-25, with the user's OK: the lead deleted all 5 raw recording files (`phase0-rec`, `fixtures-rec`) and confirmed no `*.jsonl` remains under `%LOCALAPPDATA%\Knock`, `%APPDATA%\Knock` or the scratchpad. The recorder code was removed in ddd6b89. The ADR 0008 G0 item is closed.
+- Fresh review of ddd6b89 (pending).
 - Gate G0 decision.
 Dependencies added: none new. knock-cli now uses serde_json and serde, both already approved.
 Clarifications (lead):
@@ -36,7 +37,7 @@ Clarifications (lead):
   - An automatic `UserPromptSubmit` can follow a subagent's result.
   - Window close and `/exit` both send `SessionEnd`, with reason `other` and `prompt_input_exit`.
 Open questions for the user:
-- OK to delete the raw recordings?
+- none
 
 ---
 
