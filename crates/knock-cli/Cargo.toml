@@ -10,4 +10,5 @@ name = "knock"
 path = "src/main.rs"
 
 [dependencies]
+serde = "1.0.229"
 serde_json = "1.0.154"

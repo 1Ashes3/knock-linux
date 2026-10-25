@@ -26,7 +26,7 @@ Next:
 - Review the follow-up.
 - With the user's OK, delete the raw recordings (`%LOCALAPPDATA%\Knock\phase0-rec` and `%LOCALAPPDATA%\Knock\fixtures-rec`).
 - Gate G0 decision.
-Dependencies added: none (knock-cli uses serde_json, already approved).
+Dependencies added: none new. knock-cli now uses serde_json and serde, both already approved.
 Clarifications (lead):
 - A fixture `cwd` directly under `\Users\` gets the project `home`, so no username can get into a fixture.
 - `.expected.json` files come in Phase 1, together with the engine.

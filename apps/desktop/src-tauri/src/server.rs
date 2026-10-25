@@ -127,16 +127,14 @@ pub fn start(platform: Arc<dyn Platform>, sessions: Arc<Sessions>) -> io::Result
 }
 
 /// What the server works with. Tests leave `platform` out, so no process
-/// lookups happen; the rest are debug-build knobs for Phase 0 tests.
+/// lookups happen.
 #[derive(Default)]
 pub struct Options {
     /// For process and window lookups (§9.4).
     pub platform: Option<Arc<dyn Platform>>,
     pub sessions: Arc<Sessions>,
-    /// Sleep this long before replying, to test a slow Knock (V-2).
+    /// Debug builds: sleep this long before replying, to test a slow Knock (V-2).
     pub delay: Duration,
-    #[cfg(debug_assertions)]
-    pub recorder: Option<recorder::Recorder>,
 }
 
 impl Options {
@@ -153,7 +151,6 @@ impl Options {
             }
             Self {
                 delay,
-                recorder: recorder::from_env(),
                 ..Self::default()
             }
         }
@@ -183,13 +180,11 @@ struct Stats {
 
 struct Received {
     /// Time the event was queued, after its body finished arriving. Never
-    /// decreases in queue order. Read only by the Phase 0 recorder for now.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    /// decreases in queue order. For the engine's receive time (§8.3 `ts`);
+    /// read only by tests until the engine lands.
+    #[cfg_attr(not(test), allow(dead_code))]
     at: Instant,
     reply: Duration,
-    /// Raw body, read only by the Phase 0 recorder.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
-    body: Bytes,
     head: Option<Head>,
     lookup: Option<Lookup>,
 }
@@ -214,7 +209,7 @@ pub async fn serve(listener: TcpListener, token: String, mut opts: Options) -> i
         stats: Mutex::default(),
         tx: Mutex::new(tx),
     });
-    tokio::spawn(worker(Arc::clone(&shared), rx, opts));
+    tokio::spawn(worker(Arc::clone(&shared), rx));
     let app = Router::new()
         .route("/v1/hooks/claude-code", post(hook))
         .route("/v1/health", get(health))
@@ -269,7 +264,7 @@ async fn hook(
                 .as_ref()
                 .filter(|_| !sim)
                 .and_then(|h| lookup(&s, h, peer.port()));
-            enqueue(&s, start, body, head, lookup);
+            enqueue(&s, start, head, lookup);
         }
         // Never an error status for a request with a valid token (ADR 0011).
         _ => tracing::warn!("hook dropped: body over 16 MB or unreadable"),
@@ -319,13 +314,12 @@ fn lookup(s: &Shared, head: &Head, client_port: u16) -> Option<Lookup> {
     })
 }
 
-fn enqueue(s: &Shared, start: Instant, body: Bytes, head: Option<Head>, lookup: Option<Lookup>) {
+fn enqueue(s: &Shared, start: Instant, head: Option<Head>, lookup: Option<Lookup>) {
     let tx = s.tx.lock().unwrap_or_else(|e| e.into_inner());
     let at = Instant::now();
     let _ = tx.send(Received {
         at,
         reply: at - start,
-        body,
         head,
         lookup,
     });
@@ -357,13 +351,8 @@ struct Head {
     tool_name: Option<String>,
 }
 
-#[cfg_attr(not(debug_assertions), allow(unused_mut, unused_variables))]
-async fn worker(s: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Received>, mut opts: Options) {
+async fn worker(s: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Received>) {
     while let Some(r) = rx.recv().await {
-        #[cfg(debug_assertions)]
-        if let Some(rec) = opts.recorder.as_mut() {
-            rec.append(r.at, &r.body);
-        }
         let Some(head) = r.head else {
             tracing::warn!("hook payload not understood");
             continue;
@@ -432,85 +421,6 @@ fn base64url(bytes: &[u8]) -> String {
         }
     }
     s
-}
-
-/// PHASE 0 ONLY: remove once fixtures are recorded (SPEC.md §14, §8.8).
-///
-/// Appends `{ "tMs", "hook", "payload" }` per request, with the RAW payload,
-/// which contains agent free text. Hence: debug builds only, off unless
-/// `KNOCK_RECORD_DIR` names an existing directory, and refused unless that
-/// directory is under `%LOCALAPPDATA%` (not synced by OneDrive) and outside
-/// any git repository (ADR 0008). Recordings must be sanitized before
-/// anything goes into `fixtures/`.
-#[cfg(debug_assertions)]
-pub mod recorder {
-    use std::fs::{File, OpenOptions};
-    use std::io::{self, Write};
-    use std::path::Path;
-    use std::time::{Instant, SystemTime, UNIX_EPOCH};
-
-    pub struct Recorder {
-        file: File,
-        start: Instant,
-    }
-
-    pub(super) fn from_env() -> Option<Recorder> {
-        let dir = std::env::var_os("KNOCK_RECORD_DIR")?;
-        match open(Path::new(&dir)) {
-            Ok(r) => {
-                tracing::warn!("PHASE 0 recorder is on: raw payloads are being recorded");
-                Some(r)
-            }
-            Err(e) => {
-                tracing::error!(reason = %e, "PHASE 0 recorder refused to start");
-                None
-            }
-        }
-    }
-
-    pub fn open(dir: &Path) -> io::Result<Recorder> {
-        let local = std::env::var_os("LOCALAPPDATA")
-            .ok_or_else(|| io::Error::other("LOCALAPPDATA not set"))?;
-        open_under(dir, Path::new(&local))
-    }
-
-    /// `open` with the allowed root passed in, so tests can use a temp root.
-    pub(super) fn open_under(dir: &Path, root: &Path) -> io::Result<Recorder> {
-        // Canonical on both sides, so short names, `..` and links can't slip out.
-        let dir = dir.canonicalize()?;
-        if !dir.starts_with(root.canonicalize()?) {
-            return Err(io::Error::other("directory is not under %LOCALAPPDATA%"));
-        }
-        if dir.ancestors().any(|a| a.join(".git").exists()) {
-            return Err(io::Error::other("directory is inside a git repository"));
-        }
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join(format!("knock-{secs}.jsonl")))?;
-        Ok(Recorder {
-            file,
-            start: Instant::now(),
-        })
-    }
-
-    impl Recorder {
-        pub fn append(&mut self, at: Instant, body: &[u8]) {
-            let Ok(payload) = serde_json::from_slice::<serde_json::Value>(body) else {
-                return;
-            };
-            let line = serde_json::json!({
-                "tMs": at.saturating_duration_since(self.start).as_millis() as u64,
-                "hook": payload.get("hook_event_name"),
-                "payload": payload,
-            });
-            let _ = writeln!(self.file, "{line}");
-        }
-    }
 }
 
 #[cfg(test)]
@@ -620,8 +530,6 @@ mod tests {
     }
 
     #[test]
-    // Release builds have no recorder field, so the update is a no-op there.
-    #[allow(clippy::needless_update)]
     fn event_is_kept_when_the_client_gives_up_on_a_slow_reply() {
         let addr = spawn_server_with(
             Options {
@@ -1087,7 +995,7 @@ mod tests {
                 let s = Arc::clone(&s);
                 std::thread::spawn(move || {
                     for _ in 0..500 {
-                        enqueue(&s, start, Bytes::new(), None, None);
+                        enqueue(&s, start, None, None);
                     }
                 })
             })
@@ -1103,38 +1011,5 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 8 * 500);
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    fn recorder_needs_localappdata_and_no_git_repo() {
-        let root = temp_dir("recorder-root");
-        let outside = temp_dir("recorder-outside");
-        let inside = root.join("rec");
-        let repo = root.join("repo");
-        std::fs::create_dir(&inside).unwrap();
-        std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::create_dir(repo.join("sub")).unwrap();
-
-        let err = |d: &Path| recorder::open_under(d, &root).err().map(|e| e.to_string());
-        assert!(err(&outside).unwrap().contains("LOCALAPPDATA"));
-        // `..` can't climb out of the root.
-        let climb = inside.join("..").join("..");
-        assert!(err(&climb).unwrap().contains("LOCALAPPDATA"));
-        assert!(err(&repo.join("sub")).unwrap().contains("git"));
-        assert!(err(&inside).is_none());
-
-        // Against the real %LOCALAPPDATA%: this repo is refused, a fresh
-        // folder directly under it is accepted.
-        assert!(recorder::open(Path::new(env!("CARGO_MANIFEST_DIR"))).is_err());
-        let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
-            .join(format!("knock-test-recorder-{}", std::process::id()));
-        std::fs::create_dir_all(&local).unwrap();
-        let ok = recorder::open(&local);
-        assert!(ok.is_ok());
-        drop(ok);
-        for d in [&local, &root, &outside] {
-            std::fs::remove_dir_all(d).unwrap();
-        }
     }
 }

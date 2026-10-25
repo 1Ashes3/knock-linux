@@ -7,22 +7,27 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    match args.as_slice() {
+    let result = match args.as_slice() {
         ["fixtures", "sanitize", rec, out, "--map", map] => {
-            match fixtures::run(rec.as_ref(), out.as_ref(), map.as_ref()) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    ExitCode::FAILURE
-                }
-            }
+            fixtures::run(rec.as_ref(), out.as_ref(), map.as_ref())
+        }
+        ["fixtures", "check", dir] => {
+            fixtures::check(dir.as_ref()).map(|n| println!("{n} files checked, all sanitized"))
         }
         _ => {
-            println!(
+            eprintln!(
                 "usage: knock <sim <scenario> | replay <fixture> | doctor \
-                 | fixtures sanitize <recording.jsonl> <out-dir> --map <names-file>>"
+                 | fixtures sanitize <recording.jsonl> <out-dir> --map <names-file> \
+                 | fixtures check <dir>>"
             );
-            ExitCode::SUCCESS
+            return ExitCode::from(2);
+        }
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
         }
     }
 }
