@@ -16,6 +16,30 @@ Open questions for the user:
 
 ---
 
+## 2026-10-25: Phase 0 (fixtures)
+Done:
+- The user recorded 16 sessions in the test folder, following the lead's checklist (option A), plus a deny/Esc retest.
+- `core-windows` built `knock fixtures sanitize` and a guard test that scans `fixtures/`, then wrote 15 fixtures (6fb9522). The lead sanitized 2 more (4234a4c): `deny-then-wait` and `esc-then-wait`. 17 fixtures in total, and the lead review passed.
+- The fresh review is done. Its findings (a repeated-key bypass, guard coverage, the home-folder cwd, the sanitizer and checker disagreeing, a line number, the exit code) went to `core-windows`, together with removing the Phase 0 recorder (ADR 0008).
+- ADR 0016, approved by the user on 2026-10-25: clicking a Needs-you character marks it seen, with no knock and no escalation. Reason: deny and Esc send no hook. SPEC.md §8.4, §8.5 and §10.1 were updated to match.
+Next:
+- Review the follow-up.
+- With the user's OK, delete the raw recordings (`%LOCALAPPDATA%\Knock\phase0-rec` and `%LOCALAPPDATA%\Knock\fixtures-rec`).
+- Gate G0 decision.
+Dependencies added: none (knock-cli uses serde_json, already approved).
+Clarifications (lead):
+- A fixture `cwd` directly under `\Users\` gets the project `home`, so no username can get into a fixture.
+- `.expected.json` files come in Phase 1, together with the engine.
+- Findings for Phase 1, from the fixtures:
+  - `--continue` reuses the session id after `SessionEnd`.
+  - A background subagent can raise a PermissionRequest while the session is Ready, and Knock should knock for it.
+  - An automatic `UserPromptSubmit` can follow a subagent's result.
+  - Window close and `/exit` both send `SessionEnd`, with reason `other` and `prompt_input_exit`.
+Open questions for the user:
+- OK to delete the raw recordings?
+
+---
+
 ## 2026-10-18: Phase 0 (V-12 toast spike)
 Done:
 - Branch `phase-0/v12-toast`:
