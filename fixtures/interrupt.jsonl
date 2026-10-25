@@ -1,0 +1,4 @@
+{"tMs":0,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"UserPromptSubmit","session_id":"s1"}}
+{"tMs":4689,"hook":"PreToolUse","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"PreToolUse","session_id":"s1","tool_name":"PowerShell"}}
+{"tMs":5032,"hook":"PermissionRequest","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"PermissionRequest","session_id":"s1","tool_name":"PowerShell"}}
+{"tMs":27144,"hook":"SessionEnd","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"SessionEnd","session_id":"s1"}}

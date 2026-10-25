@@ -1931,6 +1931,9 @@ dependencies = [
 [[package]]
 name = "knock-cli"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "knock-core"

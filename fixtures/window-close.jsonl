@@ -1,0 +1,3 @@
+{"tMs":0,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"UserPromptSubmit","session_id":"s1"}}
+{"tMs":2474,"hook":"Stop","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"Stop","session_id":"s1"}}
+{"tMs":12598,"hook":"SessionEnd","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"SessionEnd","session_id":"s1"}}

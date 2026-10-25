@@ -1,0 +1,4 @@
+{"tMs":0,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"UserPromptSubmit","session_id":"s1"}}
+{"tMs":3205,"hook":"Stop","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"Stop","session_id":"s1"}}
+{"tMs":63233,"hook":"Notification","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"Notification","notification_type":"idle_prompt","session_id":"s1"}}
+{"tMs":131729,"hook":"SessionEnd","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"SessionEnd","session_id":"s1"}}

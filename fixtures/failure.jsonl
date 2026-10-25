@@ -1,0 +1,3 @@
+{"tMs":0,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"UserPromptSubmit","session_id":"s1"}}
+{"tMs":1398,"hook":"StopFailure","payload":{"cwd":"C:\\fixture\\phase0-project","error":"model_not_found","hook_event_name":"StopFailure","session_id":"s1"}}
+{"tMs":13515,"hook":"SessionEnd","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"SessionEnd","session_id":"s1"}}

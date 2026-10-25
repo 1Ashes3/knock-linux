@@ -1,0 +1,14 @@
+{"tMs":0,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"UserPromptSubmit","session_id":"s1"}}
+{"tMs":5559,"hook":"PreToolUse","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Agent"}}
+{"tMs":5583,"hook":"PostToolUse","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Agent"}}
+{"tMs":5629,"hook":"SubagentStart","payload":{"agent_id":"a1","cwd":"C:\\fixture\\phase0-project","hook_event_name":"SubagentStart","session_id":"s1"}}
+{"tMs":9264,"hook":"Stop","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"Stop","session_id":"s1"}}
+{"tMs":10954,"hook":"PreToolUse","payload":{"agent_id":"a1","cwd":"C:\\fixture\\phase0-project","hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash"}}
+{"tMs":10974,"hook":"PermissionRequest","payload":{"agent_id":"a1","cwd":"C:\\fixture\\phase0-project","hook_event_name":"PermissionRequest","session_id":"s1","tool_name":"Bash"}}
+{"tMs":11346,"hook":"SubagentStop","payload":{"agent_id":"a2","cwd":"C:\\fixture\\phase0-project","hook_event_name":"SubagentStop","session_id":"s1"}}
+{"tMs":13727,"hook":"PostToolUse","payload":{"agent_id":"a1","cwd":"C:\\fixture\\phase0-project","hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Bash"}}
+{"tMs":16957,"hook":"SubagentStop","payload":{"agent_id":"a1","cwd":"C:\\fixture\\phase0-project","hook_event_name":"SubagentStop","session_id":"s1"}}
+{"tMs":17016,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"UserPromptSubmit","session_id":"s1"}}
+{"tMs":19736,"hook":"Stop","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"Stop","session_id":"s1"}}
+{"tMs":22748,"hook":"SubagentStop","payload":{"agent_id":"a3","cwd":"C:\\fixture\\phase0-project","hook_event_name":"SubagentStop","session_id":"s1"}}
+{"tMs":24690,"hook":"SessionEnd","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"SessionEnd","session_id":"s1"}}

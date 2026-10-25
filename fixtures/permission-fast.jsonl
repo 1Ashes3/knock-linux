@@ -1,0 +1,6 @@
+{"tMs":0,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"UserPromptSubmit","session_id":"s1"}}
+{"tMs":6690,"hook":"PreToolUse","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Write"}}
+{"tMs":6718,"hook":"PermissionRequest","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"PermissionRequest","session_id":"s1","tool_name":"Write"}}
+{"tMs":9135,"hook":"PostToolUse","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Write"}}
+{"tMs":16659,"hook":"Stop","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"Stop","session_id":"s1"}}
+{"tMs":21081,"hook":"SessionEnd","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"SessionEnd","session_id":"s1"}}

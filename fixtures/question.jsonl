@@ -1,0 +1,8 @@
+{"tMs":0,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"UserPromptSubmit","session_id":"s1"}}
+{"tMs":4945,"hook":"PreToolUse","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"PreToolUse","session_id":"s1","tool_name":"AskUserQuestion"}}
+{"tMs":4965,"hook":"PermissionRequest","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"PermissionRequest","session_id":"s1","tool_name":"AskUserQuestion"}}
+{"tMs":11009,"hook":"Notification","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"s1"}}
+{"tMs":15631,"hook":"PostToolUse","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"PostToolUse","session_id":"s1","tool_name":"AskUserQuestion"}}
+{"tMs":19200,"hook":"Stop","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"Stop","session_id":"s1"}}
+{"tMs":21780,"hook":"SubagentStop","payload":{"agent_id":"a1","cwd":"C:\\fixture\\phase0-project","hook_event_name":"SubagentStop","session_id":"s1"}}
+{"tMs":26688,"hook":"SessionEnd","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"SessionEnd","session_id":"s1"}}

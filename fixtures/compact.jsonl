@@ -1,0 +1,5 @@
+{"tMs":0,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"UserPromptSubmit","session_id":"s1"}}
+{"tMs":4163,"hook":"Stop","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"Stop","session_id":"s1"}}
+{"tMs":8095,"hook":"PreCompact","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"PreCompact","session_id":"s1"}}
+{"tMs":17588,"hook":"SubagentStop","payload":{"agent_id":"a1","cwd":"C:\\fixture\\phase0-project","hook_event_name":"SubagentStop","session_id":"s1"}}
+{"tMs":20280,"hook":"SessionEnd","payload":{"cwd":"C:\\fixture\\phase0-project","hook_event_name":"SessionEnd","session_id":"s1"}}
