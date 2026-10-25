@@ -302,7 +302,8 @@ The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_e
 | `working`, `stalled`           | `turn.completed`                                              | `ready`                                  | `ReadyBatchAdd`                  |
 | `ready`                        | `turn.idle`                                                   | `ready`                                  | None                             |
 | `working`                      | Tick: no events for `stallMinutes`                            | `stalled`                                | `Notify` only if `notifyOnStall` |
-| `needs_input`                  | Tick: episode open for `escalationMinutes`, not yet escalated | `needs_input`                            | `Escalate` (once per episode)    |
+| `needs_input`                  | Tick: episode open for `escalationMinutes`, not yet escalated, not seen | `needs_input`                  | `Escalate` (once per episode)    |
+| `needs_input`                  | `user.ack`                                                    | `needs_input` (episode marked seen, ADR 0016) | None; no `Escalate` for this episode |
 | any                            | `agent.failed`                                                | `failed`                                 | `Notify`                         |
 | any except `failed`            | Process gone without `session.ended`                          | `ended_unexpectedly`                     | None; fades after 60 s           |
 | `ready`                        | `user.ack`                                                    | `idle`                                   | —                                |
@@ -332,7 +333,7 @@ The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_e
 
 1. Every session has exactly one state and one tier.
 2. A `needs_input` session always has a `needs.kind`.
-3. At most one `Notify` and at most one `Escalate` per episode.
+3. At most one `Notify` and at most one `Escalate` per episode, and no `Escalate` once the episode is seen (ADR 0016).
 4. No `Notify` is ever emitted for `ready`.
 5. Replaying the same inputs always gives the same outputs.
 
@@ -356,7 +357,7 @@ The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_e
   "state": "needs_input",
   "since": "timestamp",
   "activity": "run",
-  "needs": { "kind": "permission", "label": "PowerShell" },
+  "needs": { "kind": "permission", "label": "PowerShell", "seen": false },
   "precision": "app_window",
   "animal": "fox",
   "simulated": false
@@ -544,6 +545,7 @@ Windows limits which apps may bring another window to the front.
 | -------------------------- | ------------------------------ | -------------------------- | ---------------------------------- |
 | `needs_input` (permission) | `step_up` then `knock`         | "Needs permission: <tool>" | Notification once, escalation once |
 | `needs_input` (question)   | `step_up` then `knock`         | "Has a question"           | Same                               |
+| `needs_input` (seen, ADR 0016) | Calm pose, no knock        | "Waiting for you"          | None                               |
 | `failed`                   | `alert` plus red marker        | "Stopped with an error"    | Notification                       |
 | `stalled`                  | `pace`                         | "No progress for <n> min"  | Only if enabled                    |
 | `ready`                    | `present` then `rest`          | "Done, ready to review"    | Never                              |
