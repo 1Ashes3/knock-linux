@@ -25,7 +25,11 @@ Done:
 Next:
 - Review the follow-up.
 - Done 2026-10-25, with the user's OK: the lead deleted all 5 raw recording files (`phase0-rec`, `fixtures-rec`) and confirmed no `*.jsonl` remains under `%LOCALAPPDATA%\Knock`, `%APPDATA%\Knock` or the scratchpad. The recorder code was removed in ddd6b89. The ADR 0008 G0 item is closed.
-- Fresh review of ddd6b89 (pending).
+- Fresh review of ddd6b89 is done. Its findings were fixed in 3625935:
+  - `.expected.json` files must match the exact §8.8 shape.
+  - A cwd named like the user's name gives `home`, in fixtures and in the app.
+  - An empty fixture folder fails `fixtures check`.
+- Phase 0 work is complete. Gate G0 is waiting on the user's decision.
 - Gate G0 decision.
 Dependencies added: none new. knock-cli now uses serde_json and serde, both already approved.
 Clarifications (lead):
