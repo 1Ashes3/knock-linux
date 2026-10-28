@@ -1,6 +1,6 @@
 # 0018: Filling gaps in the §8.4 transitions
 
-- **Status:** Proposed
+- **Status:** Approved by user on 2026-10-29
 - **Date:** 2026-10-29
 - **Spec sections:** §8.4
 - **VERIFY item:** none

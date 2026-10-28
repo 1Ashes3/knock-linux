@@ -292,9 +292,12 @@ The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_e
 | From                           | Input                                                         | To                                       | Effects                          |
 | ------------------------------ | ------------------------------------------------------------- | ---------------------------------------- | -------------------------------- |
 | (none)                         | `session.started` or any first event                          | `idle` (or the state that event implies) | Assign animal; record process    |
-| `idle`, `ready`                | `turn.started`                                                | `working`                                | —                                |
+| `idle`, `ready`, `stalled`, `failed` | `turn.started`                                          | `working`                                | — (ADR 0018)                     |
+| `failed`                       | `activity`                                                    | `working`                                | — (ADR 0018)                     |
 | `working`, `stalled`           | `activity`                                                    | `working`                                | Reset stall timer                |
-| `working`, `idle`, `ready`     | `needs.permission`, `needs.answer`                            | `needs_input`                            | New episode; `Notify`            |
+| `working`, `idle`, `ready`, `stalled`, `failed` | `needs.permission`, `needs.answer`               | `needs_input`                            | New episode; `Notify` (ADR 0018) |
+| `needs_input` (seen)           | A new request (`PermissionRequest` or question), not the deduplicated notification | `needs_input`  | New unseen episode; `Notify` (ADR 0018) |
+| `ended_unexpectedly`           | Any agent event                                               | The state that event implies, as a first event | As for a first event (ADR 0018) |
 | `needs_input`                  | `needs.permission`, `needs.answer`                            | `needs_input`                            | None (same episode)              |
 | `idle`, `ready`                | `activity`                                                    | unchanged                                | None (ADR 0010)                  |
 | `needs_input`                  | `activity` from the same agent (ADR 0010), `turn.started`     | `working`                                | Close episode                    |
@@ -314,7 +317,8 @@ The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_e
 
 - The app sends `Tick(now)` once per second. The engine never reads the clock itself.
 - Defaults: `stallMinutes` 10, `escalationMinutes` 5.
-- A session with no events and no live process for 6 hours is removed.
+- A session with no events and no live process for 6 hours is removed. A session whose process was never found counts as having no live process (ADR 0018).
+- Any (state, input) pair not listed above leaves the session unchanged (ADR 0018).
 
 **Deduplication:** a `PermissionRequest` and a `permission_prompt` notification for the same session within 10 s are one episode, with one `Notify`, even if the episode closed in between (ADR 0010). An episode's `needs.kind` is set by the event that opened it.
 
@@ -327,7 +331,7 @@ The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_e
 | `ReadyBatchAdd` | `sessionId`                                                                      |
 | `Persist`       | —                                                                                |
 
-**Suppression:** `Notify` and `Escalate` MUST be suppressed while `pauseNotifications` is on or during quiet hours. The animation still plays.
+**Suppression:** `Notify` and `Escalate` MUST be suppressed while `pauseNotifications` is on or during quiet hours. The animation still plays. Suppressed effects are dropped, not sent later (ADR 0018).
 
 **Invariants** (MUST be covered by property tests):
 
@@ -453,6 +457,8 @@ Stored in `%APPDATA%\Knock\settings.json`:
 **v1 animals:** four, chosen during Phase 3.
 
 **Shared UI elements:** the "z", the red failure marker, text chips and badges are drawn by the UI, not by each animal.
+
+**Format details** (field names, units, easing, rig-pose visibility, chaining): `art/README.md` (ADR 0017).
 
 **Validation:** `pnpm art:check` MUST verify every animal has every required part and pivot and every clip references valid parts.
 
