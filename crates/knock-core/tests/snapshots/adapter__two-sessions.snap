@@ -1,0 +1,191 @@
+---
+source: crates/knock-core/tests/adapter.rs
+expression: events
+---
+[
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.started",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:11.120Z",
+      "v": 1
+    },
+    "hook": "UserPromptSubmit",
+    "tMs": 0
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "category": "edit",
+        "tool": "Write"
+      },
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:15.706Z",
+      "v": 1
+    },
+    "hook": "PreToolUse",
+    "tMs": 4586
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "tool": "Write"
+      },
+      "kind": "needs.permission",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:15.729Z",
+      "v": 1
+    },
+    "hook": "PermissionRequest",
+    "tMs": 4609
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.started",
+      "sessionId": "s2",
+      "ts": "2026-10-16T14:02:21.151Z",
+      "v": 1
+    },
+    "hook": "UserPromptSubmit",
+    "tMs": 10031
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "needs.permission",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:21.746Z",
+      "v": 1
+    },
+    "hook": "Notification",
+    "tMs": 10626
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.completed",
+      "sessionId": "s2",
+      "ts": "2026-10-16T14:02:23.516Z",
+      "v": 1
+    },
+    "hook": "Stop",
+    "tMs": 12396
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "category": "edit",
+        "tool": "Write"
+      },
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:26.837Z",
+      "v": 1
+    },
+    "hook": "PostToolUse",
+    "tMs": 15717
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.completed",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:29.203Z",
+      "v": 1
+    },
+    "hook": "Stop",
+    "tMs": 18083
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "agentId": "a1",
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:31.895Z",
+      "v": 1
+    },
+    "hook": "SubagentStop",
+    "tMs": 20775
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "session.ended",
+      "sessionId": "s2",
+      "ts": "2026-10-16T14:02:32.874Z",
+      "v": 1
+    },
+    "hook": "SessionEnd",
+    "tMs": 21754
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "session.ended",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:35.601Z",
+      "v": 1
+    },
+    "hook": "SessionEnd",
+    "tMs": 24481
+  }
+]

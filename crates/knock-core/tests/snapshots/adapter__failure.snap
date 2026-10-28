@@ -1,0 +1,56 @@
+---
+source: crates/knock-core/tests/adapter.rs
+expression: events
+---
+[
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.started",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:11.120Z",
+      "v": 1
+    },
+    "hook": "UserPromptSubmit",
+    "tMs": 0
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "reason": "model_not_found"
+      },
+      "kind": "agent.failed",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:12.518Z",
+      "v": 1
+    },
+    "hook": "StopFailure",
+    "tMs": 1398
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "session.ended",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:24.635Z",
+      "v": 1
+    },
+    "hook": "SessionEnd",
+    "tMs": 13515
+  }
+]

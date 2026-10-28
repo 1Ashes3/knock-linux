@@ -1,0 +1,24 @@
+{
+	"timeline": [
+		{ "tMs": 0, "sessionId": "s1", "state": "working", "tier": "working" },
+		{
+			"tMs": 2914,
+			"sessionId": "s1",
+			"state": "needs_input",
+			"tier": "needs_you"
+		}
+	],
+	"effects": [
+		{ "tMs": 0, "type": "Persist" },
+		{
+			"tMs": 2914,
+			"type": "Notify",
+			"sessionId": "s1",
+			"reason": "needs_permission"
+		},
+		{ "tMs": 2914, "type": "Persist" },
+		{ "tMs": 63000, "type": "Escalate", "sessionId": "s1" },
+		{ "tMs": 63000, "type": "Persist" },
+		{ "tMs": 210959, "type": "Persist" }
+	]
+}

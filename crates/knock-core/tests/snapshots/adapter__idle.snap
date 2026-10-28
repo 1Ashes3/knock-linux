@@ -1,0 +1,70 @@
+---
+source: crates/knock-core/tests/adapter.rs
+expression: events
+---
+[
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.started",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:11.120Z",
+      "v": 1
+    },
+    "hook": "UserPromptSubmit",
+    "tMs": 0
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.completed",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:14.325Z",
+      "v": 1
+    },
+    "hook": "Stop",
+    "tMs": 3205
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.idle",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:03:14.353Z",
+      "v": 1
+    },
+    "hook": "Notification",
+    "tMs": 63233
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "session.ended",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:04:22.849Z",
+      "v": 1
+    },
+    "hook": "SessionEnd",
+    "tMs": 131729
+  }
+]

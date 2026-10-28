@@ -1,0 +1,30 @@
+{
+	"timeline": [
+		{ "tMs": 0, "sessionId": "s1", "state": "working", "tier": "working" },
+		{
+			"tMs": 3926,
+			"sessionId": "s1",
+			"state": "needs_input",
+			"tier": "needs_you"
+		},
+		{ "tMs": 36982, "sessionId": "s2", "state": "working", "tier": "working" },
+		{ "tMs": 45945, "sessionId": "s2", "state": "ready", "tier": "ready" }
+	],
+	"effects": [
+		{ "tMs": 0, "type": "Persist" },
+		{
+			"tMs": 3926,
+			"type": "Notify",
+			"sessionId": "s1",
+			"reason": "needs_permission"
+		},
+		{ "tMs": 3926, "type": "Persist" },
+		{ "tMs": 36982, "type": "Persist" },
+		{ "tMs": 45945, "type": "ReadyBatchAdd", "sessionId": "s2" },
+		{ "tMs": 45945, "type": "Persist" },
+		{ "tMs": 64000, "type": "Escalate", "sessionId": "s1" },
+		{ "tMs": 64000, "type": "Persist" },
+		{ "tMs": 77122, "type": "Persist" },
+		{ "tMs": 78207, "type": "Persist" }
+	]
+}

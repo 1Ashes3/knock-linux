@@ -1,0 +1,12 @@
+{
+	"timeline": [
+		{ "tMs": 0, "sessionId": "s1", "state": "working", "tier": "working" },
+		{ "tMs": 1398, "sessionId": "s1", "state": "failed", "tier": "needs_you" }
+	],
+	"effects": [
+		{ "tMs": 0, "type": "Persist" },
+		{ "tMs": 1398, "type": "Notify", "sessionId": "s1", "reason": "failed" },
+		{ "tMs": 1398, "type": "Persist" },
+		{ "tMs": 13515, "type": "Persist" }
+	]
+}

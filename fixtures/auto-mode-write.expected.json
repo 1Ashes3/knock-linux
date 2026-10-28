@@ -1,0 +1,12 @@
+{
+	"timeline": [
+		{ "tMs": 0, "sessionId": "s1", "state": "working", "tier": "working" },
+		{ "tMs": 5738, "sessionId": "s1", "state": "ready", "tier": "ready" }
+	],
+	"effects": [
+		{ "tMs": 0, "type": "Persist" },
+		{ "tMs": 5738, "type": "ReadyBatchAdd", "sessionId": "s1" },
+		{ "tMs": 5738, "type": "Persist" },
+		{ "tMs": 109004, "type": "Persist" }
+	]
+}

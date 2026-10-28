@@ -1,0 +1,251 @@
+---
+source: crates/knock-core/tests/adapter.rs
+expression: events
+---
+[
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.started",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:11.120Z",
+      "v": 1
+    },
+    "hook": "UserPromptSubmit",
+    "tMs": 0
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "category": "other",
+        "tool": "Agent"
+      },
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:16.679Z",
+      "v": 1
+    },
+    "hook": "PreToolUse",
+    "tMs": 5559
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "category": "other",
+        "tool": "Agent"
+      },
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:16.703Z",
+      "v": 1
+    },
+    "hook": "PostToolUse",
+    "tMs": 5583
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "agentId": "a1",
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:16.749Z",
+      "v": 1
+    },
+    "hook": "SubagentStart",
+    "tMs": 5629
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.completed",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:20.384Z",
+      "v": 1
+    },
+    "hook": "Stop",
+    "tMs": 9264
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "agentId": "a1",
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "category": "run",
+        "tool": "Bash"
+      },
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:22.074Z",
+      "v": 1
+    },
+    "hook": "PreToolUse",
+    "tMs": 10954
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "agentId": "a1",
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "tool": "Bash"
+      },
+      "kind": "needs.permission",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:22.094Z",
+      "v": 1
+    },
+    "hook": "PermissionRequest",
+    "tMs": 10974
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "agentId": "a2",
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:22.466Z",
+      "v": 1
+    },
+    "hook": "SubagentStop",
+    "tMs": 11346
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "agentId": "a1",
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "category": "run",
+        "tool": "Bash"
+      },
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:24.847Z",
+      "v": 1
+    },
+    "hook": "PostToolUse",
+    "tMs": 13727
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "agentId": "a1",
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:28.077Z",
+      "v": 1
+    },
+    "hook": "SubagentStop",
+    "tMs": 16957
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.started",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:28.136Z",
+      "v": 1
+    },
+    "hook": "UserPromptSubmit",
+    "tMs": 17016
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.completed",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:30.856Z",
+      "v": 1
+    },
+    "hook": "Stop",
+    "tMs": 19736
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "agentId": "a3",
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:33.868Z",
+      "v": 1
+    },
+    "hook": "SubagentStop",
+    "tMs": 22748
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "session.ended",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:35.810Z",
+      "v": 1
+    },
+    "hook": "SessionEnd",
+    "tMs": 24690
+  }
+]

@@ -1,6 +1,7 @@
 //! Knock helper CLI (SPEC.md §7.1, §13.3).
 
 mod fixtures;
+mod replay;
 
 use std::process::ExitCode;
 
@@ -18,9 +19,30 @@ fn main() -> ExitCode {
                 Ok(())
             }
         }),
+        ["replay", target] => {
+            // A fixture file, a folder of fixtures, or a name in `fixtures/`.
+            let path = std::path::Path::new(target);
+            let named = std::path::Path::new("fixtures").join(format!("{target}.jsonl"));
+            let lines = if path.is_dir() {
+                replay::all(path)
+            } else if path.exists() {
+                replay::one(path).map(|l| vec![l])
+            } else {
+                replay::one(&named).map(|l| vec![l])
+            };
+            lines.map(|l| {
+                println!(
+                    "{}",
+                    l.join(
+                        "
+"
+                    )
+                )
+            })
+        }
         _ => {
             eprintln!(
-                "usage: knock <sim <scenario> | replay <fixture> | doctor \
+                "usage: knock <sim <scenario> | replay <fixture | dir> | doctor \
                  | fixtures sanitize <recording.jsonl> <out-dir> --map <names-file> \
                  | fixtures check <dir>>"
             );

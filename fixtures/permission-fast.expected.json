@@ -1,0 +1,40 @@
+{
+	"timeline": [
+		{ "tMs": 0, "sessionId": "s1", "state": "working", "tier": "working" },
+		{ "tMs": 5000, "sessionId": "s1", "state": "stalled", "tier": "needs_you" },
+		{ "tMs": 6690, "sessionId": "s1", "state": "working", "tier": "working" },
+		{
+			"tMs": 6718,
+			"sessionId": "s1",
+			"state": "needs_input",
+			"tier": "needs_you"
+		},
+		{ "tMs": 9135, "sessionId": "s1", "state": "working", "tier": "working" },
+		{
+			"tMs": 15000,
+			"sessionId": "s1",
+			"state": "stalled",
+			"tier": "needs_you"
+		},
+		{ "tMs": 16659, "sessionId": "s1", "state": "ready", "tier": "ready" }
+	],
+	"effects": [
+		{ "tMs": 0, "type": "Persist" },
+		{ "tMs": 5000, "type": "Notify", "sessionId": "s1", "reason": "stalled" },
+		{ "tMs": 5000, "type": "Persist" },
+		{ "tMs": 6690, "type": "Persist" },
+		{
+			"tMs": 6718,
+			"type": "Notify",
+			"sessionId": "s1",
+			"reason": "needs_permission"
+		},
+		{ "tMs": 6718, "type": "Persist" },
+		{ "tMs": 9135, "type": "Persist" },
+		{ "tMs": 15000, "type": "Notify", "sessionId": "s1", "reason": "stalled" },
+		{ "tMs": 15000, "type": "Persist" },
+		{ "tMs": 16659, "type": "ReadyBatchAdd", "sessionId": "s1" },
+		{ "tMs": 16659, "type": "Persist" },
+		{ "tMs": 21081, "type": "Persist" }
+	]
+}

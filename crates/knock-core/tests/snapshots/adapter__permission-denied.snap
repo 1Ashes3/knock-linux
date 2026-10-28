@@ -1,0 +1,75 @@
+---
+source: crates/knock-core/tests/adapter.rs
+expression: events
+---
+[
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.started",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:11.120Z",
+      "v": 1
+    },
+    "hook": "UserPromptSubmit",
+    "tMs": 0
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "category": "edit",
+        "tool": "Write"
+      },
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:14.818Z",
+      "v": 1
+    },
+    "hook": "PreToolUse",
+    "tMs": 3698
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "tool": "Write"
+      },
+      "kind": "needs.permission",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:14.853Z",
+      "v": 1
+    },
+    "hook": "PermissionRequest",
+    "tMs": 3733
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "session.ended",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:27.471Z",
+      "v": 1
+    },
+    "hook": "SessionEnd",
+    "tMs": 16351
+  }
+]

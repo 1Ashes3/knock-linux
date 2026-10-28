@@ -1,0 +1,22 @@
+{
+	"timeline": [
+		{ "tMs": 0, "sessionId": "s1", "state": "working", "tier": "working" },
+		{
+			"tMs": 3733,
+			"sessionId": "s1",
+			"state": "needs_input",
+			"tier": "needs_you"
+		}
+	],
+	"effects": [
+		{ "tMs": 0, "type": "Persist" },
+		{
+			"tMs": 3733,
+			"type": "Notify",
+			"sessionId": "s1",
+			"reason": "needs_permission"
+		},
+		{ "tMs": 3733, "type": "Persist" },
+		{ "tMs": 16351, "type": "Persist" }
+	]
+}

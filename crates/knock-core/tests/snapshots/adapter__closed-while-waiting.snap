@@ -1,0 +1,194 @@
+---
+source: crates/knock-core/tests/adapter.rs
+expression: events
+---
+[
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.started",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:11.120Z",
+      "v": 1
+    },
+    "hook": "UserPromptSubmit",
+    "tMs": 0
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "category": "edit",
+        "tool": "Write"
+      },
+      "kind": "activity",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:15.017Z",
+      "v": 1
+    },
+    "hook": "PreToolUse",
+    "tMs": 3897
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "tool": "Write"
+      },
+      "kind": "needs.permission",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:15.046Z",
+      "v": 1
+    },
+    "hook": "PermissionRequest",
+    "tMs": 3926
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "needs.permission",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:02:21.060Z",
+      "v": 1
+    },
+    "hook": "Notification",
+    "tMs": 9940
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.started",
+      "sessionId": "s2",
+      "ts": "2026-10-16T14:02:48.102Z",
+      "v": 1
+    },
+    "hook": "UserPromptSubmit",
+    "tMs": 36982
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "category": "other",
+        "tool": "ListAgents"
+      },
+      "kind": "activity",
+      "sessionId": "s2",
+      "ts": "2026-10-16T14:02:54.069Z",
+      "v": 1
+    },
+    "hook": "PreToolUse",
+    "tMs": 42949
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {
+        "category": "other",
+        "tool": "ListAgents"
+      },
+      "kind": "activity",
+      "sessionId": "s2",
+      "ts": "2026-10-16T14:02:54.091Z",
+      "v": 1
+    },
+    "hook": "PostToolUse",
+    "tMs": 42971
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "turn.completed",
+      "sessionId": "s2",
+      "ts": "2026-10-16T14:02:57.065Z",
+      "v": 1
+    },
+    "hook": "Stop",
+    "tMs": 45945
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "agentId": "a1",
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "activity",
+      "sessionId": "s2",
+      "ts": "2026-10-16T14:02:59.705Z",
+      "v": 1
+    },
+    "hook": "SubagentStop",
+    "tMs": 48585
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "session.ended",
+      "sessionId": "s1",
+      "ts": "2026-10-16T14:03:28.242Z",
+      "v": 1
+    },
+    "hook": "SessionEnd",
+    "tMs": 77122
+  },
+  {
+    "event": {
+      "agent": "claude-code",
+      "context": {
+        "cwd": "C:\\fixture\\phase0-project",
+        "project": "phase0-project"
+      },
+      "detail": {},
+      "kind": "session.ended",
+      "sessionId": "s2",
+      "ts": "2026-10-16T14:03:29.327Z",
+      "v": 1
+    },
+    "hook": "SessionEnd",
+    "tMs": 78207
+  }
+]
