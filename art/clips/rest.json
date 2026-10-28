@@ -1,0 +1,74 @@
+{
+	"name": "rest",
+	"loop": true,
+	"durationMs": 4000,
+	"tracks": {
+		"card": [
+			{
+				"t": 0,
+				"x": -15,
+				"y": -12,
+				"rot": -8
+			}
+		],
+		"paw_l": [
+			{
+				"t": 0,
+				"x": -8,
+				"y": -17
+			}
+		],
+		"head": [
+			{
+				"t": 0,
+				"rot": -4
+			}
+		],
+		"ear_l": [
+			{
+				"t": 0,
+				"rot": -4
+			}
+		],
+		"ear_r": [
+			{
+				"t": 0,
+				"rot": -4
+			}
+		],
+		"eyes_open": [
+			{
+				"t": 0,
+				"rot": -4
+			}
+		],
+		"eyes_closed": [
+			{
+				"t": 0,
+				"rot": -4
+			}
+		],
+		"body": [
+			{
+				"t": 0,
+				"scaleY": 1
+			},
+			{
+				"t": 2000,
+				"scaleY": 1.02
+			},
+			{
+				"t": 4000,
+				"scaleY": 1
+			}
+		]
+	},
+	"swaps": [
+		{
+			"from": "eyes_open",
+			"to": "eyes_closed",
+			"start": 3000,
+			"end": 3500
+		}
+	]
+}

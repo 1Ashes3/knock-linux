@@ -1,0 +1,72 @@
+{
+	"name": "knock",
+	"loop": true,
+	"durationMs": 1000,
+	"tracks": {
+		"paw_r": [
+			{
+				"t": 0,
+				"y": -16,
+				"x": 2,
+				"scaleX": 1,
+				"scaleY": 1
+			},
+			{
+				"t": 120,
+				"scaleX": 1.25,
+				"scaleY": 1.25
+			},
+			{
+				"t": 240,
+				"scaleX": 1,
+				"scaleY": 1
+			},
+			{
+				"t": 360,
+				"scaleX": 1.25,
+				"scaleY": 1.25
+			},
+			{
+				"t": 480,
+				"scaleX": 1,
+				"scaleY": 1
+			},
+			{
+				"t": 1000,
+				"y": -16,
+				"x": 2
+			}
+		],
+		"head": [
+			{
+				"t": 0,
+				"rot": 4
+			}
+		],
+		"ear_l": [
+			{
+				"t": 0,
+				"rot": 4
+			}
+		],
+		"ear_r": [
+			{
+				"t": 0,
+				"rot": 4
+			}
+		],
+		"eyes_open": [
+			{
+				"t": 0,
+				"rot": 4
+			}
+		],
+		"eyes_closed": [
+			{
+				"t": 0,
+				"rot": 4
+			}
+		]
+	},
+	"swaps": []
+}

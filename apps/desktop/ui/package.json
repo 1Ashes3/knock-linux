@@ -6,7 +6,9 @@
 		"dev": "vite",
 		"build": "vite build",
 		"typecheck": "tsc --noEmit",
-		"test": "vitest run --passWithNoTests"
+		"test": "vitest run --passWithNoTests",
+		"gallery": "vite --open /gallery/index.html",
+		"art:check": "node gallery/artCheck.ts"
 	},
 	"devDependencies": {
 		"typescript": "7.0.2",

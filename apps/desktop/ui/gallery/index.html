@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<title>Knock art gallery</title>
+		<style>
+			body {
+				margin: 0;
+				padding: 16px 24px;
+				font: 14px/1.4 "Segoe UI", system-ui, sans-serif;
+			}
+			/* Close to the Windows 11 taskbar colors; text contrast is far above WCAG AA on both. */
+			body.light {
+				background: #eeeeee;
+				color: #1b1b1b;
+			}
+			body.dark {
+				background: #1c1c1c;
+				color: #ffffff;
+			}
+			h1 {
+				font-size: 20px;
+				margin: 0 0 4px;
+			}
+			.controls {
+				display: flex;
+				gap: 24px;
+				align-items: center;
+				margin: 12px 0 20px;
+			}
+			fieldset {
+				border: 0;
+				padding: 0;
+				margin: 0;
+				display: flex;
+				gap: 12px;
+			}
+			legend {
+				float: left;
+				margin-right: 8px;
+				font-weight: 600;
+			}
+			.grid {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 16px;
+				margin-bottom: 24px;
+			}
+			figure {
+				margin: 0;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				min-width: 112px;
+			}
+			/* Parts may move outside the 64x64 box (step_up, the raised card). */
+			figure svg {
+				overflow: visible;
+			}
+			figcaption {
+				text-align: center;
+				margin-top: 8px;
+			}
+			figcaption strong {
+				display: block;
+			}
+		</style>
+	</head>
+	<body class="dark">
+		<h1>Knock art gallery</h1>
+		<p>
+			Every animal playing every clip. Switch the background to check that each
+			animal is easy to see on both light and dark taskbars. Clips that play
+			once repeat after a short pause so you can watch them again.
+		</p>
+		<div class="controls">
+			<fieldset>
+				<legend>Taskbar</legend>
+				<label><input type="radio" name="theme" value="light" /> Light</label>
+				<label><input type="radio" name="theme" value="dark" checked /> Dark</label>
+			</fieldset>
+			<label>
+				<strong>Size</strong>
+				<select id="size">
+					<option value="48">Small strip (48 px)</option>
+					<option value="64">Medium strip (64 px)</option>
+					<option value="80">Large strip (80 px)</option>
+					<option value="160" selected>Close-up (160 px)</option>
+				</select>
+			</label>
+		</div>
+		<main id="animals"></main>
+		<script type="module" src="./index.ts"></script>
+	</body>
+</html>
