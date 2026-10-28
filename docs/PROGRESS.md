@@ -16,6 +16,47 @@ Open questions for the user:
 
 ---
 
+## 2026-10-29: Phase 1 (core engine)
+Done:
+- `core-windows` built the `knock-core` engine and `knock replay` (b66c13f):
+  - the §8.3 event, and the `claude-code` adapter with the allow-list
+  - the §8.4 engine, kept pure
+  - proptest invariants and insta adapter snapshots
+  - hand-written `.expected.json` files for all 17 fixtures. All replay exactly, and the engine agreed with the hand derivation on the first run.
+- `ui` built the §8.7 format, a first fox draft, the gallery (`pnpm gallery`), the shared animated sleep "z" (the user asked for it) and `pnpm art:check` (dd1dd19). The user reviewed the fox and the z: LGTM.
+- `core-windows` applied ADR 0018 and built `knock sim` with all 7 §12.3 scenarios, live or `--local` (aea12c3). 115 Rust tests pass and every scenario has zero missed Needs-you.
+- ADRs approved by the user on 2026-10-29: 0017 (art format details) and 0018 (gaps in the §8.4 transitions). SPEC.md §8.4 and §8.7 were updated to match.
+- **The Phase 1 exit criteria are met:** all replay and property tests pass (FR-1 partial, FR-2, FR-14).
+Next:
+- Fresh review of the core (§11.3: free text is dropped at parse time).
+- Merge into `main`, then plan Phase 2.
+Dependencies added: proptest 1.12.0 and insta 1.49.0 (dev-only, §13.2). knock-core uses serde and serde_json (approved).
+Clarifications (lead):
+- The app works out whether notifications are suppressed (pause or quiet hours in local time) and passes it with each `Tick`, so the engine stays pure.
+- First-event implied states:
+  - activity gives working
+  - turn.completed gives ready, with ReadyBatchAdd
+  - needs.* gives needs_input, with Notify
+  - agent.failed gives failed, with Notify
+  - anything else gives idle
+- An episode is one stay in a Needs-you state, so needs_input followed by failed sends a new `Notify(failed)`.
+- `Persist` is emitted once per input whenever the session set, the state or the episode changed.
+- Dedup is one-way: only the `permission_prompt` Notification can be the duplicate.
+- A question's PreToolUse and PermissionRequest (about 20 ms apart) both count as requests for ADR 0018 item 1. This is accepted, because a click between them is unlikely.
+- A `permission_prompt` Notification never opens a new episode while a seen episode is open.
+- "Known process" means some event carried `context.pid`. That's the app's job in Phase 2.
+- Phase 2 items:
+  - a live way to end a sim session for the `crash` scenario (needs an ADR)
+  - `knock sim --speed` speeds only the sim's own pacing, not the app's timers; the demo may lower stallMinutes
+  - leave room above the strip for the sleep "z", which floats above the 64×64 box
+  - the Claude Code hooks docs now list a `Notification` type `agent_needs_input` (a background session waiting on input). Test whether it's a Needs-you source.
+  - set HTTP hook `onFailure: "continue"` explicitly
+  - the gallery's clip player ignores reduced motion (the z respects it)
+Open questions for the user:
+- none
+
+---
+
 ## 2026-10-28: Gate G0 passed, Phase 1 starts
 Done:
 - **Gate G0 approved by the user on 2026-10-28.**
