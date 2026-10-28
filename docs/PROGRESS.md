@@ -16,6 +16,37 @@ Open questions for the user:
 
 ---
 
+## 2026-10-28: Gate G0 passed, Phase 1 starts
+Done:
+- **Gate G0 approved by the user on 2026-10-28.**
+  - All 13 VERIFY items are answered in approved ADRs 0001-0016.
+  - Spikes A-C and the V-12 toast click work on the user's machine.
+  - There are 17 sanitized fixtures.
+  - The recorder and every raw recording are deleted.
+- With the user's OK, the lead deleted the throwaway test folder `%LOCALAPPDATA%\Knock\phase0-project`. Its project-local hook config held the token.
+- All Phase 0 branches were merged into `main` (fast-forward, local only, not pushed).
+Next:
+- Phase 1, core engine (§14):
+  - CW: `knock-core` (schema, adapter, reducer, timers), `knock replay`, `knock sim`, the engine and adapter tests, and the `.expected.json` files.
+  - UI: the rig and clip format, the first animal draft, the gallery skeleton, `art:check`.
+  - Exit criteria: all replay and property tests pass (FR-1 partial, FR-2, FR-14).
+Carried forward:
+- Phase 2:
+  - the Repair flow, and port reservations on the dynamic range
+  - repositioning (FR-15) and the chosen monitor
+  - ADR 0002 auto-hide placement
+  - a real CSP, the final identifier and icon
+  - the installer AUMID so toasts show "Knock" (ADR 0015)
+  - the engine's `Notify` replaces the toast spike
+- Phase 3: a release-build memory check (dev build was 154 MB).
+- G2: check jumping on testers' machines (ADR 0013).
+Dependencies added: none
+Clarifications (lead): none
+Open questions for the user:
+- none
+
+---
+
 ## 2026-10-25: Phase 0 (fixtures)
 Done:
 - The user recorded 16 sessions in the test folder, following the lead's checklist (option A), plus a deny/Esc retest.
