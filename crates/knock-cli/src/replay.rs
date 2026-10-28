@@ -6,6 +6,8 @@
 //! Clock: a tick every whole second from 1000 ms; an event at the same ms as
 //! a tick goes first. Every fixture runs on to its last event + 6 h + 60 s,
 //! past every timer (stall, escalation, the 60 s fade, the 6 h removal).
+//!
+//! `knock sim --local` plays its scenarios through the same [`play`].
 
 use knock_core::{Adapter, ClaudeCode, Effect, Engine, Input, Settings, State, Tier};
 use serde_json::{Value, json};
@@ -32,13 +34,71 @@ fn settings_for(name: &str) -> Settings {
     s
 }
 
+/// One line of a fixture or a scenario.
+pub enum Step {
+    /// A §8.8 hook line; `body` is its payload.
+    Hook {
+        t: u64,
+        hook: String,
+        session: String,
+        body: Vec<u8>,
+    },
+    /// Scenarios only: `{"tMs", "control": "process_gone", "session"}`, the
+    /// session's process went away (§8.4 ProcessGone).
+    ProcessGone { t: u64, session: String },
+}
+
+impl Step {
+    pub fn t(&self) -> u64 {
+        match self {
+            Step::Hook { t, .. } | Step::ProcessGone { t, .. } => *t,
+        }
+    }
+}
+
+/// Parses every line. Errors carry a line number, never content.
+pub fn steps(text: &str) -> Result<Vec<Step>, String> {
+    let mut prev = 0;
+    text.lines()
+        .enumerate()
+        .map(|(n, line)| {
+            let bad = || format!("line {}: not a fixture or scenario line", n + 1);
+            let v: Value = serde_json::from_str(line).map_err(|_| bad())?;
+            let t = v["tMs"].as_u64().filter(|t| *t >= prev).ok_or_else(bad)?;
+            prev = t;
+            let text = |v: &Value| v.as_str().map(str::to_string).ok_or_else(bad);
+            if v.get("control").is_some() {
+                if v["control"] != "process_gone" {
+                    return Err(bad());
+                }
+                let session = text(&v["session"])?;
+                return Ok(Step::ProcessGone { t, session });
+            }
+            Ok(Step::Hook {
+                t,
+                hook: text(&v["hook"])?,
+                session: text(&v["payload"]["session_id"])?,
+                body: serde_json::to_vec(&v["payload"]).map_err(|_| bad())?,
+            })
+        })
+        .collect()
+}
+
 /// Runs one fixture; returns the `{timeline, effects}` it produced.
 pub fn run(name: &str, fixture: &str) -> Result<Value, String> {
+    play(settings_for(name), &steps(fixture)?, false).map(|(out, _)| out)
+}
+
+/// Plays `steps` on the virtual clock. Returns `{timeline, effects}` and the
+/// most sessions alive at once.
+pub fn play(settings: Settings, steps: &[Step], simulated: bool) -> Result<(Value, usize), String> {
     let adapter = ClaudeCode { users: Vec::new() };
-    let mut engine = Engine::new(settings_for(name));
+    let mut engine = Engine::new(settings);
     let (mut timeline, mut effects) = (Vec::new(), Vec::new());
     let mut seen: Vec<(String, State)> = Vec::new();
+    let mut live = 0;
     let mut record = |engine: &Engine, t: u64, fx: Vec<Effect>| {
+        live = live.max(engine.sessions().len());
         for s in engine.sessions() {
             if !seen.contains(&(s.id.clone(), s.state)) {
                 timeline.push(json!({"tMs": t, "sessionId": s.id, "state": s.state.as_str(), "tier": s.state.tier().as_str()}));
@@ -62,10 +122,8 @@ pub fn run(name: &str, fixture: &str) -> Result<Value, String> {
     };
     let mut clock = 1000;
     let mut end = 0;
-    for (n, line) in fixture.lines().enumerate() {
-        let bad = || format!("line {}: not a fixture line", n + 1);
-        let v: Value = serde_json::from_str(line).map_err(|_| bad())?;
-        let t = v["tMs"].as_u64().ok_or_else(bad)?;
+    for (n, step) in steps.iter().enumerate() {
+        let t = step.t();
         while clock < t {
             let fx = engine.step(Input::Tick {
                 now: BASE + clock,
@@ -74,15 +132,18 @@ pub fn run(name: &str, fixture: &str) -> Result<Value, String> {
             record(&engine, clock, fx);
             clock += 1000;
         }
-        let body = serde_json::to_vec(&v["payload"]).map_err(|_| bad())?;
-        let event = adapter
-            .parse(&body, BASE + t)
-            .map_err(|e| format!("line {}: {e:?}", n + 1))?;
-        if let Some(event) = event {
-            let fx = engine.step(Input::Event {
-                event,
-                simulated: false,
-            });
+        let input = match step {
+            Step::Hook { body, .. } => adapter
+                .parse(body, BASE + t)
+                .map_err(|e| format!("line {}: {e:?}", n + 1))?
+                .map(|event| Input::Event { event, simulated }),
+            Step::ProcessGone { session, .. } => Some(Input::ProcessGone {
+                session_id: session.clone(),
+                now: BASE + t,
+            }),
+        };
+        if let Some(input) = input {
+            let fx = engine.step(input);
             record(&engine, t, fx);
         }
         end = t;
@@ -95,13 +156,12 @@ pub fn run(name: &str, fixture: &str) -> Result<Value, String> {
         record(&engine, clock, fx);
         clock += 1000;
     }
-    Ok(json!({"timeline": timeline, "effects": effects}))
+    Ok((json!({"timeline": timeline, "effects": effects}), live))
 }
 
 /// Zero missed Needs-you (§6): every entry into Needs you has its `Notify`
 /// at the same time, except a stall with stall notifications off.
-fn missed_needs_you(name: &str, out: &Value) -> Result<(), String> {
-    let notify_stall = settings_for(name).notify_on_stall;
+pub fn missed_needs_you(notify_stall: bool, out: &Value) -> Result<(), String> {
     let effects = out["effects"].as_array().map_or(&[][..], Vec::as_slice);
     for e in out["timeline"].as_array().map_or(&[][..], Vec::as_slice) {
         let stalled = e["state"] == State::Stalled.as_str();
@@ -150,7 +210,8 @@ pub fn one(path: &Path) -> Result<String, String> {
     )?)
     .map_err(|_| format!("{name}: expected file is not JSON"))?;
     let got = run(name, &fixture).map_err(|e| format!("{name}: {e}"))?;
-    missed_needs_you(name, &got).map_err(|e| format!("{name}: {e}"))?;
+    missed_needs_you(settings_for(name).notify_on_stall, &got)
+        .map_err(|e| format!("{name}: {e}"))?;
     diff("timeline", &want["timeline"], &got["timeline"]).map_err(|e| format!("{name}: {e}"))?;
     diff("effects", &want["effects"], &got["effects"]).map_err(|e| format!("{name}: {e}"))?;
     let count = |k: &str| got[k].as_array().map_or(0, Vec::len);
@@ -207,7 +268,7 @@ mod tests {
             .unwrap()
             .retain(|e| e["type"] != "Notify");
         assert!(
-            missed_needs_you("permission-denied", &missed)
+            missed_needs_you(false, &missed)
                 .unwrap_err()
                 .starts_with("missed Needs-you")
         );

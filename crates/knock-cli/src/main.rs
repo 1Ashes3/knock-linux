@@ -2,6 +2,7 @@
 
 mod fixtures;
 mod replay;
+mod sim;
 
 use std::process::ExitCode;
 
@@ -9,6 +10,12 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
+        ["sim", name] => sim::live(name, 1.0),
+        ["sim", name, "--speed", f] => match f.parse() {
+            Ok(f) => sim::live(name, f),
+            Err(_) => Err("--speed must be a number above 0, like 2 or 0.5".into()),
+        },
+        ["sim", name, "--local"] => sim::local(name).map(|t| println!("{t}")),
         ["fixtures", "sanitize", rec, out, "--map", map] => {
             fixtures::run(rec.as_ref(), out.as_ref(), map.as_ref())
         }
@@ -42,7 +49,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: knock <sim <scenario> | replay <fixture | dir> | doctor \
+                "usage: knock <sim <scenario> [--speed <factor> | --local] | replay <fixture | dir> | doctor \
                  | fixtures sanitize <recording.jsonl> <out-dir> --map <names-file> \
                  | fixtures check <dir>>"
             );

@@ -1,0 +1,6 @@
+{"tMs":0,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\slow-build","hook_event_name":"UserPromptSubmit","session_id":"s31"}}
+{"tMs":2000,"hook":"PreToolUse","payload":{"cwd":"C:\\fixture\\slow-build","hook_event_name":"PreToolUse","session_id":"s31","tool_name":"Read"}}
+{"tMs":3500,"hook":"PostToolUse","payload":{"cwd":"C:\\fixture\\slow-build","hook_event_name":"PostToolUse","session_id":"s31","tool_name":"Read"}}
+{"tMs":5000,"hook":"PreToolUse","payload":{"cwd":"C:\\fixture\\slow-build","hook_event_name":"PreToolUse","session_id":"s31","tool_name":"Bash"}}
+{"tMs":720000,"hook":"PostToolUse","payload":{"cwd":"C:\\fixture\\slow-build","hook_event_name":"PostToolUse","session_id":"s31","tool_name":"Bash"}}
+{"tMs":724000,"hook":"Stop","payload":{"cwd":"C:\\fixture\\slow-build","hook_event_name":"Stop","session_id":"s31"}}

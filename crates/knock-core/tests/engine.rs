@@ -1,5 +1,5 @@
 //! §12.1 Engine: every §8.4 transition, timer, dedup, suppression and seen
-//! rule (ADR 0010, 0016).
+//! rule (ADR 0010, 0016, 0018).
 
 use knock_core::{
     Category, Context, Detail, Effect, Engine, Event, Input, Kind, NeedsKind, Reason, Settings,
@@ -33,6 +33,12 @@ fn tool(mut e: Event, t: &str) -> Event {
 
 fn agent(mut e: Event, a: &str) -> Event {
     e.context.agent_id = Some(a.into());
+    e
+}
+
+/// The app found the session's process (§9.4).
+fn pid(mut e: Event) -> Event {
+    e.context.pid = Some(4242);
     e
 }
 
@@ -476,21 +482,49 @@ fn session_end_removes_and_continue_starts_again() {
 #[test]
 fn removed_after_six_hours_without_events_or_process() {
     let six = 6 * 60 * MIN;
-    let mut h = H::into(State::Failed, 0);
+    let mut h = H::new();
+    h.send(pid(ev(Kind::AgentFailed, "s1", 0)));
     h.gone(MIN);
     assert_eq!(h.tick(MIN + six - 1), vec![]);
     assert_eq!(h.tick(MIN + six), vec![Persist]);
     assert_eq!(h.state(), None);
-    // A live process (never reported gone) keeps it.
-    let mut h = H::into(State::Failed, 0);
+    // A live process (known, never reported gone) keeps it.
+    let mut h = H::new();
+    h.send(pid(ev(Kind::AgentFailed, "s1", 0)));
     assert_eq!(h.tick(10 * six), vec![]);
     assert_eq!(h.state(), Some(State::Failed));
     // An event after the process went counts: 6 h from the last of the two.
-    let mut h = H::into(State::Failed, 0);
+    let mut h = H::new();
+    h.send(pid(ev(Kind::AgentFailed, "s1", 0)));
     h.gone(MIN);
-    h.kind(Kind::Activity, 2 * MIN);
+    h.kind(Kind::TurnIdle, 2 * MIN);
     assert_eq!(h.tick(MIN + six), vec![]);
     assert_eq!(h.tick(2 * MIN + six), vec![Persist]);
+}
+
+// ADR 0018 item 7: a session whose process was never found counts as having
+// no live process: removed 6 h after its last event, in any state.
+#[test]
+fn a_session_with_no_known_process_is_removed_six_hours_after_its_last_event() {
+    let six = 6 * 60 * MIN;
+    for from in [State::Idle, State::NeedsInput, State::Ready, State::Failed] {
+        let mut h = H::into(from, 0);
+        h.kind(Kind::UserAck, 0); // seen: no escalation; ready: idle
+        h.send(ev(Kind::TurnIdle, "s1", MIN));
+        assert_eq!(h.tick(MIN + six - 1), vec![], "{from:?}");
+        assert_eq!(h.tick(MIN + six), vec![Persist], "{from:?}");
+        assert_eq!(h.state(), None, "{from:?}");
+    }
+    // A pid on a later event makes the process known.
+    let mut h = H::into(State::Ready, 0);
+    h.send(pid(ev(Kind::TurnIdle, "s1", MIN)));
+    assert_eq!(h.tick(10 * six), vec![]);
+    assert_eq!(h.state(), Some(State::Ready));
+    // User actions are not events: they don't restart the 6 h.
+    let mut h = H::into(State::Ready, 0);
+    h.kind(Kind::UserAck, 5 * 60 * MIN);
+    assert_eq!(h.tick(six), vec![Persist]);
+    assert_eq!(h.state(), None);
 }
 
 // Dedup: PermissionRequest + permission_prompt within 10 s = one episode,
@@ -633,22 +667,197 @@ fn persist_only_when_the_snapshot_changes() {
     assert_eq!(h.send(ev(Kind::UserAck, "nope", 4)), vec![]);
 }
 
-/// Pairs with no §8.4 row leave the session unchanged. These pin today's
-/// behaviour; each is an open question for the lead.
+// ADR 0018 item 1: a new request while a seen episode is open opens a new,
+// unseen episode with its own Notify. Unseen, it stays the same episode.
+#[test]
+fn a_new_request_after_the_episode_was_seen_knocks_again() {
+    let question = |sid: &str, ts| ev(Kind::NeedsAnswer, sid, ts);
+    for (new, reason) in [
+        (request as fn(&str, u64) -> Event, Reason::NeedsPermission),
+        (question, Reason::NeedsAnswer),
+    ] {
+        let mut h = H::into(State::NeedsInput, 0);
+        // Unseen: same episode, no effects.
+        assert_eq!(h.send(new("s1", MIN)), vec![], "{reason:?}");
+        h.kind(Kind::UserAck, 2 * MIN);
+        assert_eq!(h.send(new("s1", 3 * MIN)), vec![notify(reason), Persist]);
+        let n = h.s1().needs.clone().unwrap();
+        assert_eq!((n.seen, n.opened, n.escalated), (false, 3 * MIN, false));
+        assert_eq!(h.s1().since, 0, "still needs_input, so `since` stays");
+        // The new episode is unseen again and escalates on its own clock.
+        assert_eq!(h.send(new("s1", 4 * MIN)), vec![], "{reason:?}");
+        assert_eq!(h.tick(8 * MIN - 1), vec![]);
+        assert_eq!(h.tick(8 * MIN), vec![escalate(), Persist]);
+    }
+    // The permission_prompt Notification is never a new request,
+    // deduplicated (within 10 s) or not.
+    let mut h = H::into(State::NeedsInput, 0);
+    h.kind(Kind::UserAck, 1000);
+    assert_eq!(h.send(prompt("s1", 6000)), vec![]);
+    assert_eq!(h.send(prompt("s1", 2 * MIN)), vec![]);
+    assert!(h.s1().needs.as_ref().unwrap().seen);
+    // Any request after the click counts, even in the same ms.
+    let mut h = H::into(State::NeedsInput, 0);
+    h.kind(Kind::UserAck, 0);
+    assert_eq!(h.send(request("s1", 0)).len(), 2);
+}
+
+// ADR 0018 item 2: stalled + needs.* → needs_input, new episode, Notify.
+#[test]
+fn needs_while_stalled_opens_an_episode() {
+    for (e, reason) in [
+        (request("s1", 11 * MIN), Reason::NeedsPermission),
+        (ev(Kind::NeedsAnswer, "s1", 11 * MIN), Reason::NeedsAnswer),
+        (prompt("s1", 11 * MIN), Reason::NeedsPermission),
+    ] {
+        let mut h = H::into(State::Stalled, 10 * MIN);
+        assert_eq!(h.send(e), vec![notify(reason), Persist]);
+        let s = h.s1();
+        assert_eq!((s.state, s.since), (State::NeedsInput, 11 * MIN));
+        assert!(!s.needs.as_ref().unwrap().seen);
+    }
+}
+
+// ADR 0018 item 3: stalled + turn.started → working.
+#[test]
+fn a_prompt_while_stalled_works() {
+    let mut h = H::into(State::Stalled, 10 * MIN);
+    assert_eq!(h.kind(Kind::TurnStarted, 11 * MIN), vec![Persist]);
+    assert_eq!((h.state(), h.s1().since), (Some(State::Working), 11 * MIN));
+    assert_eq!(h.tick(21 * MIN - 1), vec![], "stall timer restarted");
+    assert_eq!(h.tick(21 * MIN), vec![Persist]);
+    assert_eq!(h.state(), Some(State::Stalled));
+}
+
+// ADR 0018 item 4: failed + turn.started or activity → working; failed +
+// needs.* → needs_input with Notify. Dismiss still removes it (pinned in
+// `dismiss_removes_failed_or_ended_only`).
+#[test]
+fn a_retry_after_failure_works_and_can_knock() {
+    let mut h = H::into(State::Failed, 0);
+    assert_eq!(h.kind(Kind::TurnStarted, MIN), vec![Persist]);
+    assert_eq!((h.state(), h.s1().since), (Some(State::Working), MIN));
+    for e in [
+        tool(ev(Kind::Activity, "s1", MIN), "Grep"),
+        agent(ev(Kind::Activity, "s1", MIN), "a1"),
+    ] {
+        let mut h = H::into(State::Failed, 0);
+        assert_eq!(h.send(e), vec![Persist]);
+        assert_eq!(h.state(), Some(State::Working));
+    }
+    for (e, reason) in [
+        (request("s1", MIN), Reason::NeedsPermission),
+        (ev(Kind::NeedsAnswer, "s1", MIN), Reason::NeedsAnswer),
+    ] {
+        let mut h = H::into(State::Failed, 0);
+        assert_eq!(h.send(e), vec![notify(reason), Persist]);
+        assert_eq!(h.state(), Some(State::NeedsInput));
+        assert_eq!(h.tick(6 * MIN), vec![escalate(), Persist]);
+    }
+}
+
+// ADR 0018 item 5: ended_unexpectedly + any agent event → the state that
+// event implies, as a first event, keeping the session's animal.
+#[test]
+fn an_event_after_an_unexpected_end_continues_the_session() {
+    let animals = Settings {
+        animals: vec!["fox".into(), "owl".into()],
+        ..Settings::default()
+    };
+    use Reason::*;
+    for (kind, state, fx) in [
+        (Kind::SessionStarted, State::Idle, vec![Persist]),
+        (Kind::TurnIdle, State::Idle, vec![Persist]),
+        (Kind::TurnStarted, State::Working, vec![Persist]),
+        (Kind::Activity, State::Working, vec![Persist]),
+        (
+            Kind::NeedsPermission,
+            State::NeedsInput,
+            vec![notify(NeedsPermission), Persist],
+        ),
+        (
+            Kind::NeedsAnswer,
+            State::NeedsInput,
+            vec![notify(NeedsAnswer), Persist],
+        ),
+        (
+            Kind::TurnCompleted,
+            State::Ready,
+            vec![ready_add(), Persist],
+        ),
+        (
+            Kind::AgentFailed,
+            State::Failed,
+            vec![notify(Failed), Persist],
+        ),
+    ] {
+        let mut h = H::with(animals.clone());
+        h.send(ev(Kind::TurnStarted, "s0", 0));
+        h.send(request("s1", 0));
+        h.kind(Kind::UserAck, 0);
+        h.gone(MIN);
+        assert_eq!(h.s1().animal, "owl");
+        let mut e = ev(kind, "s1", 2 * MIN);
+        e.context.cwd = r"C:\code\elsewhere".into();
+        e.context.project = "elsewhere".into();
+        assert_eq!(h.send(e), fx, "{kind:?}");
+        let s = h.s1();
+        assert_eq!((s.state, s.since, s.last_event), (state, 2 * MIN, 2 * MIN));
+        assert_eq!(
+            (s.animal.as_str(), s.project.as_str()),
+            ("owl", "elsewhere")
+        );
+        assert_eq!(s.project_key, project_key(r"C:\code\elsewhere"));
+        if let Some(n) = &s.needs {
+            assert!(!n.seen && !n.escalated, "a fresh episode");
+        }
+        let order: Vec<_> = h.0.sessions().iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(order, ["s0", "s1"], "keeps its place");
+        // The 60 s fade was for the ended state only.
+        h.tick(4 * MIN);
+        assert_eq!(h.state(), Some(state), "{kind:?}");
+    }
+    // A new process: the old ProcessGone no longer counts, and the pid on the
+    // new event makes the process known.
+    let mut h = H::into(State::EndedUnexpectedly, 0);
+    h.send(pid(ev(Kind::TurnStarted, "s1", MIN)));
+    h.send(pid(ev(Kind::TurnCompleted, "s1", 2 * MIN)));
+    assert_eq!(h.tick(100 * 60 * MIN), vec![]);
+    assert_eq!(h.state(), Some(State::Ready));
+    // session.ended still removes it.
+    let mut h = H::into(State::EndedUnexpectedly, 0);
+    assert_eq!(h.kind(Kind::SessionEnded, 1), vec![Persist]);
+    assert_eq!(h.state(), None);
+}
+
+// ADR 0018 item 6: suppressed Notify and Escalate are dropped, not deferred,
+// including for the new ADR 0018 entries into Needs you.
+#[test]
+fn suppressed_knocks_from_the_new_rows_are_dropped() {
+    for from in [State::Stalled, State::Failed, State::NeedsInput] {
+        let mut h = H::into(from, 10 * MIN);
+        h.kind(Kind::UserAck, 10 * MIN);
+        h.quiet_tick(10 * MIN + 1);
+        assert_eq!(h.send(request("s1", 11 * MIN)), vec![Persist], "{from:?}");
+        assert_eq!(h.state(), Some(State::NeedsInput));
+        assert_eq!(h.quiet_tick(16 * MIN), vec![Persist], "escalation dropped");
+        assert_eq!(h.tick(17 * MIN), vec![], "{from:?}: not sent later");
+        assert_eq!(h.tick(60 * MIN), vec![], "{from:?}: not sent later");
+    }
+}
+
+/// ADR 0018 item 8: every pair with no §8.4 row leaves the session unchanged.
 #[test]
 fn pairs_without_a_row_change_nothing() {
     use State::*;
     for (from, kind) in [
-        (Stalled, Kind::NeedsPermission),
-        (Stalled, Kind::NeedsAnswer),
-        (Stalled, Kind::TurnStarted),
-        (Failed, Kind::TurnStarted),
-        (Failed, Kind::Activity),
-        (Failed, Kind::NeedsPermission),
         (Failed, Kind::TurnCompleted),
-        (EndedUnexpectedly, Kind::TurnStarted),
-        (EndedUnexpectedly, Kind::NeedsPermission),
-        (EndedUnexpectedly, Kind::Activity),
+        (Failed, Kind::TurnIdle),
+        (Failed, Kind::SessionStarted),
+        (Stalled, Kind::TurnIdle),
+        (Idle, Kind::TurnIdle),
+        (NeedsInput, Kind::TurnIdle),
+        (EndedUnexpectedly, Kind::UserAck),
         (Working, Kind::TurnStarted),
         (Idle, Kind::TurnCompleted),
         (Ready, Kind::TurnCompleted),

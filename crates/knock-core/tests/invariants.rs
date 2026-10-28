@@ -131,7 +131,10 @@ proptest! {
     fn invariants_hold(settings in settings(), ops in prop::collection::vec(op(), 1..150)) {
         let inputs = inputs(&ops);
         let mut engine = Engine::new(settings.clone());
-        let mut prev: HashMap<String, State> = HashMap::new();
+        // State, and for needs_input the episode's (seen, opened).
+        type Prev = (State, Option<(bool, u64)>);
+        let mut prev: HashMap<String, Prev> = HashMap::new();
+        let now = |s: &Session| (s.state, s.needs.as_ref().map(|n| (n.seen, n.opened)));
         let mut ep: HashMap<String, u32> = HashMap::new();
         let mut episodes: HashMap<(String, u32), Episode> = HashMap::new();
         let mut suppressed = false;
@@ -146,7 +149,17 @@ proptest! {
                 prop_assert_eq!(tier_of(s.state), Some(s.state.tier()), "{:?}", s.state);
                 // 2. needs_input always has needs.kind (and only needs_input has needs).
                 prop_assert_eq!(s.state == State::NeedsInput, s.needs.is_some());
-                if prev.get(&s.id) != Some(&s.state) && s.state.tier() == Tier::NeedsYou {
+                let before = prev.get(&s.id).copied();
+                // A new episode: entering Needs you, or a new request after
+                // the open one was seen (ADR 0018). Unseen, it stays the same.
+                let reopened = match (before, now(s)) {
+                    (Some((State::NeedsInput, Some((seen, opened)))), (State::NeedsInput, Some(n))) => {
+                        prop_assert!(seen || n.1 == opened, "unseen episode replaced");
+                        seen && !n.0
+                    }
+                    _ => false,
+                };
+                if reopened || (before.map(|p| p.0) != Some(s.state) && s.state.tier() == Tier::NeedsYou) {
                     *ep.entry(s.id.clone()).or_default() += 1;
                     entered.push((s.id.clone(), s.state));
                 }
@@ -186,7 +199,7 @@ proptest! {
                     if *session_id == id && (*reason == Reason::Stalled) == (state == State::Stalled)));
                 prop_assert_eq!(got, want, "{} entered {:?}", id, state);
             }
-            prev = engine.sessions().iter().map(|s| (s.id.clone(), s.state)).collect();
+            prev = engine.sessions().iter().map(|s| (s.id.clone(), now(s))).collect();
         }
     }
 

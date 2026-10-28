@@ -1,0 +1,16 @@
+{"tMs":0,"hook":"Notification","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"Notification","notification_type":"idle_prompt","session_id":"s1"}}
+{"tMs":3000,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"UserPromptSubmit","session_id":"s1"}}
+{"tMs":5000,"hook":"PreToolUse","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Read"}}
+{"tMs":6500,"hook":"PostToolUse","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Read"}}
+{"tMs":8000,"hook":"PreToolUse","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash"}}
+{"tMs":8020,"hook":"PermissionRequest","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"PermissionRequest","session_id":"s1","tool_name":"Bash"}}
+{"tMs":14020,"hook":"Notification","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"s1"}}
+{"tMs":18000,"hook":"PostToolUse","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Bash"}}
+{"tMs":21000,"hook":"Stop","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"Stop","session_id":"s1"}}
+{"tMs":26000,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"UserPromptSubmit","session_id":"s1"}}
+{"tMs":28000,"hook":"PreToolUse","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"PreToolUse","session_id":"s1","tool_name":"WebFetch"}}
+{"tMs":30000,"hook":"StopFailure","payload":{"cwd":"C:\\fixture\\all-states","error":"model_not_found","hook_event_name":"StopFailure","session_id":"s1"}}
+{"tMs":36000,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"UserPromptSubmit","session_id":"s1"}}
+{"tMs":38000,"hook":"PreToolUse","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Edit"}}
+{"tMs":660000,"hook":"PostToolUse","payload":{"cwd":"C:\\fixture\\all-states","hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Edit"}}
+{"tMs":662000,"control":"process_gone","session":"s1"}

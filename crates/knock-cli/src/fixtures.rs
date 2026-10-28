@@ -311,7 +311,7 @@ fn check_line(line: &str) -> Result<u64, String> {
 }
 
 /// Checks a whole fixture: every line, first `tMs` is 0, `tMs` never goes back.
-fn check_fixture(text: &str) -> Result<(), String> {
+pub fn check_fixture(text: &str) -> Result<(), String> {
     let mut prev = None;
     for (i, line) in text.lines().enumerate() {
         let t = check_line(line).map_err(|e| format!("line {}: {e}", i + 1))?;

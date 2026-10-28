@@ -1,0 +1,5 @@
+{"tMs":0,"hook":"UserPromptSubmit","payload":{"cwd":"C:\\fixture\\crashy-tool","hook_event_name":"UserPromptSubmit","session_id":"s41"}}
+{"tMs":2000,"hook":"PreToolUse","payload":{"cwd":"C:\\fixture\\crashy-tool","hook_event_name":"PreToolUse","session_id":"s41","tool_name":"Read"}}
+{"tMs":3500,"hook":"PostToolUse","payload":{"cwd":"C:\\fixture\\crashy-tool","hook_event_name":"PostToolUse","session_id":"s41","tool_name":"Read"}}
+{"tMs":5000,"hook":"PreToolUse","payload":{"cwd":"C:\\fixture\\crashy-tool","hook_event_name":"PreToolUse","session_id":"s41","tool_name":"Bash"}}
+{"tMs":8000,"control":"process_gone","session":"s41"}

@@ -1,10 +1,17 @@
-//! The state engine (SPEC.md §8.4; ADR 0010, 0016). One `step` per input;
-//! every effect it returns belongs to that input's time.
+//! The state engine (SPEC.md §8.4; ADR 0010, 0016, 0018). One `step` per
+//! input; every effect it returns belongs to that input's time.
 //!
 //! Inputs the app provides instead of the engine reading them: the clock
 //! (`Tick`), whether notifications are suppressed (pause or quiet hours,
 //! worked out by the app from local time and sent with each tick), process
 //! liveness (`ProcessGone`) and the user actions (`user.ack`, `user.dismiss`).
+//!
+//! Known process (ADR 0018 item 7): an event's `context.pid` is set by the
+//! app exactly when it found the session's process (§8.3, §9.4). A session
+//! none of whose events carried a pid has no known process, so it counts as
+//! having no live process and is removed 6 h after its last event. Once a pid
+//! arrives, only `ProcessGone` starts that clock. Simulated sessions never get
+//! a pid (§8.1), so they follow the no-process rule.
 //!
 //! A (state, input) pair with no §8.4 row leaves the session unchanged.
 
@@ -195,11 +202,33 @@ pub struct Session {
     /// Last agent event (user actions don't count).
     pub last_event: u64,
     gone_at: Option<u64>,
+    /// Some event carried a pid (see the module docs).
+    process_known: bool,
     /// Last request-type `needs.*`, for the dedup.
     last_request: Option<u64>,
 }
 
 impl Session {
+    /// A session as its first event creates it (also used to restart an
+    /// `ended_unexpectedly` one, ADR 0018).
+    fn new(e: &Event, simulated: bool, animal: String) -> Self {
+        Session {
+            id: e.session_id.clone(),
+            project: e.context.project.clone(),
+            project_key: project_key(&e.context.cwd),
+            state: State::Idle,
+            since: e.ts,
+            activity: None,
+            needs: None,
+            animal,
+            simulated,
+            last_event: e.ts,
+            gone_at: None,
+            process_known: e.context.pid.is_some(),
+            last_request: None,
+        }
+    }
+
     fn set(&mut self, to: State, now: u64) {
         if self.state != to {
             self.state = to;
@@ -292,41 +321,37 @@ impl Engine {
     fn event(&mut self, e: Event, simulated: bool, fx: &mut Vec<Effect>) {
         let (ts, kind) = (e.ts, e.kind);
         let user = matches!(kind, Kind::UserAck | Kind::UserDismiss);
+        let restart = !user && kind != Kind::SessionEnded;
         let i = match self.sessions.iter().position(|s| s.id == e.session_id) {
+            // ADR 0018: an agent event continues an ended_unexpectedly
+            // session (e.g. `--resume` in a new terminal) as a first event,
+            // keeping its animal and its place.
+            Some(i) if restart && self.sessions[i].state == State::EndedUnexpectedly => {
+                let animal = std::mem::take(&mut self.sessions[i].animal);
+                self.sessions[i] = Session::new(&e, simulated, animal);
+                return self.first(i, e, fx);
+            }
             Some(i) => i,
-            None if user || kind == Kind::SessionEnded => return,
+            None if !restart => return,
             None => {
-                let key = project_key(&e.context.cwd);
-                let animal = self.animal_for(&key);
-                self.sessions.push(Session {
-                    id: e.session_id.clone(),
-                    project: e.context.project.clone(),
-                    project_key: key,
-                    state: State::Idle,
-                    since: ts,
-                    activity: None,
-                    needs: None,
-                    animal,
-                    simulated,
-                    last_event: ts,
-                    gone_at: None,
-                    last_request: None,
-                });
-                return self.first(e, fx);
+                let animal = self.animal_for(&project_key(&e.context.cwd));
+                self.sessions.push(Session::new(&e, simulated, animal));
+                return self.first(self.sessions.len() - 1, e, fx);
             }
         };
         let suppressed = self.suppressed;
         let s = &mut self.sessions[i];
         if !user {
             s.last_event = ts;
+            s.process_known |= e.context.pid.is_some();
         }
         use State::*;
         match (kind, s.state) {
-            (Kind::TurnStarted, Idle | Ready | NeedsInput) => {
+            (Kind::TurnStarted, Idle | Ready | NeedsInput | Stalled | Failed) => {
                 s.activity = None;
                 s.set(Working, ts);
             }
-            (Kind::Activity, Working | Stalled) => {
+            (Kind::Activity, Working | Stalled | Failed) => {
                 s.activity = e.detail.category.or(s.activity);
                 s.set(Working, ts);
             }
@@ -339,7 +364,15 @@ impl Engine {
             }
             (Kind::NeedsPermission | Kind::NeedsAnswer, from) => {
                 let dup = dedup(s, &e);
-                if !dup && matches!(from, Working | Idle | Ready) {
+                let opens = match from {
+                    Working | Idle | Ready | Stalled | Failed => !dup,
+                    // ADR 0018 item 1: a new request (never the
+                    // `permission_prompt` Notification) after the user saw
+                    // the episode is a new one. Unseen: same episode.
+                    NeedsInput => s.needs.as_ref().is_some_and(|n| n.seen) && !is_prompt(&e),
+                    _ => false,
+                };
+                if opens {
                     self.open(i, e, fx);
                 }
             }
@@ -371,9 +404,8 @@ impl Engine {
         }
     }
 
-    /// The first event of a session: `idle`, or the state the event implies.
-    fn first(&mut self, e: Event, fx: &mut Vec<Effect>) {
-        let i = self.sessions.len() - 1;
+    /// The first event of session `i`: `idle`, or the state the event implies.
+    fn first(&mut self, i: usize, e: Event, fx: &mut Vec<Effect>) {
         let ts = e.ts;
         match e.kind {
             Kind::TurnStarted => self.sessions[i].set(State::Working, ts),
@@ -424,9 +456,9 @@ impl Engine {
         self.sessions.retain(|s| {
             let faded =
                 s.state == State::EndedUnexpectedly && now.saturating_sub(s.since) >= FADE_MS;
-            let quiet = s
-                .gone_at
-                .is_some_and(|g| now.saturating_sub(g.max(s.last_event)) >= REMOVE_MS);
+            // No live process: reported gone, or never known (ADR 0018).
+            let gone = s.gone_at.or((!s.process_known).then_some(0));
+            let quiet = gone.is_some_and(|g| now.saturating_sub(g.max(s.last_event)) >= REMOVE_MS);
             !faded && !quiet
         });
         for s in &mut self.sessions {
@@ -464,11 +496,16 @@ impl Engine {
 /// counts as the request half and is never a duplicate itself, so a second
 /// request right after a prompt still knocks.
 fn dedup(s: &mut Session, e: &Event) -> bool {
-    if e.kind == Kind::NeedsPermission && e.detail.tool.is_none() {
+    if is_prompt(e) {
         s.last_request
             .is_some_and(|t| e.ts.saturating_sub(t) <= DEDUP_MS)
     } else {
         s.last_request = Some(e.ts);
         false
     }
+}
+
+/// The `permission_prompt` Notification: the `needs.permission` with no tool.
+fn is_prompt(e: &Event) -> bool {
+    e.kind == Kind::NeedsPermission && e.detail.tool.is_none()
 }
