@@ -141,24 +141,12 @@ fn get_settings(k: tauri::State<'_, Knock>) -> Settings {
 /// §8.6: merges `patch`, validates, saves, applies at once and emits
 /// `settings-changed`. Async, so the main thread never waits on the owner.
 /// `launchAtSignIn: true/false` also adds or removes the sign-in entry
-/// (§9.7) first; `null` leaves it untouched.
+/// (§9.7), in step with the save (`pipeline::Core`).
 #[tauri::command]
 async fn update_settings(
     patch: serde_json::Value,
     k: tauri::State<'_, Knock>,
 ) -> Result<Settings, String> {
-    if let Some(on) = patch.get("launchAtSignIn").and_then(Value::as_bool) {
-        // An invalid patch changes nothing, the sign-in entry included.
-        let current = pipeline::read(&k.shared).settings.clone();
-        settings::merged(&current, &patch)?;
-        // The error can name the exe's path; it is not logged (§11.5).
-        k.platform.set_launch_at_sign_in(on).map_err(|_| {
-            tracing::warn!(on, "launch at sign-in not changed");
-            "Knock couldn't change whether it starts when you sign in. Please try again."
-                .to_string()
-        })?;
-        tracing::info!(on, "launch at sign-in set");
-    }
     let (tx, rx) = tokio::sync::oneshot::channel();
     let stopping = || "Knock is shutting down.".to_string();
     let msg = Msg::Settings {
@@ -505,8 +493,6 @@ fn main() {
             tracing::info!("second launch ignored");
         }))
         .plugin(tauri_plugin_notification::init())
-        // Used from Rust only, through the platform layer (§9.7).
-        .plugin(tauri_plugin_autostart::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_sessions,
             jump_to_session,

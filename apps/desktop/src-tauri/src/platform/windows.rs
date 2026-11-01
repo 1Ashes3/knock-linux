@@ -4,8 +4,8 @@ use super::{Display, Monitor, Platform, Taskbar, monitor_id};
 use crate::jump::{self, Proc, ProcessId, Target, TcpRow, Win};
 use crate::strip::Rect;
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_INSUFFICIENT_BUFFER, FILETIME, HWND, LPARAM, NO_ERROR, POINT, RECT,
-    STILL_ACTIVE,
+    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, FILETIME, HANDLE, HWND, LPARAM,
+    NO_ERROR, POINT, RECT, STILL_ACTIVE,
 };
 use windows::Win32::Graphics::Gdi::{
     DISPLAY_DEVICEW, EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
@@ -15,8 +15,12 @@ use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, TCP_TABLE_OWNER_PID_CONNECTIONS,
 };
 use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
+use windows::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
+use windows::Win32::System::Registry::{
+    HKEY_CURRENT_USER, REG_SZ, RegDeleteKeyValueW, RegSetKeyValueW,
 };
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{
@@ -35,22 +39,18 @@ use windows::Win32::UI::WindowsAndMessaging::{
     ShowWindowAsync, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TRANSPARENT,
 };
-use windows::core::{BOOL, PCWSTR};
+use windows::core::{BOOL, PCWSTR, w};
 
 pub struct WindowsPlatform {
     // HWND is !Send; the raw value is safe to use from any thread for the
     // style and position calls below.
     strip: isize,
-    /// For the autostart plugin (§9.7 launch at sign-in).
-    app: tauri::AppHandle,
 }
 
 impl WindowsPlatform {
     pub fn new(strip: &tauri::WebviewWindow) -> tauri::Result<Self> {
-        use tauri::Manager;
         Ok(Self {
             strip: strip.hwnd()?.0 as isize,
-            app: strip.app_handle().clone(),
         })
     }
 
@@ -73,6 +73,52 @@ pub fn local_minute() -> u32 {
     // SAFETY: no arguments; returns a plain struct.
     let t = unsafe { GetLocalTime() };
     u32::from(t.wHour) * 60 + u32::from(t.wMinute)
+}
+
+/// How many hard links (names) the open file has. Not on [`Platform`]
+/// because hook setup needs it without a window.
+pub fn link_count(file: &std::fs::File) -> std::io::Result<u32> {
+    use std::os::windows::io::AsRawHandle;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: a valid open handle and out-param; the File keeps the handle open.
+    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }?;
+    Ok(info.nNumberOfLinks)
+}
+
+/// §9.7 launch at sign-in: the per-user Run key, and the value Task
+/// Manager's Startup page keeps for it. Never HKLM.
+const RUN: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
+const APPROVED: PCWSTR =
+    w!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run");
+const RUN_NAME: PCWSTR = w!("Knock");
+
+/// Writes `HKCU\...\Run\Knock` with the quoted exe path, or deletes it and
+/// any `StartupApproved\Run\Knock`. A value that isn't there is fine.
+fn set_run_value(on: bool) -> std::io::Result<()> {
+    if on {
+        let exe = std::env::current_exe()?;
+        let v: Vec<u16> = super::run_value(&exe).encode_utf16().chain([0]).collect();
+        // SAFETY: `v` is a NUL-terminated UTF-16 string of `v.len()` units.
+        let r = unsafe {
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                RUN,
+                RUN_NAME,
+                REG_SZ.0,
+                Some(v.as_ptr().cast()),
+                (v.len() * 2) as u32,
+            )
+        };
+        return r.ok().map_err(Into::into);
+    }
+    for key in [RUN, APPROVED] {
+        // SAFETY: constant NUL-terminated key and value names.
+        let r = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key, RUN_NAME) };
+        if r != ERROR_FILE_NOT_FOUND {
+            r.ok()?;
+        }
+    }
+    Ok(())
 }
 
 /// AF_INET: the server listens on IPv4 loopback only.
@@ -426,10 +472,12 @@ impl Platform for WindowsPlatform {
     }
 
     fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()> {
-        use tauri_plugin_autostart::ManagerExt;
-        let a = self.app.autolaunch();
-        let r = if on { a.enable() } else { a.disable() };
-        r.map_err(|e| std::io::Error::other(e.to_string()))
+        let test_var = std::env::var_os("KNOCK_AUTOSTART_TEST");
+        if !super::sign_in_allowed(cfg!(debug_assertions), test_var.as_deref()) {
+            tracing::info!(on, "debug build: sign-in entry not changed");
+            return Ok(());
+        }
+        set_run_value(on)
     }
 }
 
@@ -451,6 +499,39 @@ mod tests {
                 .all(|m| m.width > 0 && m.height > 0 && !m.name.is_empty())
         );
         assert_eq!(a, monitors());
+    }
+
+    /// `reg query` output for `HKCU\<key>`, value `Knock`; `None` if absent.
+    fn reg_knock(key: &str) -> Option<String> {
+        let out = std::process::Command::new("reg.exe")
+            .args(["query", &format!(r"HKCU\{key}"), "/v", "Knock"])
+            .output()
+            .unwrap();
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    // Real OS calls on the real per-user Run key, so only on request:
+    // `KNOCK_AUTOSTART_TEST=1 cargo test -p knock-desktop -- --ignored run_key`.
+    // Removes what it adds.
+    #[test]
+    #[ignore = "writes the real HKCU Run key; set KNOCK_AUTOSTART_TEST=1"]
+    fn run_key_holds_the_quoted_exe_and_is_removed() {
+        assert_eq!(std::env::var("KNOCK_AUTOSTART_TEST").as_deref(), Ok("1"));
+        let run = r"Software\Microsoft\Windows\CurrentVersion\Run";
+        let approved = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+        assert_eq!(reg_knock(run), None, "an entry was already there");
+        let p = WindowsPlatform { strip: 0 };
+        p.set_launch_at_sign_in(true).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let got = reg_knock(run).unwrap();
+        eprintln!("{}", got.trim());
+        let want = format!("REG_SZ    \"{}\"", exe.display());
+        assert!(got.contains(&want), "{got}");
+        p.set_launch_at_sign_in(false).unwrap();
+        assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
+        p.set_launch_at_sign_in(false).unwrap();
     }
 
     // Real OS calls (V-7 mechanics): this test process owns the client end of

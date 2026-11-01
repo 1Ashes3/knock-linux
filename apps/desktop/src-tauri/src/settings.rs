@@ -249,17 +249,38 @@ fn merge(target: &mut Value, patch: &Value) {
 /// Writes `bytes` to a temporary file next to `path`, flushes it to disk,
 /// then replaces `path` with it, so readers see the old or the new file only.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_atomic_if(path, bytes, || true).map(|_| ())
+}
+
+/// [`write_atomic`], but `still()` is asked just before the replace; `false`
+/// replaces nothing and returns `Ok(false)`. The temporary file is deleted
+/// whenever `path` isn't replaced, since it can hold a token.
+pub fn write_atomic_if(
+    path: &Path,
+    bytes: &[u8],
+    still: impl FnOnce() -> bool,
+) -> io::Result<bool> {
     use std::io::Write;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
-    let mut f = std::fs::File::create(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, path)
+    let tmp = PathBuf::from(tmp);
+    let done = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        if !still() {
+            return Ok(false);
+        }
+        std::fs::rename(&tmp, path).map(|_| true)
+    })();
+    if !matches!(done, Ok(true)) {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done
 }
 
 #[cfg(test)]
@@ -438,6 +459,27 @@ mod tests {
         assert!(s.suppressed(at(12, 0)));
         s.quiet_hours.enabled = false;
         assert!(s.suppressed(at(12, 0)));
+    }
+
+    #[test]
+    fn a_failed_or_refused_replace_leaves_no_temp_file() {
+        let dir = temp_dir("atomic");
+        let tmp = dir.join("f.json.tmp");
+        // A folder where the file goes: the rename fails.
+        let blocked = dir.join("f.json");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(write_atomic(&blocked, b"token").is_err());
+        assert!(!tmp.exists(), "the temp file holds the token");
+        std::fs::remove_dir(&blocked).unwrap();
+        // Refused just before the replace: nothing written, no temp file.
+        std::fs::write(&blocked, b"old").unwrap();
+        assert!(!write_atomic_if(&blocked, b"new", || false).unwrap());
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"old");
+        assert!(!tmp.exists());
+        assert!(write_atomic_if(&blocked, b"new", || true).unwrap());
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"new");
+        assert!(!tmp.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

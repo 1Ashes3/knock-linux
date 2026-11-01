@@ -3,7 +3,7 @@
 
 mod windows;
 
-pub use self::windows::{WindowsPlatform, fill_random, local_minute};
+pub use self::windows::{WindowsPlatform, fill_random, link_count, local_minute};
 use crate::jump::{ProcessId, Target};
 use crate::strip::Rect;
 
@@ -72,8 +72,21 @@ pub trait Platform: Send + Sync {
     fn process_start(&self, pid: u32) -> Option<u64>;
     /// Every connected display, the primary one first.
     fn monitors(&self) -> Vec<Monitor>;
-    /// §9.7: adds or removes Knock's launch-at-sign-in entry.
+    /// §9.7: adds or removes Knock's launch-at-sign-in entry, the per-user
+    /// `HKCU\...\Run\Knock` value only (per-user install; never HKLM).
     fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()>;
+}
+
+/// The `Run\Knock` value: the exe's path, quoted, so a path with spaces
+/// can't be read as a shorter program plus arguments.
+pub fn run_value(exe: &std::path::Path) -> String {
+    format!("\"{}\"", exe.display())
+}
+
+/// Whether to change the real sign-in entry. A debug build does only with
+/// `KNOCK_AUTOSTART_TEST=1`, so a development run never leaves one behind.
+pub fn sign_in_allowed(debug: bool, test_var: Option<&std::ffi::OsStr>) -> bool {
+    !debug || test_var.is_some_and(|v| v == "1")
 }
 
 /// A recording stand-in for tests: every lookup returns `owner` (or the
@@ -89,6 +102,8 @@ pub struct FakePlatform {
     pub alive: std::sync::Mutex<Vec<ProcessId>>,
     /// Every `set_launch_at_sign_in` call.
     pub sign_in: std::sync::Mutex<Vec<bool>>,
+    /// `set_launch_at_sign_in` fails while set.
+    pub sign_in_fails: std::sync::Mutex<bool>,
 }
 
 #[cfg(test)]
@@ -131,12 +146,42 @@ impl Platform for FakePlatform {
     }
     fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()> {
         self.sign_in.lock().unwrap().push(on);
-        Ok(())
+        match *self.sign_in_fails.lock().unwrap() {
+            true => Err(std::io::Error::other("refused")),
+            false => Ok(()),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn the_run_value_is_the_quoted_exe_path() {
+        let exe = std::path::Path::new(r"C:\Users\A B\AppData\Local\Knock\Knock.exe");
+        assert_eq!(
+            run_value(exe),
+            r#""C:\Users\A B\AppData\Local\Knock\Knock.exe""#
+        );
+        // Through the trait, a fake records the call and touches nothing.
+        let fake = FakePlatform::default();
+        let p: &dyn Platform = &fake;
+        p.set_launch_at_sign_in(true).unwrap();
+        p.set_launch_at_sign_in(false).unwrap();
+        assert_eq!(*fake.sign_in.lock().unwrap(), [true, false]);
+    }
+
+    #[test]
+    fn a_debug_build_changes_the_sign_in_entry_only_when_asked() {
+        let one = Some(std::ffi::OsStr::new("1"));
+        assert!(sign_in_allowed(false, None));
+        assert!(sign_in_allowed(false, Some("0".as_ref())));
+        assert!(!sign_in_allowed(true, None));
+        assert!(!sign_in_allowed(true, Some("true".as_ref())));
+        assert!(sign_in_allowed(true, one));
+    }
+
     #[test]
     fn monitor_id_is_stable_and_fits_the_settings_rule() {
         // The shape EnumDisplayDevicesW returns with EDD_GET_DEVICE_INTERFACE_NAME.

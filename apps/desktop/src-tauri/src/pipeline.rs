@@ -360,12 +360,40 @@ impl Core {
         run: &mut Run,
     ) -> Result<Settings, String> {
         let new = settings::merged(&self.settings, patch)?;
+        // §9.7: `launchAtSignIn: true/false` changes the sign-in entry first,
+        // and the change is undone if the save fails, so the entry and
+        // settings.json never disagree. `null` leaves the entry untouched.
+        let sign_in = patch
+            .get("launchAtSignIn")
+            .and_then(serde_json::Value::as_bool);
+        if let Some(on) = sign_in {
+            self.sign_in(on).map_err(|_| {
+                "Knock couldn't change whether it starts when you sign in. Please try again."
+                    .to_string()
+            })?;
+        }
         if let Err(e) = settings::save(&self.dir, &new) {
             tracing::warn!(kind = ?e.kind(), "settings not saved");
+            let was = self.settings.launch_at_sign_in.unwrap_or(false);
+            if sign_in.is_some_and(|on| on != was) && self.sign_in(was).is_err() {
+                tracing::warn!("launch at sign-in not undone");
+            }
             return Err("Knock couldn't save the settings.".into());
         }
         self.apply_settings(new.clone(), local_minute, run);
         Ok(new)
+    }
+
+    /// Adds or removes the sign-in entry. The error can name the exe's path,
+    /// so only its kind is logged (§11.5).
+    fn sign_in(&self, on: bool) -> std::io::Result<()> {
+        let p = (self.platform.as_ref()).ok_or_else(|| std::io::Error::other("no platform"))?;
+        let r = p.set_launch_at_sign_in(on);
+        match &r {
+            Ok(()) => tracing::info!(on, "launch at sign-in set"),
+            Err(e) => tracing::warn!(on, kind = ?e.kind(), "launch at sign-in not changed"),
+        }
+        r
     }
 
     /// From the in-effect value, so two quick clicks toggle twice. Applies
@@ -493,9 +521,11 @@ impl Core {
 
     /// `sessions.json`: §11.4 data only. No agent ids (ADR 0019), no cwd
     /// (only its hash), no window titles or handles. Enough to restore from
-    /// (FR-13, Phase 5).
+    /// (FR-13, Phase 5). Simulated sessions (`knock sim`, the test knock) are
+    /// left out: none is ever restored.
     fn persist(&self, now: u64) {
         let sessions = (self.engine.sessions().iter())
+            .filter(|s| !s.simulated)
             .map(|s| {
                 let found = self.procs.get(&s.id);
                 serde_json::json!({
@@ -514,7 +544,6 @@ impl Core {
                         "escalated": n.escalated,
                     })),
                     "animal": s.animal,
-                    "simulated": s.simulated,
                     "process": found.map(|f| serde_json::json!({
                         "pid": f.process.pid,
                         "start": f.process.start,
@@ -1145,6 +1174,71 @@ mod tests {
     }
 
     #[test]
+    fn the_sign_in_entry_and_the_saved_settings_never_disagree() {
+        let mut t = core("sign-in");
+        let set = |t: &mut T, patch: Value| {
+            let (tx, mut rx) = oneshot::channel();
+            let msg = Msg::Settings {
+                patch,
+                reply: Some(tx),
+            };
+            t.core.handle(msg, T0, NOON);
+            rx.try_recv().unwrap()
+        };
+        let calls = |t: &T| t.fake.sign_in.lock().unwrap().clone();
+        let saved = |t: &T| settings::load(&t.dir, T0).launch_at_sign_in;
+        // The entry first, then the save.
+        let s = set(&mut t, json!({ "launchAtSignIn": true })).unwrap();
+        assert_eq!(s.launch_at_sign_in, Some(true));
+        assert_eq!((calls(&t), saved(&t)), (vec![true], Some(true)));
+        // An invalid patch, or `null`, never touches the entry.
+        assert!(set(&mut t, json!({ "launchAtSignIn": false, "size": "huge" })).is_err());
+        set(&mut t, json!({ "launchAtSignIn": null })).unwrap();
+        set(&mut t, json!({ "launchAtSignIn": true })).unwrap();
+        assert_eq!(calls(&t), [true, true]);
+        // The entry can't be changed: nothing is saved, the error is shown.
+        *t.fake.sign_in_fails.lock().unwrap() = true;
+        let e = set(&mut t, json!({ "launchAtSignIn": false, "sounds": true })).unwrap_err();
+        assert_eq!(
+            e,
+            "Knock couldn't change whether it starts when you sign in. Please try again."
+        );
+        assert_eq!(saved(&t), Some(true));
+        assert!(!settings::load(&t.dir, T0).sounds);
+        assert_eq!(read(&t.shared).settings.launch_at_sign_in, Some(true));
+        *t.fake.sign_in_fails.lock().unwrap() = false;
+        // The save fails after the entry changed: the change is undone.
+        let block = t.dir.join("settings.json.tmp");
+        std::fs::create_dir(&block).unwrap();
+        let e = set(&mut t, json!({ "launchAtSignIn": false })).unwrap_err();
+        assert_eq!(e, "Knock couldn't save the settings.");
+        assert_eq!(calls(&t), [true, true, false, false, true], "undone");
+        assert_eq!(saved(&t), Some(true));
+        assert_eq!(read(&t.shared).settings.launch_at_sign_in, Some(true));
+        // Same value again: nothing to undo.
+        assert!(set(&mut t, json!({ "launchAtSignIn": true })).is_err());
+        assert_eq!(calls(&t).len(), 6);
+        std::fs::remove_dir(&block).unwrap();
+    }
+
+    #[test]
+    fn simulated_sessions_and_the_test_knock_are_never_saved() {
+        let mut t = core("sim-snapshot");
+        t.hook(0, "real", "Stop", "", Some(P1));
+        t.sim(0, "simulated", "Stop", "");
+        t.core.handle(Msg::TestKnock, T0 + 1, NOON);
+        assert_eq!(read(&t.shared).sessions.sessions.len(), 3, "all shown");
+        t.core.flush();
+        let text = std::fs::read_to_string(t.dir.join(SNAPSHOT)).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let ids: Vec<_> = (v["sessions"].as_array().unwrap().iter())
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["real"]);
+        assert!(!text.contains("knock-test") && !text.contains("Knock test"));
+    }
+
+    #[test]
     fn rev_goes_up_by_one_per_change_and_only_on_change() {
         let mut t = core("rev");
         let revs = |outs: &[Out]| -> Vec<u64> {
@@ -1300,7 +1394,6 @@ mod tests {
                 "process",
                 "project",
                 "projectKey",
-                "simulated",
                 "sinceMs",
                 "state"
             ]

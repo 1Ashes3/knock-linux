@@ -5,9 +5,12 @@
 //! Knock's entries are the handlers whose `url` starts with
 //! `http://127.0.0.1:` and contains the adapter's path (§8.2 ownership).
 //! Everything else in the file is kept: other keys, other hooks, their order
-//! and their values. The file is written back as 2-space pretty JSON, the
-//! way Claude Code writes it, keeping the original's trailing newline and
-//! CRLF line ends.
+//! and their values. The file is written back as pretty JSON in its own
+//! indentation (tabs or N spaces; 2, the way Claude Code writes it, for a
+//! new or one-line file), keeping its trailing newline and CRLF line ends.
+//!
+//! A symlinked file is read and written at its final target; a file with
+//! more than one hard link is refused, since replacing it would split it.
 //!
 //! Nothing here logs the file, the token or a path (§11.5).
 
@@ -44,6 +47,8 @@ pub enum Problem {
     Backup,
     Write,
     NothingToRemove,
+    /// The file has another hard link.
+    Linked,
 }
 
 impl Problem {
@@ -74,6 +79,9 @@ impl Problem {
             }
             Self::NothingToRemove => {
                 "Knock isn't in your Claude Code settings, so there was nothing to remove."
+            }
+            Self::Linked => {
+                "Knock can't safely edit this settings file because it's linked from another place."
             }
         }
     }
@@ -311,10 +319,31 @@ pub fn installed(v: &J, spec: &HookSpec, port: u16, token: &str) -> bool {
         })
 }
 
-/// `v` as the file text: 2-space pretty JSON, with the original's trailing
-/// newline (a new file gets one) and CRLF line ends if it used them.
+/// The original's indent unit: the leading whitespace of its first indented
+/// line, if that is a tab or only spaces. Else (new, one-line or minified
+/// file) 2 spaces.
+fn indent(original: Option<&str>) -> &str {
+    let mut lines = original.into_iter().flat_map(str::lines).skip(1);
+    let first = lines.find_map(|l| {
+        let rest = l.trim_start_matches([' ', '\t']);
+        let lead = &l[..l.len() - rest.len()];
+        (!lead.is_empty() && !rest.is_empty()).then_some(lead)
+    });
+    match first {
+        Some(w) if w.starts_with('\t') => "\t",
+        Some(w) if w.bytes().all(|b| b == b' ') => w,
+        _ => "  ",
+    }
+}
+
+/// `v` as the file text: pretty JSON in the original's indentation, with
+/// its trailing newline (a new file gets one) and CRLF line ends if it used
+/// them.
 fn render(v: &J, original: Option<&str>) -> String {
-    let mut s = serde_json::to_string_pretty(v).unwrap_or_default();
+    let mut out = Vec::new();
+    let f = serde_json::ser::PrettyFormatter::with_indent(indent(original).as_bytes());
+    let _ = v.serialize(&mut serde_json::Serializer::with_formatter(&mut out, f));
+    let mut s = String::from_utf8(out).unwrap_or_default();
     if original.is_none_or(|o| o.ends_with('\n')) {
         s.push('\n');
     }
@@ -441,15 +470,22 @@ fn backup(dir: &Path, original: &[u8], now_ms: u64) -> io::Result<PathBuf> {
     Err(io::Error::other("no free backup name"))
 }
 
+/// Whether the file still holds exactly `original` (`None`: no file).
+fn unchanged(path: &Path, original: Option<&[u8]>) -> bool {
+    matches!(read(path), Ok(now) if now.as_deref() == original)
+}
+
 /// Backs up `original` (if there was a file), then writes `after`
-/// atomically, without a BOM. Returns the backup's path, or `""` when there
-/// was no file to back up.
+/// atomically, without a BOM, if `still()` holds just before the replace
+/// (else [`Problem::Stale`]; the backup stays). Returns the backup's path,
+/// or `""` when there was no file to back up.
 fn commit(
     path: &Path,
     backups: &Path,
     original: Option<&[u8]>,
     after: &str,
     now_ms: u64,
+    still: impl FnOnce() -> bool,
 ) -> Result<String, Problem> {
     let saved = match original {
         Some(o) => backup(backups, o, now_ms)
@@ -461,11 +497,54 @@ fn commit(
             .to_string(),
         None => String::new(),
     };
-    crate::settings::write_atomic(path, after.as_bytes()).map_err(|e| {
-        tracing::warn!(kind = ?e.kind(), "claude settings not written");
-        Problem::Write
-    })?;
-    Ok(saved)
+    match crate::settings::write_atomic_if(path, after.as_bytes(), still) {
+        Ok(true) => Ok(saved),
+        Ok(false) => {
+            tracing::info!("claude settings changed during the write; not written");
+            Err(Problem::Stale)
+        }
+        Err(e) => {
+            tracing::warn!(kind = ?e.kind(), "claude settings not written");
+            Err(Problem::Write)
+        }
+    }
+}
+
+/// The file setup reads and writes for `path`: its final target if it or a
+/// folder above it is a link, else `path` itself (also when there is no
+/// file yet). A link to nothing is unreadable, so it is never replaced by a
+/// file; a file with another hard link is [`Problem::Linked`].
+pub fn target(path: &Path) -> Result<PathBuf, Problem> {
+    let unreadable = |e: io::Error| {
+        tracing::warn!(kind = ?e.kind(), "claude settings unreadable");
+        Problem::Unreadable
+    };
+    let t = match std::fs::canonicalize(path) {
+        Ok(t) => t,
+        Err(e)
+            if e.kind() == io::ErrorKind::NotFound && std::fs::symlink_metadata(path).is_err() =>
+        {
+            return Ok(path.to_owned());
+        }
+        Err(e) => return Err(unreadable(e)),
+    };
+    let f = std::fs::File::open(&t).map_err(unreadable)?;
+    match crate::platform::link_count(&f).map_err(unreadable)? {
+        1 => Ok(t),
+        _ => {
+            tracing::info!("claude settings file has another hard link; not edited");
+            Err(Problem::Linked)
+        }
+    }
+}
+
+/// `path` as the user knows it: without the `\\?\` prefix `canonicalize` adds.
+fn shown(path: &Path) -> String {
+    let s = path.display().to_string();
+    match s.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => s.strip_prefix(r"\\?\").map_or(s.clone(), str::to_owned),
+    }
 }
 
 /// The preview the user is looking at.
@@ -512,8 +591,8 @@ impl Setup {
         self.previewed.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn path(&self) -> Result<&Path, Problem> {
-        self.path.as_deref().ok_or(Problem::NoPath)
+    fn path(&self) -> Result<PathBuf, Problem> {
+        target(self.path.as_deref().ok_or(Problem::NoPath)?)
     }
 
     fn server(&self) -> Result<(u16, &str), Problem> {
@@ -528,7 +607,7 @@ impl Setup {
         *last = None;
         let path = self.path()?;
         let (port, token) = self.server()?;
-        let raw = read(path)?;
+        let raw = read(&path)?;
         let plan = plan_install(raw.as_deref(), &self.spec, port, token)?;
         let (before, after) = plan.masked();
         *last = Some(Previewed {
@@ -536,20 +615,21 @@ impl Setup {
             after: plan.after,
         });
         Ok(Preview {
-            path: path.display().to_string(),
+            path: shown(&path),
             before,
             after,
         })
     }
 
     /// Writes what the last preview showed, re-read and re-computed now. If
-    /// the file or the result differs from the preview: [`Problem::Stale`].
+    /// the file or the result differs from the preview, or the file changes
+    /// before the replace: [`Problem::Stale`].
     pub fn apply(&self, now_ms: u64) -> Result<String, Problem> {
         let mut last = self.lock();
         let path = self.path()?;
         let (port, token) = self.server()?;
         let shown = last.take().ok_or(Problem::NoPreview)?;
-        let raw = read(path)?;
+        let raw = read(&path)?;
         if raw != shown.raw {
             return Err(Problem::Stale);
         }
@@ -557,7 +637,9 @@ impl Setup {
         if plan.after != shown.after {
             return Err(Problem::Stale);
         }
-        let saved = commit(path, &self.backups, raw.as_deref(), &plan.after, now_ms)?;
+        let raw = raw.as_deref();
+        let still = || unchanged(&path, raw);
+        let saved = commit(&path, &self.backups, raw, &plan.after, now_ms, still)?;
         tracing::info!(events = self.spec.events.len(), "claude hooks installed");
         Ok(saved)
     }
@@ -567,9 +649,11 @@ impl Setup {
         let mut last = self.lock();
         *last = None;
         let path = self.path()?;
-        let raw = read(path)?;
+        let raw = read(&path)?;
         let plan = plan_remove(raw.as_deref(), &self.spec)?;
-        let saved = commit(path, &self.backups, raw.as_deref(), &plan.after, now_ms)?;
+        let raw = raw.as_deref();
+        let still = || unchanged(&path, raw);
+        let saved = commit(&path, &self.backups, raw, &plan.after, now_ms, still)?;
         tracing::info!("claude hooks removed");
         Ok(saved)
     }
@@ -579,7 +663,7 @@ impl Setup {
     pub fn installed(&self) -> Result<bool, Problem> {
         let _last = self.lock();
         let (port, token) = self.server()?;
-        let v = parse(read(self.path()?)?.as_deref())?;
+        let v = parse(read(&self.path()?)?.as_deref())?;
         install(&mut v.clone(), &self.spec, port, token)?;
         Ok(installed(&v, &self.spec, port, token))
     }
@@ -1128,6 +1212,161 @@ mod tests {
         assert!(text.ends_with('}'));
     }
 
+    /// `text` with each leading 2-space step replaced by `unit`.
+    fn reindent(text: &str, unit: &str) -> String {
+        (text.split_inclusive('\n'))
+            .map(|l| {
+                let n = l.len() - l.trim_start_matches(' ').len();
+                format!("{}{}", unit.repeat(n / 2), &l[n..])
+            })
+            .collect()
+    }
+
+    fn install_into(d: &Dir, bytes: &[u8]) -> String {
+        d.write(bytes);
+        let s = d.setup();
+        s.preview().unwrap();
+        s.apply(T).unwrap();
+        d.read()
+    }
+
+    #[test]
+    fn the_files_own_indentation_is_kept() {
+        let two = install_into(&Dir::new(), REAL.as_bytes());
+        for unit in ["\t", "    ", "  "] {
+            let original = reindent(REAL, unit);
+            let text = install_into(&Dir::new(), original.as_bytes());
+            // Knock's entries in the same indentation as the rest.
+            assert_eq!(text, reindent(&two, unit), "{unit:?}");
+            // Byte-identical outside "hooks".
+            let head = |t: &str| t[..t.find(&format!("\n{unit}\"hooks\"")).unwrap()].to_owned();
+            let tail = |t: &str| t[t.find(&format!("\n{unit}\"zeta\"")).unwrap()..].to_owned();
+            assert_eq!(head(&text), head(&original), "{unit:?}");
+            assert_eq!(tail(&text), tail(&original), "{unit:?}");
+        }
+        // Tabs with CRLF.
+        let crlf = reindent(REAL, "\t").replace('\n', "\r\n");
+        let text = install_into(&Dir::new(), crlf.as_bytes());
+        assert_eq!(text, reindent(&two, "\t").replace('\n', "\r\n"));
+        // One line or minified: 2 spaces.
+        let text = install_into(&Dir::new(), br#"{"model":"opus"}"#);
+        assert!(text.starts_with("{\n  \"model\": \"opus\",\n  \"hooks\": {\n    \""));
+        assert_eq!(indent(None), "  ");
+        assert_eq!(indent(Some("{\n\n   \"a\": 1\n}")), "   ");
+        assert_eq!(indent(Some("{\n \t\"a\": 1\n}")), "  ", "mixed");
+    }
+
+    #[test]
+    fn a_symlinked_file_is_read_backed_up_and_written_at_its_target() {
+        let d = Dir::new();
+        let real = d.0.join("dotfiles").join("claude-settings.json");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(d.file().parent().unwrap()).unwrap();
+        std::fs::write(&real, REAL).unwrap();
+        if let Err(e) = std::os::windows::fs::symlink_file(&real, d.file()) {
+            // Needs Developer Mode or admin rights; `target` is still
+            // covered by the hard-link and missing-file tests.
+            eprintln!("skipped: can't create a symlink here ({:?})", e.kind());
+            return;
+        }
+        let is_link = || {
+            std::fs::symlink_metadata(d.file())
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        };
+        let s = d.setup();
+        let p = s.preview().unwrap();
+        assert_eq!(p.path, shown(&std::fs::canonicalize(&real).unwrap()));
+        assert!(
+            p.path.ends_with(r"dotfiles\claude-settings.json"),
+            "{}",
+            p.path
+        );
+        assert!(!p.path.starts_with(r"\\?\"));
+        let backup = s.apply(T).unwrap();
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), REAL);
+        assert!(is_link(), "the link stays a link");
+        let written = std::fs::read_to_string(&real).unwrap();
+        assert_exact_hooks(&v(&written));
+        assert_eq!(d.read(), written, "read through the link");
+        s.remove(T + 1).unwrap();
+        assert!(is_link());
+        assert_eq!(
+            v(&std::fs::read_to_string(&real).unwrap()),
+            without_knock(v(REAL))
+        );
+        for dir in [real.parent().unwrap(), d.file().parent().unwrap()] {
+            assert_eq!(std::fs::read_dir(dir).unwrap().count(), 1, "no temp file");
+        }
+        // A link to nothing is not "no file": nothing replaces the link.
+        std::fs::remove_file(&real).unwrap();
+        assert_eq!(s.preview().err(), Some(Problem::Unreadable));
+        assert_eq!(s.remove(T + 2), Err(Problem::Unreadable));
+        assert!(is_link() && !real.exists());
+    }
+
+    #[test]
+    fn a_file_with_another_hard_link_is_refused_and_untouched() {
+        let d = Dir::new();
+        d.write(REAL.as_bytes());
+        let other = d.0.join("other-name.json");
+        std::fs::hard_link(d.file(), &other).unwrap();
+        let s = d.setup();
+        assert_eq!(s.preview().err(), Some(Problem::Linked));
+        assert_eq!(s.apply(T), Err(Problem::Linked));
+        assert_eq!(s.remove(T), Err(Problem::Linked));
+        assert_eq!(s.installed(), Err(Problem::Linked));
+        assert_eq!(d.read(), REAL);
+        assert!(d.backups().is_empty());
+        assert_eq!(
+            Problem::Linked.message(),
+            "Knock can't safely edit this settings file because it's linked from another place."
+        );
+        // One name again: setup works.
+        std::fs::remove_file(&other).unwrap();
+        s.preview().unwrap();
+        s.apply(T).unwrap();
+        // A file that doesn't exist yet is written where it is named.
+        assert_eq!(target(&d.0.join("none.json")), Ok(d.0.join("none.json")));
+    }
+
+    #[test]
+    fn a_change_between_the_backup_and_the_replace_aborts_and_keeps_the_backup() {
+        let d = Dir::new();
+        d.write(b"{}");
+        let (path, backups) = (d.file(), d.0.join("backups"));
+        let sonnet = br#"{"model":"sonnet"}"#;
+        // Claude Code writes the file after the backup, before the rename.
+        let still = || {
+            d.write(sonnet);
+            unchanged(&path, Some(b"{}"))
+        };
+        let r = commit(&path, &backups, Some(b"{}"), "{\"x\": 1}\n", T, still);
+        assert_eq!(r, Err(Problem::Stale));
+        assert_eq!(d.read().as_bytes(), sonnet, "Claude Code's change kept");
+        let kept = d.backups();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(std::fs::read(&kept[0]).unwrap(), b"{}");
+        let left = std::fs::read_dir(path.parent().unwrap()).unwrap().count();
+        assert_eq!(left, 1, "the temp file, which holds the token, is gone");
+        // A file that appears in between, too.
+        std::fs::remove_file(&path).unwrap();
+        let still = || {
+            d.write(b"{}");
+            unchanged(&path, None)
+        };
+        let r = commit(&path, &backups, None, "{\"x\": 1}\n", T, still);
+        assert_eq!(r, Err(Problem::Stale));
+        assert_eq!(d.read(), "{}");
+        // Unchanged: written.
+        let r = commit(&path, &backups, Some(b"{}"), "{\"x\": 1}\n", T, || {
+            unchanged(&path, Some(b"{}"))
+        });
+        assert!(r.is_ok());
+        assert_eq!(d.read(), "{\"x\": 1}\n");
+    }
+
     #[test]
     fn apply_needs_a_fresh_preview_and_detects_a_changed_file() {
         let d = Dir::new();
@@ -1284,6 +1523,7 @@ mod tests {
             Backup,
             Write,
             NothingToRemove,
+            Linked,
         ] {
             let m = p.message();
             assert!(
