@@ -1,0 +1,350 @@
+/* Settings and setup (SPEC.md §10.4, §10.5). Follows the Windows app theme through
+   prefers-color-scheme. Text contrast is WCAG AA in both themes (checked by the visual
+   tests). Nothing animates, so reduced motion needs no special case. */
+:root {
+	--bg: #f3f3f3;
+	--card: #ffffff;
+	--text: #1b1b1b;
+	--muted: #5c5c5c;
+	--line: #8a8a8a;
+	--accent: #005fb8;
+	--on-accent: #ffffff;
+	--error: #b3261e;
+	--ok: #0e700e;
+	--add: #dff6dd;
+	--del: #fde7e9;
+	--focus: #1b1b1b;
+	color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #202020;
+		--card: #2b2b2b;
+		--text: #ffffff;
+		--muted: #c8c8c8;
+		--line: #9a9a9a;
+		--accent: #60cdff;
+		--on-accent: #000000;
+		--error: #ffb4ab;
+		--ok: #6ccb5f;
+		--add: #1f3b20;
+		--del: #4a2328;
+		--focus: #ffffff;
+	}
+}
+
+html {
+	background: var(--bg);
+	color: var(--text);
+	font:
+		14px / 1.5 "Segoe UI",
+		system-ui,
+		sans-serif;
+}
+
+body {
+	margin: 0;
+}
+
+main {
+	max-width: 640px;
+	margin: 0 auto;
+	padding: 24px;
+}
+
+h1 {
+	font-size: 24px;
+	font-weight: 600;
+	margin: 0 0 16px;
+}
+
+h1:focus {
+	outline: none;
+}
+
+h2 {
+	font-size: 18px;
+	font-weight: 600;
+	margin: 0 0 12px;
+}
+
+h3 {
+	font-size: 15px;
+	font-weight: 600;
+	margin: 0 0 8px;
+}
+
+p,
+ul {
+	margin: 0 0 12px;
+}
+
+ul {
+	padding-left: 20px;
+}
+
+.counter,
+.help {
+	color: var(--muted);
+}
+
+.counter {
+	margin: 0 0 4px;
+}
+
+.help {
+	margin: 0 0 8px;
+}
+
+.error {
+	color: var(--error);
+	font-weight: 600;
+}
+
+.question {
+	font-size: 16px;
+	font-weight: 600;
+}
+
+.path {
+	font-family: Consolas, monospace;
+	overflow-wrap: anywhere;
+}
+
+/* --- Setup --- */
+
+.screen {
+	display: flex;
+	flex-direction: column;
+	min-height: calc(100vh - 48px);
+	box-sizing: border-box;
+}
+
+.screen .body {
+	flex: 1;
+}
+
+.actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	justify-content: flex-end;
+	margin-top: 16px;
+}
+
+.actions.start {
+	justify-content: flex-start;
+}
+
+/* Back sits on the left, the way forward on the right. */
+.screen .actions > button:first-child {
+	margin-right: auto;
+}
+
+fieldset {
+	border: 0;
+	margin: 0 0 12px;
+	padding: 0;
+}
+
+legend {
+	padding: 0;
+	margin-bottom: 8px;
+}
+
+.option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 0;
+}
+
+.change details {
+	margin-top: 8px;
+}
+
+summary {
+	cursor: pointer;
+	color: var(--accent);
+	font-weight: 600;
+	padding: 4px 0;
+}
+
+.diff {
+	margin: 0;
+	padding: 8px 0;
+	max-height: 320px;
+	overflow: auto;
+	background: var(--card);
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	font:
+		12px / 1.45 Consolas,
+		monospace;
+}
+
+.diff span {
+	display: block;
+	padding: 0 8px;
+	white-space: pre;
+}
+
+.diff .add {
+	background: var(--add);
+}
+
+.diff .del {
+	background: var(--del);
+}
+
+/* --- Settings --- */
+
+.settings section {
+	background: var(--card);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	padding: 16px;
+	margin-bottom: 16px;
+}
+
+.field {
+	margin-bottom: 16px;
+}
+
+.field:last-child {
+	margin-bottom: 0;
+}
+
+.field > label,
+.field legend,
+.toggle label {
+	display: block;
+	font-weight: 600;
+}
+
+.options {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0 20px;
+}
+
+.toggle {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+}
+
+.toggle input {
+	margin-top: 4px;
+}
+
+.pair {
+	display: flex;
+	gap: 24px;
+	padding-left: 28px;
+}
+
+.panel {
+	border-left: 4px solid var(--accent);
+	padding-left: 12px;
+}
+
+.panel .actions {
+	justify-content: flex-start;
+}
+
+.checks {
+	list-style: none;
+	padding: 0;
+}
+
+.checks li {
+	display: flex;
+	gap: 10px;
+	padding: 6px 0;
+}
+
+.checks .mark {
+	font-weight: 700;
+	width: 1.2em;
+}
+
+.checks .ok .mark {
+	color: var(--ok);
+}
+
+.checks .bad .mark {
+	color: var(--error);
+}
+
+.checks .detail {
+	display: block;
+	color: var(--muted);
+}
+
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+/* --- Controls --- */
+
+button {
+	font: inherit;
+	min-height: 32px;
+	padding: 4px 16px;
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	background: var(--card);
+	color: var(--text);
+	cursor: pointer;
+}
+
+button.primary {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--on-accent);
+	font-weight: 600;
+}
+
+button:disabled {
+	cursor: default;
+	opacity: 0.6;
+}
+
+input[type="number"],
+input[type="time"] {
+	font: inherit;
+	min-height: 30px;
+	padding: 2px 8px;
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	background: var(--card);
+	color: var(--text);
+}
+
+input[type="number"] {
+	width: 6em;
+}
+
+input[type="radio"],
+input[type="checkbox"] {
+	width: 18px;
+	height: 18px;
+	margin: 0;
+	accent-color: var(--accent);
+}
+
+input[aria-invalid="true"] {
+	border: 2px solid var(--error);
+}
+
+:focus-visible {
+	outline: 2px solid var(--focus);
+	outline-offset: 2px;
+}

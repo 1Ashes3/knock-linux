@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="color-scheme" content="light dark" />
+		<title>Knock settings (mock)</title>
+		<!-- Dev only, never built. The fake core is in mock.ts; parameters are listed there. -->
+		<style>
+			#log {
+				max-width: 640px;
+				margin: 0 auto 24px;
+				padding: 12px;
+				font: 12px/1.4 Consolas, monospace;
+				opacity: 0.7;
+				white-space: pre-wrap;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="root"></div>
+		<pre id="log" aria-hidden="true"></pre>
+		<script type="module" src="./mock.ts"></script>
+	</body>
+</html>

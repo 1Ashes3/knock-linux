@@ -1,13 +1,14 @@
 import { defineConfig } from "@playwright/test";
 
-// `pnpm test:visual` (§12.1): screenshots of the strip against the mocked bridge
-// (overlay/dev/mock.html). Uses the installed Edge, the same engine as WebView2.
+// `pnpm test:visual` (§12.1): screenshots of the strip (overlay/dev/mock.html) and of
+// setup and Settings (settings/dev/mock.html), each against a mocked
+// bridge. Uses the installed Edge, the same engine as WebView2.
 const PORT = 5179; // not 5173, which `pnpm dev` holds
 
 export default defineConfig({
-	testDir: "overlay/visual",
-	testMatch: "*.visual.ts",
-	snapshotPathTemplate: "{testDir}/screenshots/{arg}{ext}",
+	testDir: ".",
+	testMatch: "**/visual/*.visual.ts",
+	snapshotPathTemplate: "{testDir}/{testFileDir}/screenshots/{arg}{ext}",
 	reporter: "list",
 	outputDir: "node_modules/.playwright", // failure diffs; kept out of git
 	use: { channel: "msedge", baseURL: `http://localhost:${PORT}` },
