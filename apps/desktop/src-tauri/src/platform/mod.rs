@@ -29,6 +29,10 @@ pub trait Platform: Send + Sync {
     /// Applies the strip's window styles (§9.1), click-through on, and moves
     /// it topmost to `rect` without activating it.
     fn place_strip(&self, rect: Rect) -> std::io::Result<()>;
+    /// Shows the strip without activating it, then re-asserts its styles.
+    /// The strip is created hidden and shown only after `place_strip`, so it
+    /// is never visible without its §9.1 styles (ADR 0001).
+    fn show_strip(&self);
     /// Cursor position in physical screen pixels.
     fn cursor_pos(&self) -> Option<(i32, i32)>;
     /// `true`: the strip ignores the mouse (§9.3).
@@ -68,6 +72,7 @@ impl Platform for FakePlatform {
     fn place_strip(&self, _: Rect) -> std::io::Result<()> {
         unimplemented!()
     }
+    fn show_strip(&self) {}
     fn cursor_pos(&self) -> Option<(i32, i32)> {
         None
     }

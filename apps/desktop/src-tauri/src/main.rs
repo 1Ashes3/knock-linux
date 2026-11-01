@@ -189,11 +189,12 @@ fn apply(app: &AppHandle, tray: &tray::Tray, out: Out) {
 }
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    // Created visible but unfocused, so tao shows it with SW_SHOWNOACTIVATE.
-    // Never call anything that focuses it (§9.1).
+    // Created hidden; shown by the platform layer only once its §9.1 styles
+    // and position are applied (below). Never call anything that focuses it.
     let url = WebviewUrl::App("/overlay/index.html".into());
     let window = WebviewWindowBuilder::new(app, "strip", url)
         .title("Knock")
+        .visible(false)
         .transparent(true)
         .decorations(false)
         .always_on_top(true)
@@ -260,6 +261,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let slot = pipeline::read(&shared).settings.size.height();
     let rect = strip::place(d.work_area, d.scale, SLOTS * slot, slot);
     platform.place_strip(rect)?;
+    platform.show_strip();
     let strip = Arc::new(Mutex::new(Strip {
         rect,
         scale: d.scale,

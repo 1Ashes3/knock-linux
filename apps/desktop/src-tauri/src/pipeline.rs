@@ -21,7 +21,7 @@ use knock_core::{
     iso8601,
 };
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -42,6 +42,8 @@ pub enum Msg {
     },
     Ack(String),
     Dismiss(String),
+    /// The tray's Pause notifications item: flips the in-effect value.
+    TogglePause,
     /// A §8.6 merge patch; `reply` gets the saved settings or why not.
     Settings {
         patch: serde_json::Value,
@@ -130,6 +132,10 @@ pub struct Core {
     /// Last value sent as `SetSuppressed`.
     suppressed: bool,
     procs: HashMap<String, Found>,
+    /// Sessions whose missing connection owner was already logged.
+    unowned: HashSet<String>,
+    /// A `Persist` not yet written; [`Core::flush`] writes it.
+    dirty: Option<u64>,
     /// FR-8: sessions that became Ready, never shown. For Phase 4 (FR-9).
     #[cfg_attr(not(test), allow(dead_code))]
     ready: Vec<String>,
@@ -161,6 +167,8 @@ impl Core {
             settings,
             suppressed,
             procs: HashMap::new(),
+            unowned: HashSet::new(),
+            dirty: None,
             ready: Vec::new(),
             view: SessionsChanged::default(),
             needs_you: 0,
@@ -173,8 +181,11 @@ impl Core {
         core
     }
 
+    /// Handles one message. Suppression is re-checked first, so an event in
+    /// the first second of quiet hours is already covered (§8.4).
     pub fn handle(&mut self, msg: Msg, now: u64, local_minute: u32) -> Vec<Out> {
         let mut run = Run::default();
+        self.suppress(local_minute, &mut run);
         match msg {
             Msg::Hook {
                 ts,
@@ -184,6 +195,7 @@ impl Core {
             } => self.hook(ts, &body, sim, owner, &mut run),
             Msg::Ack(id) => self.user(Kind::UserAck, &id, now, &mut run),
             Msg::Dismiss(id) => self.user(Kind::UserDismiss, &id, now, &mut run),
+            Msg::TogglePause => self.toggle_pause(local_minute, &mut run),
             Msg::Settings { patch, reply } => {
                 let r = self.update(&patch, local_minute, &mut run);
                 if let Some(tx) = reply {
@@ -230,11 +242,15 @@ impl Core {
             // 0014); walked again only when the owner changed.
             if known.is_none() || event.kind == Kind::TurnStarted {
                 match owner {
+                    // Once per session until it is found, not on every hook.
                     None if known.is_none() => {
-                        tracing::warn!(session = ?id, "connection owner not found");
+                        if self.unowned.insert(id.clone()) {
+                            tracing::warn!(session = ?id, "connection owner not found");
+                        }
                     }
                     Some(p) if Some(p) != known => {
                         let found = self.walk(id, p, &event.context.project);
+                        self.unowned.remove(id);
                         self.procs.insert(id.clone(), found);
                         run.persist = true;
                     }
@@ -293,11 +309,30 @@ impl Core {
             tracing::warn!(kind = ?e.kind(), "settings not saved");
             return Err("Knock couldn't save the settings.".into());
         }
-        self.engine.set_settings(new.engine());
-        self.settings = new.clone();
-        self.suppress(local_minute, run);
-        run.outs.push(Out::Settings(new.clone()));
+        self.apply_settings(new.clone(), local_minute, run);
         Ok(new)
+    }
+
+    /// From the in-effect value, so two quick clicks toggle twice. Applies
+    /// even if the save fails, so the check mark and the behavior agree; the
+    /// next successful save persists it.
+    fn toggle_pause(&mut self, local_minute: u32, run: &mut Run) {
+        let new = Settings {
+            pause_notifications: !self.settings.pause_notifications,
+            ..self.settings.clone()
+        };
+        if let Err(e) = settings::save(&self.dir, &new) {
+            tracing::warn!(kind = ?e.kind(), "settings not saved; pause applied anyway");
+        }
+        self.apply_settings(new, local_minute, run);
+    }
+
+    /// Applies `new` at once and reports it (`settings-changed`, the tray).
+    fn apply_settings(&mut self, new: Settings, local_minute: u32, run: &mut Run) {
+        self.engine.set_settings(new.engine());
+        self.settings = new;
+        self.suppress(local_minute, run);
+        run.outs.push(Out::Settings(self.settings.clone()));
     }
 
     /// Sends `SetSuppressed` when its value changed.
@@ -344,6 +379,8 @@ impl Core {
         self.procs
             .retain(|id, _| sessions.iter().any(|s| &s.id == id));
         self.ready.retain(|id| sessions.iter().any(|s| &s.id == id));
+        self.unowned
+            .retain(|id| sessions.iter().any(|s| &s.id == id));
         let views = self.views();
         if views != self.view.sessions {
             self.view = SessionsChanged {
@@ -360,10 +397,18 @@ impl Core {
             outs.push(Out::Tray(needs_you));
         }
         if run.persist {
-            self.persist(now);
+            self.dirty = Some(now);
         }
         self.publish();
         outs
+    }
+
+    /// Writes the snapshot if a step asked for it. Called after the step's
+    /// outputs are applied, so the disk never delays the UI or a toast (§6).
+    pub fn flush(&mut self) {
+        if let Some(now) = self.dirty.take() {
+            self.persist(now);
+        }
     }
 
     fn views(&self) -> Vec<SessionView> {
@@ -540,6 +585,7 @@ pub fn run(mut core: Core, rx: Receiver<Msg>, mut apply: impl FnMut(Out)) {
             Ok(msg) => {
                 let outs = core.handle(msg, now_ms(), platform::local_minute());
                 outs.into_iter().for_each(&mut apply);
+                core.flush();
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
@@ -549,6 +595,7 @@ pub fn run(mut core: Core, rx: Receiver<Msg>, mut apply: impl FnMut(Out)) {
         if t >= next {
             let outs = core.tick(now_ms(), platform::local_minute());
             outs.into_iter().for_each(&mut apply);
+            core.flush();
             next = (next + SECOND).max(t);
         }
     }
@@ -582,6 +629,8 @@ mod tests {
         shared: Shared,
         fake: Arc<FakePlatform>,
         dir: PathBuf,
+        /// Local minute the hook helpers pass.
+        minute: u32,
     }
 
     impl Drop for T {
@@ -601,6 +650,7 @@ mod tests {
             shared,
             fake,
             dir,
+            minute: NOON,
         }
     }
 
@@ -624,7 +674,7 @@ mod tests {
                 sim: false,
                 owner,
             };
-            self.core.handle(msg, T0 + t, NOON)
+            self.core.handle(msg, T0 + t, self.minute)
         }
         fn sim(&mut self, t: u64, session: &str, hook: &str, extra: &str) -> Vec<Out> {
             let msg = Msg::Hook {
@@ -633,7 +683,7 @@ mod tests {
                 sim: true,
                 owner: None,
             };
-            self.core.handle(msg, T0 + t, NOON)
+            self.core.handle(msg, T0 + t, self.minute)
         }
         fn states(&self) -> Vec<(String, &'static str)> {
             let p = read(&self.shared);
@@ -798,6 +848,7 @@ mod tests {
         // Nothing anywhere carries the free text.
         let mut seen = format!("{outs:?}");
         seen += &serde_json::to_string(&read(&t.shared).sessions).unwrap();
+        t.core.flush();
         seen += &std::fs::read_to_string(t.dir.join(SNAPSHOT)).unwrap();
         assert!(!seen.contains("secret"), "{seen}");
     }
@@ -877,19 +928,139 @@ mod tests {
             T0,
             NOON,
         );
-        t.core.tick(T0 + 1000, 21 * 60 + 59);
+        t.minute = 21 * 60 + 59;
+        t.core.tick(T0 + 1000, t.minute);
         let outs = t.hook(2000, "b", "PermissionRequest", ASK_WRITE, None);
         assert_eq!(toasts(&outs).len(), 1, "21:59 is not quiet");
-        t.core.tick(T0 + 3000, 22 * 60);
+        t.minute = 22 * 60;
+        t.core.tick(T0 + 3000, t.minute);
         let outs = t.hook(4000, "c", "PermissionRequest", ASK_WRITE, None);
         assert!(toasts(&outs).is_empty(), "22:00 is quiet");
-        t.core.tick(T0 + 5000, 3 * 60);
+        t.minute = 3 * 60;
+        t.core.tick(T0 + 5000, t.minute);
         assert!(toasts(&t.hook(6000, "d", "PermissionRequest", ASK_WRITE, None)).is_empty());
-        t.core.tick(T0 + 7000, 8 * 60);
+        t.minute = 8 * 60;
+        t.core.tick(T0 + 7000, t.minute);
         assert_eq!(
             toasts(&t.hook(8000, "e", "PermissionRequest", ASK_WRITE, None)).len(),
             1
         );
+    }
+
+    #[test]
+    fn quiet_hours_cover_a_hook_before_the_next_tick() {
+        let mut t = core("quiet-hook");
+        let msg = Msg::Settings {
+            patch: json!({ "quietHours": { "enabled": true } }),
+            reply: None,
+        };
+        t.core.handle(msg, T0, NOON);
+        t.minute = 21 * 60 + 59;
+        t.core.tick(T0 + 1000, t.minute);
+        // 22:00 starts between ticks: the hook itself checks.
+        t.minute = 22 * 60;
+        let outs = t.hook(1500, "a", "PermissionRequest", ASK_WRITE, None);
+        assert!(toasts(&outs).is_empty(), "first second of quiet hours");
+        // 08:00 ends it the same way.
+        t.minute = 8 * 60;
+        let outs = t.hook(2000, "b", "PermissionRequest", ASK_WRITE, None);
+        assert_eq!(toasts(&outs).len(), 1);
+    }
+
+    fn pauses(outs: &[Out]) -> Vec<bool> {
+        outs.iter()
+            .filter_map(|o| match o {
+                Out::Settings(s) => Some(s.pause_notifications),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tray_pause_toggles_from_the_in_effect_value() {
+        let mut t = core("toggle");
+        // Two quick clicks, both queued before either is handled: on, then off.
+        assert_eq!(pauses(&t.core.handle(Msg::TogglePause, T0, NOON)), [true]);
+        assert_eq!(pauses(&t.core.handle(Msg::TogglePause, T0, NOON)), [false]);
+        assert!(!settings::load(&t.dir, T0).pause_notifications);
+        assert!(!read(&t.shared).settings.pause_notifications);
+        t.core.handle(Msg::TogglePause, T0, NOON);
+        assert!(settings::load(&t.dir, T0).pause_notifications, "saved");
+        assert!(toasts(&t.hook(0, "a", "PermissionRequest", ASK_WRITE, None)).is_empty());
+    }
+
+    #[test]
+    fn tray_pause_applies_even_when_the_save_fails() {
+        let mut t = core("toggle-fail");
+        // A folder where the temporary file goes makes every save fail.
+        let block = t.dir.join("settings.json.tmp");
+        std::fs::create_dir(&block).unwrap();
+        let outs = t.core.handle(Msg::TogglePause, T0, NOON);
+        assert_eq!(
+            pauses(&outs),
+            [true],
+            "the check mark gets the in-effect value"
+        );
+        assert!(read(&t.shared).settings.pause_notifications);
+        assert!(!settings::load(&t.dir, T0).pause_notifications, "not saved");
+        let outs = t.hook(0, "a", "PermissionRequest", ASK_WRITE, None);
+        assert!(toasts(&outs).is_empty(), "suppressed all the same");
+        assert_eq!(t.states(), [("a".into(), "needs_input")]);
+        // The next successful save persists it.
+        std::fs::remove_dir(&block).unwrap();
+        let msg = Msg::Settings {
+            patch: json!({ "sounds": true }),
+            reply: None,
+        };
+        t.core.handle(msg, T0, NOON);
+        let saved = settings::load(&t.dir, T0);
+        assert!(saved.pause_notifications && saved.sounds);
+    }
+
+    #[test]
+    fn the_snapshot_is_written_after_the_outputs() {
+        let mut t = core("flush");
+        let outs = t.hook(0, "a", "PermissionRequest", ASK_WRITE, Some(P1));
+        assert_eq!(toasts(&outs).len(), 1);
+        assert!(outs.iter().any(|o| matches!(o, Out::Sessions(_))));
+        assert!(!t.dir.join(SNAPSHOT).exists(), "not before the outputs");
+        t.core.flush();
+        let text = std::fs::read_to_string(t.dir.join(SNAPSHOT)).unwrap();
+        assert!(text.contains("needs_input"));
+        assert!(
+            !t.dir.join("sessions.json.tmp").exists(),
+            "atomic: no leftover"
+        );
+        // Nothing new: no write.
+        std::fs::remove_file(t.dir.join(SNAPSHOT)).unwrap();
+        t.core.flush();
+        assert!(!t.dir.join(SNAPSHOT).exists());
+    }
+
+    #[test]
+    fn a_missing_owner_is_logged_once_per_session_until_found() {
+        let logs = temp_dir("owner-log");
+        let mut t = core("owner-log");
+        let sub = crate::log::FileLog::new(logs.clone());
+        tracing::subscriber::with_default(sub, || {
+            for i in 0..5 {
+                t.hook(i, "a", "PreToolUse", r#","tool_name":"Read""#, None);
+            }
+            t.hook(10, "b", "Stop", "", None);
+            t.hook(20, "a", "UserPromptSubmit", "", Some(P1));
+            t.hook(30, "a", "Stop", "", None);
+        });
+        let text: String = std::fs::read_dir(&logs)
+            .unwrap()
+            .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+            .collect();
+        let lines: Vec<_> = text
+            .lines()
+            .filter(|l| l.contains("connection owner not found"))
+            .collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].contains(r#"session="a""#) && lines[1].contains(r#"session="b""#));
+        let _ = std::fs::remove_dir_all(&logs);
     }
 
     #[test]
@@ -1038,6 +1209,7 @@ mod tests {
             owner: Some(P1),
         };
         t.core.handle(msg, T0, NOON);
+        t.core.flush();
         let text = std::fs::read_to_string(t.dir.join(SNAPSHOT)).unwrap();
         for bad in [
             "agentsecret123",

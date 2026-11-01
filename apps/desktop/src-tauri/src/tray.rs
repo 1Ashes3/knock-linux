@@ -54,12 +54,10 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
         .tooltip(tooltip(0))
         .menu(&menu)
         .on_menu_event(move |app, e| match e.id().as_ref() {
+            // The pipeline flips its in-effect value and sets the check
+            // mark to the result.
             "pause" => {
-                // From the saved value, not the item: the pipeline sets the
-                // check mark back to whatever was saved.
-                let on = !pipeline::read(&shared).settings.pause_notifications;
-                let patch = serde_json::json!({ "pauseNotifications": on });
-                let _ = tx.send(Msg::Settings { patch, reply: None });
+                let _ = tx.send(Msg::TogglePause);
             }
             "settings" => tracing::info!("tray: the settings window is not built yet"),
             "quit" => app.exit(0),

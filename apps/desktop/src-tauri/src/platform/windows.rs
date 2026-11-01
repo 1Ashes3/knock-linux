@@ -29,9 +29,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, GA_ROOTOWNER,
     GWL_EXSTYLE, GetAncestor, GetClassNameW, GetCursorPos, GetWindowLongPtrW, GetWindowTextW,
     GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible, SW_RESTORE,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-    ShowWindowAsync, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT,
+    SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, ShowWindowAsync, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 use windows::core::BOOL;
 
@@ -265,6 +265,17 @@ impl Platform for WindowsPlatform {
             )?;
         }
         Ok(())
+    }
+
+    fn show_strip(&self) {
+        // Not tao's `set_visible`: it rewrites the styles. tao keeps thinking
+        // the strip is hidden, so any tao setter on it would hide it again
+        // (tao `apply_diff`); ADR 0001 already rules those out.
+        // SAFETY: valid window handle owned by this process.
+        unsafe {
+            let _ = ShowWindow(self.hwnd(), SW_SHOWNOACTIVATE);
+        }
+        self.set_click_through(true);
     }
 
     fn cursor_pos(&self) -> Option<(i32, i32)> {
