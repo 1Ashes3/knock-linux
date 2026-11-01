@@ -1,6 +1,6 @@
 # 0023: The Repair flow and its command
 
-- **Status:** Proposed
+- **Status:** Approved by user on 2026-11-02
 - **Date:** 2026-11-02
 - **Spec sections:** §8.1, §8.5
 - **VERIFY item:** none

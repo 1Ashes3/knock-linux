@@ -1,6 +1,6 @@
 # 0022: Follow CLAUDE_CONFIG_DIR when it is set
 
-- **Status:** Proposed
+- **Status:** Approved by user on 2026-11-02
 - **Date:** 2026-11-02
 - **Spec sections:** §8.2
 - **VERIFY item:** none

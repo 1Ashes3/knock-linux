@@ -172,7 +172,7 @@ Owner: **CW** = `core-windows` agent, **UI** = `ui` agent.
 
 ### 8.2 Claude Code hook configuration (written by setup)
 
-- File: `%USERPROFILE%\.claude\settings.json`.
+- File: `<CLAUDE_CONFIG_DIR>\settings.json` if that variable is set, else `%USERPROFILE%\.claude\settings.json` (ADR 0022).
 - Events registered: `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Notification`, `Stop`, `StopFailure`, `SubagentStart`, `SubagentStop`, `PreCompact`, `SessionEnd`. `SessionStart` is not registered: Claude Code does not support HTTP hooks for it (ADR 0005). `StopFailure` is the `agent.failed` source (ADR 0007).
 - Each event gets one HTTP handler. Shape (`timeout` is in seconds, ADR 0006):
 
@@ -381,7 +381,8 @@ The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_e
 | `set_hit_regions(regions)`                    | `regions: [{ x, y, width, height }]`: character rectangles in logical px, relative to the strip; replaces the previous set; empty means fully click-through (§9.3, ADR 0003) |
 | `request_strip_size(width, height)`           | UI asks for the size it needs; core positions the window (§9.2)                         |
 | `get_settings()`, `update_settings(patch)`    | Read and change settings (§8.6)                                                         |
-| `setup_status()`                              | Hooks installed? Server OK? Monitors available?                                         |
+| `setup_status()`                              | Hooks installed? Server OK (with `serverError`, ADR 0023)? Monitors available?          |
+| `repair_server()`                             | Pick a new port and restart the server (§8.1, ADR 0023)                                 |
 | `setup_list_monitors()`                       | For the setup step that picks a taskbar                                                 |
 | `setup_preview_hooks()`                       | Returns `{ path, before, after }` for the preview screen                                |
 | `setup_apply_hooks()`, `setup_remove_hooks()` | Write or remove hooks (§8.2)                                                            |
