@@ -1,4 +1,4 @@
-//! The state engine (SPEC.md §8.4; ADR 0010, 0016, 0018, 0019). One `step`
+//! The state engine (SPEC.md §8.4; ADR 0010, 0016, 0018, 0019, 0021). One `step`
 //! per input; every effect it returns belongs to that input's time.
 //!
 //! Inputs the app provides instead of the engine reading them: the clock
@@ -9,7 +9,8 @@
 //!
 //! Requesters (ADR 0019): the agent that asked, `None` for the main agent or
 //! `Some(agentId)` for a sub-agent. An episode holds every requester still
-//! waiting and closes when none is left.
+//! waiting and closes when none is left. If the main agent's turn already
+//! completed (ADR 0021), it closes to `ready`, not `working`.
 //!
 //! Known process (ADR 0018 item 7): an event's `context.pid` is set by the
 //! app exactly when it found the session's process (§8.3, §9.4). A session
@@ -223,6 +224,9 @@ pub struct Session {
     /// Last request-type `needs.*` per requester, for the dedup; only the
     /// last 10 s are kept.
     requests: Vec<(Option<String>, u64)>,
+    /// The main agent's turn completed and it hasn't asked or worked since
+    /// (ADR 0021).
+    turn_done: bool,
 }
 
 impl Session {
@@ -243,6 +247,7 @@ impl Session {
             gone_at: None,
             process_known: e.context.pid.is_some(),
             requests: Vec::new(),
+            turn_done: false,
         }
     }
 
@@ -364,24 +369,36 @@ impl Engine {
         match (kind, s.state) {
             (Kind::TurnStarted, Idle | Ready | NeedsInput | Stalled | Failed) => {
                 s.activity = None;
+                s.turn_done = false;
                 s.set(Working, ts);
             }
             // ADR 0019: background activity leaves Failed as it is.
             (Kind::Activity, Failed) if e.context.agent_id.is_some() => {}
             (Kind::Activity, Working | Stalled | Failed) => {
+                s.turn_done &= e.context.agent_id.is_some();
                 s.activity = e.detail.category.or(s.activity);
                 s.set(Working, ts);
             }
-            // Removes that requester only; closes when none is left (ADR 0019).
+            // Removes that requester only; closes when none is left (ADR
+            // 0019), to ready if the main agent's turn is done (ADR 0021).
             (Kind::Activity, NeedsInput) => {
                 if remove(s, &e.context.agent_id) == 0 {
-                    s.activity = e.detail.category.or(s.activity);
-                    s.set(Working, ts);
+                    if s.turn_done {
+                        s.set(Ready, ts);
+                        fx.push(Effect::ReadyBatchAdd {
+                            session_id: s.id.clone(),
+                        });
+                    } else {
+                        s.activity = e.detail.category.or(s.activity);
+                        s.set(Working, ts);
+                    }
                 }
             }
             (Kind::NeedsPermission | Kind::NeedsAnswer, from) => {
                 let dup = dedup(s, &e);
                 let who = &e.context.agent_id;
+                // The main agent asking again: its turn isn't done (ADR 0021).
+                s.turn_done &= dup || who.is_some();
                 // `Some(waiting)`: open a new episode that also waits on them.
                 let opens = match (from, &mut s.needs) {
                     _ if dup => None,
@@ -407,6 +424,7 @@ impl Engine {
             }
             // The Stop removes the main agent only (ADR 0019).
             (Kind::TurnCompleted, NeedsInput | Working | Stalled) => {
+                s.turn_done = true;
                 if remove(s, &None) == 0 {
                     s.set(Ready, ts);
                     fx.push(Effect::ReadyBatchAdd {
@@ -450,6 +468,7 @@ impl Engine {
                 self.open(i, e, Vec::new(), fx);
             }
             Kind::TurnCompleted => {
+                self.sessions[i].turn_done = true;
                 self.sessions[i].set(State::Ready, ts);
                 fx.push(Effect::ReadyBatchAdd {
                     session_id: e.session_id,
@@ -529,7 +548,8 @@ impl Engine {
 /// The 10 s dedup (§8.4, ADR 0010; per requester, ADR 0019): a
 /// `permission_prompt` Notification (the `needs.permission` with no tool)
 /// within 10 s after a PermissionRequest from the same requester belongs to
-/// that request's episode, even if it closed. Every other `needs.*` counts as
+/// that request's episode, even if it closed. A prompt with no `agentId`
+/// matches any requester's request (ADR 0021). Every other `needs.*` counts as
 /// the request half and is never a duplicate itself, so a second request
 /// right after a prompt still knocks.
 fn dedup(s: &mut Session, e: &Event) -> bool {
@@ -537,7 +557,7 @@ fn dedup(s: &mut Session, e: &Event) -> bool {
     s.requests
         .retain(|(_, t)| e.ts.saturating_sub(*t) <= DEDUP_MS);
     if is_prompt(e) {
-        s.requests.iter().any(|(a, _)| a == who)
+        s.requests.iter().any(|(a, _)| who.is_none() || a == who)
     } else {
         s.requests.retain(|(a, _)| a != who);
         s.requests.push((who.clone(), e.ts));

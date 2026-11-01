@@ -1,6 +1,7 @@
 //! §12.1 Invariants: the §8.4 invariants (with ADR 0016's) over random
 //! input sequences, plus the ADR 0019 requester rules: no waiting requester
-//! is ever lost, and background activity never clears Failed.
+//! is ever lost, and background activity never clears Failed; and
+//! `ReadyBatchAdd` comes exactly when a session enters ready (ADR 0021).
 
 use knock_core::{
     Context, Detail, Effect, Engine, Event, Input, Kind, Reason, Session, Settings, State, Tier,
@@ -209,6 +210,10 @@ proptest! {
                 if let (Some((State::Failed, _)), Some(Kind::Activity), Some(Some(_))) = (&before, kind, &who) {
                     prop_assert_eq!(s.state, State::Failed, "background activity cleared Failed");
                 }
+                if before.as_ref().map(|p| p.0) != Some(State::Ready) && s.state == State::Ready {
+                    let add = fx.iter().any(|f| matches!(f, Effect::ReadyBatchAdd { session_id } if *session_id == s.id));
+                    prop_assert!(add, "{} entered ready without ReadyBatchAdd", s.id);
+                }
                 if reopened || (before.as_ref().map(|p| p.0) != Some(s.state) && s.state.tier() == Tier::NeedsYou) {
                     *ep.entry(s.id.clone()).or_default() += 1;
                     entered.push((s.id.clone(), s.state));
@@ -238,7 +243,12 @@ proptest! {
                         prop_assert!(e.escalate <= 1, "second Escalate in an episode");
                         prop_assert!(!e.seen, "Escalate after the episode was seen");
                     }
-                    _ => {}
+                    Effect::ReadyBatchAdd { .. } => {
+                        prop_assert_eq!(s.state, State::Ready);
+                        let was = prev.get(id).map(|p| p.0);
+                        prop_assert_ne!(was, Some(State::Ready), "ReadyBatchAdd while already ready");
+                    }
+                    Effect::Persist => {}
                 }
             }
             // Zero missed Needs-you: entering it notifies unless suppressed

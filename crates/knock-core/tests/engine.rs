@@ -1,5 +1,5 @@
 //! §12.1 Engine: every §8.4 transition, timer, dedup, suppression and seen
-//! rule (ADR 0010, 0016, 0018, 0019).
+//! rule (ADR 0010, 0016, 0018, 0019, 0021).
 
 use knock_core::{
     Category, Context, Detail, Effect, Engine, Event, Input, Kind, NeedsKind, Reason, Settings,
@@ -304,9 +304,10 @@ fn same_agent_activity_or_a_prompt_closes_the_episode() {
     assert_eq!(h.state(), Some(State::NeedsInput));
     assert_eq!(
         h.send(agent(ev(Kind::Activity, "s1", 4), "a1")),
-        vec![Persist]
+        vec![ready_add(), Persist]
     );
-    assert_eq!(h.state(), Some(State::Working));
+    // Opened from ready, the main turn was done: back to ready (ADR 0021).
+    assert_eq!(h.state(), Some(State::Ready));
     // turn.started closes it whoever opened it.
     let mut h = H::into(State::Ready, 0);
     h.send(agent(request("s1", 1), "a1"));
@@ -952,12 +953,13 @@ fn the_main_stop_keeps_a_waiting_sub_agent() {
         (Some(State::NeedsInput), vec![Some("A")])
     );
     assert_eq!(h.tick(1000 + 5 * MIN), vec![escalate(), Persist]);
-    // A is answered: the episode closes to working (§8.4).
+    // A is answered: the main turn is done, so it closes to ready (ADR 0021).
     assert_eq!(
         h.send(agent(ev(Kind::Activity, "s1", 6 * MIN), "A")),
-        vec![Persist]
+        vec![ready_add(), Persist]
     );
-    assert_eq!(h.state(), Some(State::Working));
+    assert_eq!(h.state(), Some(State::Ready));
+    assert_eq!(h.tick(17 * MIN), vec![], "no stall");
     // Main and A both waiting: the Stop removes the main agent only.
     let mut h = H::into(State::Working, 0);
     h.send(request("s1", 1000));
@@ -1036,7 +1038,8 @@ fn requesters_join_and_carry_into_a_new_episode() {
     assert_eq!(h.state(), Some(State::Working));
 }
 
-// ADR 0019 item 3: the 10 s dedup is per requester.
+// ADR 0019 item 3: the 10 s dedup is per requester; a prompt without an
+// agentId matches any requester (ADR 0021).
 #[test]
 fn dedup_pairs_a_prompt_with_its_own_requester_only() {
     // A's request was approved fast and the turn ended; A's late prompt is
@@ -1047,14 +1050,94 @@ fn dedup_pairs_a_prompt_with_its_own_requester_only() {
     h.kind(Kind::TurnCompleted, 3000);
     assert_eq!(h.send(agent(prompt("s1", 7000), "A")), vec![]);
     assert_eq!(
-        h.send(prompt("s1", 7000)),
+        h.send(agent(prompt("s1", 7000), "B")),
+        vec![notify(Reason::NeedsPermission), Persist]
+    );
+    assert_eq!(h.waiting(), [Some("B")]);
+    // C's prompt in the open episode joins it; A's (a duplicate) doesn't.
+    assert_eq!(h.send(agent(prompt("s1", 8000), "A")), vec![]);
+    assert_eq!(h.send(agent(prompt("s1", 8000), "C")), vec![Persist]);
+    assert_eq!(h.waiting(), [Some("B"), Some("C")]);
+    // Past 10 s, a prompt without agentId is the main agent's.
+    assert_eq!(h.send(prompt("s1", 12_000)), vec![Persist]);
+    assert_eq!(h.waiting(), [Some("B"), Some("C"), None]);
+}
+
+// ADR 0021 item 1: a sub-agent's request answered within 10 s, then its late
+// prompt without agentId: still that request, no new episode.
+#[test]
+fn a_late_prompt_without_agent_id_matches_any_requester() {
+    for t in [1000 + 1, 1000 + 10_000] {
+        let mut h = H::into(State::Working, 0);
+        assert_eq!(
+            h.send(agent(request("s1", 1000), "A")),
+            vec![notify(Reason::NeedsPermission), Persist]
+        );
+        assert_eq!(
+            h.send(agent(ev(Kind::Activity, "s1", 1000), "A")),
+            vec![Persist]
+        );
+        assert_eq!(h.send(prompt("s1", t)), vec![], "at {t}");
+        assert_eq!(h.state(), Some(State::Working));
+    }
+    // 10 s and 1 ms later it's a new episode (the main agent's).
+    let mut h = H::into(State::Working, 0);
+    h.send(agent(request("s1", 1000), "A"));
+    h.send(agent(ev(Kind::Activity, "s1", 1000), "A"));
+    assert_eq!(
+        h.send(prompt("s1", 11_001)),
         vec![notify(Reason::NeedsPermission), Persist]
     );
     assert_eq!(h.waiting(), [None]);
-    // B's prompt in the open episode joins it; A's (a duplicate) doesn't.
-    assert_eq!(h.send(agent(prompt("s1", 8000), "A")), vec![]);
-    assert_eq!(h.send(agent(prompt("s1", 8000), "B")), vec![Persist]);
-    assert_eq!(h.waiting(), [None, Some("B")]);
+}
+
+// ADR 0021 item 2: a background request after the main agent's Stop, then
+// answered: ready with one ReadyBatchAdd, and no stall later. turn.started
+// still closes to working; the main agent asking again means its turn isn't
+// done, so the close is to working as before.
+#[test]
+fn a_background_request_after_the_stop_closes_to_ready() {
+    // From ready, and from idle after the user acknowledged ready.
+    for ack in [false, true] {
+        let mut h = H::into(State::Ready, 0);
+        if ack {
+            h.kind(Kind::UserAck, 500);
+        }
+        assert_eq!(
+            h.send(agent(request("s1", 1000), "A")),
+            vec![notify(Reason::NeedsPermission), Persist]
+        );
+        assert_eq!(
+            h.send(agent(ev(Kind::Activity, "s1", 4000), "A")),
+            vec![ready_add(), Persist],
+            "ack {ack}"
+        );
+        assert_eq!((h.state(), h.s1().since), (Some(State::Ready), 4000));
+        assert_eq!(h.tick(4000 + 10 * MIN), vec![], "no stall");
+        assert_eq!(h.tick(4000 + 60 * MIN), vec![]);
+    }
+    // turn.started still closes to working.
+    let mut h = H::into(State::Ready, 0);
+    h.send(agent(request("s1", 1000), "A"));
+    assert_eq!(h.kind(Kind::TurnStarted, 2000), vec![Persist]);
+    assert_eq!(h.state(), Some(State::Working));
+    // The main agent asks too: answered last, it closes to working.
+    let mut h = H::into(State::Ready, 0);
+    h.send(agent(request("s1", 1000), "A"));
+    h.send(request("s1", 2000));
+    h.send(agent(ev(Kind::Activity, "s1", 3000), "A"));
+    assert_eq!(h.kind(Kind::Activity, 4000), vec![Persist]);
+    assert_eq!(h.state(), Some(State::Working));
+    // A new turn after the close: the next background request closes to
+    // working again.
+    let mut h = H::into(State::Ready, 0);
+    h.kind(Kind::TurnStarted, 1000);
+    h.send(agent(request("s1", 2000), "A"));
+    assert_eq!(
+        h.send(agent(ev(Kind::Activity, "s1", 3000), "A")),
+        vec![Persist]
+    );
+    assert_eq!(h.state(), Some(State::Working));
 }
 
 // Finding 4: suppression holds from the very first input, with no tick.
