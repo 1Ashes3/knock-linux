@@ -1,7 +1,7 @@
 // Pure logic for the setup flow (SPEC.md §10.4) and the Settings screen (§8.6).
 // Nothing here talks to the core; the components do, and feed results in.
 import type { Settings } from "../overlay/bridge";
-import type { Monitor, Preview, PreviewOk, Written } from "./core";
+import type { Failure, Monitor, Preview, PreviewOk, Written } from "./core";
 
 export type Step =
 	| "welcome"
@@ -9,7 +9,9 @@ export type Step =
 	| "connect"
 	| "signin"
 	| "test"
-	| "done";
+	| "done"
+	| "repair"
+	| "fixed";
 
 const STEPS: Step[] = [
 	"welcome",
@@ -25,6 +27,9 @@ export function stepsFor(monitorCount: number): Step[] {
 	return monitorCount > 1 ? STEPS : STEPS.filter((s) => s !== "taskbar");
 }
 
+/** ADR 0023: a new connection first, then the usual Connect step, then a short Fixed screen. */
+export const REPAIR_STEPS: Step[] = ["repair", "connect", "fixed"];
+
 export type Connect =
 	| { kind: "loading" }
 	| { kind: "preview"; preview: PreviewOk; applying: boolean }
@@ -35,11 +40,19 @@ export type Connect =
 /** The test knock: not played yet, played and waiting for an answer, or not seen. */
 export type TestKnock = "ready" | "played" | "missed";
 
+/** `repair_server()`: not run yet, running, failed with the core's words, or done. */
+export type Repair =
+	| { kind: "idle" }
+	| { kind: "working" }
+	| { kind: "failed"; message: string }
+	| { kind: "repaired" };
+
 export interface Flow {
 	steps: Step[];
 	at: number;
 	connect: Connect;
 	test: TestKnock;
+	repair: Repair;
 }
 
 export type Action =
@@ -48,21 +61,33 @@ export type Action =
 	| { type: "previewed"; result: Preview }
 	| { type: "apply" }
 	| { type: "applied"; result: Written }
-	| { type: "test"; result: TestKnock };
+	| { type: "test"; result: TestKnock }
+	| { type: "repair" }
+	| { type: "repaired"; result: { ok: true } | Failure };
 
-export const startFlow = (monitorCount: number): Flow => ({
-	steps: stepsFor(monitorCount),
+const begin = (steps: Step[]): Flow => ({
+	steps,
 	at: 0,
 	connect: { kind: "loading" },
 	test: "ready",
+	repair: { kind: "idle" },
 });
+
+export const startFlow = (monitorCount: number): Flow =>
+	begin(stepsFor(monitorCount));
+
+export const startRepair = (): Flow => begin(REPAIR_STEPS);
 
 export const stepOf = (f: Flow): Step => f.steps[f.at] ?? "welcome";
 
-/** Leaving Connect is only possible once the hooks are written (§8.2: write only after Confirm). */
+/**
+ * Leaving Connect is only possible once the hooks are written (§8.2: write only after Confirm),
+ * and leaving Repair only once the core has a new connection.
+ */
 export const canGoNext = (f: Flow): boolean =>
 	f.at < f.steps.length - 1 &&
-	(stepOf(f) !== "connect" || f.connect.kind === "connected");
+	(stepOf(f) !== "connect" || f.connect.kind === "connected") &&
+	(stepOf(f) !== "repair" || f.repair.kind === "repaired");
 
 export function flowReducer(f: Flow, a: Action): Flow {
 	switch (a.type) {
@@ -81,16 +106,42 @@ export function flowReducer(f: Flow, a: Action): Flow {
 		case "apply":
 			if (f.connect.kind !== "preview" || f.connect.applying) return f;
 			return { ...f, connect: { ...f.connect, applying: true } };
-		case "applied":
+		case "applied": {
 			if (f.connect.kind !== "preview" || !f.connect.applying) return f;
-			return {
+			if (!a.result.ok)
+				return {
+					...f,
+					connect: {
+						kind: "failed",
+						stage: "apply",
+						message: a.result.message,
+					},
+				};
+			const g: Flow = {
 				...f,
-				connect: a.result.ok
-					? { kind: "connected", backup: a.result.backup }
-					: { kind: "failed", stage: "apply", message: a.result.message },
+				connect: { kind: "connected", backup: a.result.backup },
 			};
+			// Repair is two clicks (ADR 0023): after Confirm it goes straight to Fixed.
+			return f.steps[f.at + 1] === "fixed" ? move(g, g.at + 1) : g;
+		}
 		case "test":
 			return { ...f, test: a.result };
+		case "repair":
+			if (
+				stepOf(f) !== "repair" ||
+				f.repair.kind === "working" ||
+				f.repair.kind === "repaired"
+			)
+				return f;
+			return { ...f, repair: { kind: "working" } };
+		case "repaired": {
+			if (f.repair.kind !== "working") return f;
+			if (!a.result.ok)
+				return { ...f, repair: { kind: "failed", message: a.result.message } };
+			// Claude Code's entries still point at the old connection: straight on to Connect.
+			const done = { ...f, repair: { kind: "repaired" } as const };
+			return move(done, done.at + 1);
+		}
 	}
 }
 

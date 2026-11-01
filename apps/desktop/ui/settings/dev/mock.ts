@@ -3,6 +3,10 @@
 //
 // URL parameters:
 //   setup=1                 start the setup flow (as the core's `?setup=1`)
+//   repair=1                start the Repair flow (as the core's `?repair=1`, ADR 0023);
+//                           without server=fail it shows the fallback explanation
+//   server=fail             the server can't start: setup_status has a serverError
+//   fix=fail                repair_server fails
 //   monitors=1|2|3          displays connected; default 3
 //   installed=1             Knock's hooks are already in the Claude Code settings file
 //   preview=invalid         the settings file isn't valid JSON
@@ -33,6 +37,13 @@ let settings: Settings = {
 	animalOverrides: {},
 };
 let installed = q.get("installed") === "1";
+const SERVER_ERROR =
+	"Another program on this PC took the connection Knock uses to hear from Claude Code.";
+let serverError: string | null =
+	q.get("server") === "fail" ? SERVER_ERROR : null;
+// The port in Claude Code's entries, and the one the server listens on.
+let hookPort = 47615;
+let port = 47615;
 
 const monitors: Monitor[] = [
 	{
@@ -64,12 +75,12 @@ const userFile = {
 	model: "opus",
 	permissions: { allow: ["Bash(git status)"] },
 };
-const handler = {
+const handler = (p: number) => ({
 	type: "http",
-	url: "http://127.0.0.1:47615/v1/hooks/claude-code",
+	url: `http://127.0.0.1:${p}/v1/hooks/claude-code`,
 	headers: { "X-Knock-Token": "••••" },
 	timeout: 1,
-};
+});
 const TOOL = ["PreToolUse", "PostToolUse", "PermissionRequest"];
 const EVENTS = [
 	"UserPromptSubmit",
@@ -82,24 +93,24 @@ const EVENTS = [
 	"PreCompact",
 	"SessionEnd",
 ];
-const withHooks = {
+const withHooks = (p: number) => ({
 	...userFile,
 	hooks: Object.fromEntries(
 		EVENTS.map((e) => [
 			e,
 			[
 				TOOL.includes(e)
-					? { matcher: "*", hooks: [handler] }
-					: { hooks: [handler] },
+					? { matcher: "*", hooks: [handler(p)] }
+					: { hooks: [handler(p)] },
 			],
 		]),
 	),
-};
+});
 const text = (o: unknown) => `${JSON.stringify(o, null, 2)}\n`;
 const before = () =>
 	q.get("empty") === "1" && !installed
 		? ""
-		: text(installed ? withHooks : userFile);
+		: text(installed ? withHooks(hookPort) : userFile);
 const BACKUP = String.raw`C:\Users\Sam\AppData\Roaming\Knock\backups\settings.20261101-142530.json`;
 
 const checks = (): Check[] => [
@@ -116,12 +127,19 @@ const checks = (): Check[] => [
 				ok: false,
 				detail: "Run setup to connect it.",
 			},
-	{
-		id: "server",
-		label: "Knock is listening for Claude Code",
-		ok: true,
-		detail: "Claude Code can reach Knock on this PC.",
-	},
+	serverError === null
+		? {
+				id: "server",
+				label: "Knock is listening for Claude Code",
+				ok: true,
+				detail: "Claude Code can reach Knock on this PC.",
+			}
+		: {
+				id: "server",
+				label: "Knock can't listen for Claude Code",
+				ok: false,
+				detail: "Use Repair to pick a new connection.",
+			},
 	{
 		id: "last",
 		label: "Last heard from a session",
@@ -158,9 +176,21 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
 	setup_status: () => ({
 		firstRun: settings.launchAtSignIn === null,
 		hooksInstalled: installed,
-		serverOk: true,
+		serverOk: serverError === null,
+		serverError,
 		monitorCount: monitors.length,
 	}),
+	repair_server: () => {
+		if (q.get("fix") === "fail")
+			return {
+				ok: false,
+				message:
+					"Knock couldn't find a free connection. Restart your PC, then open Knock and try again.",
+			};
+		port = 51874;
+		serverError = null;
+		return { ok: true };
+	},
 	setup_list_monitors: () => monitors,
 	setup_preview_hooks: () =>
 		q.get("preview") === "invalid"
@@ -169,7 +199,12 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
 					message:
 						"Your Claude Code settings file has a mistake on line 4, so it can't be read safely. Knock won't change it. Fix the mistake (or ask someone to help), then run setup again.",
 				}
-			: { ok: true, path: PATH, before: before(), after: text(withHooks) },
+			: {
+					ok: true,
+					path: PATH,
+					before: before(),
+					after: text(withHooks(port)),
+				},
 	setup_apply_hooks: () => {
 		if (q.get("apply") === "fail")
 			return {
@@ -179,6 +214,7 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
 			};
 		const backup = before() === "" ? "" : BACKUP;
 		installed = true;
+		hookPort = port;
 		return { ok: true, backup };
 	},
 	setup_remove_hooks: () => {

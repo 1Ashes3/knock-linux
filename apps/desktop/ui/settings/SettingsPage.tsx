@@ -25,10 +25,19 @@ import { Backup, type Update } from "./Setup";
 interface Props {
 	settings: Settings;
 	update: Update;
+	/** From `setup_status()`: why Knock can't listen for Claude Code, or null (ADR 0023). */
+	serverError: string | null;
 	onRunSetup(): void;
+	onRepair(): void;
 }
 
-export function SettingsPage({ settings: s, update, onRunSetup }: Props) {
+export function SettingsPage({
+	settings: s,
+	update,
+	serverError,
+	onRunSetup,
+	onRepair,
+}: Props) {
 	const [monitors, setMonitors] = useState<Monitor[]>([]);
 	useEffect(() => {
 		void invoke<Monitor[]>("setup_list_monitors").then(setMonitors, () => {});
@@ -38,6 +47,23 @@ export function SettingsPage({ settings: s, update, onRunSetup }: Props) {
 	return (
 		<main className="settings">
 			<h1>Knock Settings</h1>
+
+			{serverError !== null && (
+				<section className="banner" aria-labelledby="repair-title">
+					<h2 id="repair-title">Knock can't listen for Claude Code</h2>
+					<p role="alert">{serverError}</p>
+					<p>
+						Your sessions can't show up until this is fixed. Repair picks a new
+						connection, then shows you the change to your Claude Code settings
+						before saving it.
+					</p>
+					<div className="actions start">
+						<button type="button" className="primary" onClick={onRepair}>
+							Repair
+						</button>
+					</div>
+				</section>
+			)}
 
 			<section aria-labelledby="look">
 				<h2 id="look">On the taskbar</h2>
@@ -147,7 +173,7 @@ export function SettingsPage({ settings: s, update, onRunSetup }: Props) {
 			</section>
 
 			<Connection onRunSetup={onRunSetup} />
-			<Health />
+			<Health onRepair={onRepair} />
 		</main>
 	);
 }
@@ -394,7 +420,7 @@ function Connection({ onRunSetup }: { onRunSetup(): void }) {
 }
 
 /** FR-12: the checks and results come from the core, in plain language. */
-function Health() {
+function Health({ onRepair }: { onRepair(): void }) {
 	const [checks, setChecks] = useState<Check[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const run = () => {
@@ -433,6 +459,11 @@ function Health() {
 									</span>
 								</strong>
 								<span className="detail">{c.detail}</span>
+								{c.id === "server" && !c.ok && (
+									<button type="button" className="link" onClick={onRepair}>
+										Repair
+									</button>
+								)}
 							</span>
 						</li>
 					))}

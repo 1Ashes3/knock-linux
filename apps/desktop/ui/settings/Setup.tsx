@@ -1,4 +1,5 @@
-// The setup flow (SPEC.md §10.4). Plain words on every screen, a reason, and Back.
+// The setup flow (SPEC.md §10.4) and the Repair flow (§8.1, ADR 0023). Plain words on every
+// screen, a reason, and Back.
 import { type ReactNode, useEffect, useReducer, useRef, useState } from "react";
 import type { Settings } from "../overlay/bridge";
 import {
@@ -16,6 +17,7 @@ import {
 	monitorValue,
 	selectedMonitor,
 	startFlow,
+	startRepair,
 	stepOf,
 } from "./flow";
 
@@ -28,15 +30,29 @@ interface Props {
 	/** "Not now" on the first screen. */
 	onLeave(): void;
 	onFinish(): void;
+	/** Run the Repair flow instead of setup; `repairNow` presses Repair straight away. */
+	repair?: boolean;
+	repairNow?: boolean;
 }
 
-export function Setup({ status, settings, update, onLeave, onFinish }: Props) {
-	const [flow, dispatch] = useReducer(
-		flowReducer,
-		status.monitorCount,
-		startFlow,
+/** ADR 0023: what the Repair screen says when the core gives no reason. */
+export const REPAIR_FALLBACK =
+	"Another program on this PC is using the connection Knock had. Knock can pick a new one.";
+
+export function Setup({
+	status,
+	settings,
+	update,
+	onLeave,
+	onFinish,
+	repair = false,
+	repairNow = false,
+}: Props) {
+	const [flow, dispatch] = useReducer(flowReducer, undefined, () =>
+		repair ? startRepair() : startFlow(status.monitorCount),
 	);
 	const step = stepOf(flow);
+	const hasTaskbar = flow.steps.includes("taskbar");
 	const [error, setError] = useState<string | null>(null);
 	const [monitors, setMonitors] = useState<Monitor[]>([]);
 
@@ -44,9 +60,19 @@ export function Setup({ status, settings, update, onLeave, onFinish }: Props) {
 	useEffect(() => setError(null), [step]);
 
 	useEffect(() => {
-		if (status.monitorCount > 1)
+		if (hasTaskbar)
 			void invoke<Monitor[]>("setup_list_monitors").then(setMonitors, () => {});
-	}, [status.monitorCount]);
+	}, [hasTaskbar]);
+
+	async function repairServer() {
+		dispatch({ type: "repair" });
+		const result = await invokeResult<{ ok: true }>("repair_server");
+		dispatch({ type: "repaired", result });
+	}
+	// biome-ignore lint/correctness/useExhaustiveDependencies: once, when opened from the Repair button
+	useEffect(() => {
+		if (repairNow) void repairServer();
+	}, []);
 
 	// §8.2: read and preview first; nothing is written until Confirm.
 	const loading = step === "connect" && flow.connect.kind === "loading";
@@ -72,6 +98,95 @@ export function Setup({ status, settings, update, onLeave, onFinish }: Props) {
 	}
 
 	switch (step) {
+		case "repair": {
+			const r = flow.repair;
+			const notNow = (
+				<button type="button" onClick={onLeave}>
+					Not now
+				</button>
+			);
+			if (r.kind === "repaired")
+				return (
+					<Screen
+						counter={counter}
+						title="Knock has a new connection"
+						actions={
+							<>
+								{notNow}
+								<button type="button" className="primary" onClick={next}>
+									Next
+								</button>
+							</>
+						}
+					>
+						<p>
+							Claude Code's settings still point to the old connection. Press
+							Next to see the change that points them to the new one.
+						</p>
+					</Screen>
+				);
+			return (
+				<Screen
+					counter={counter}
+					title="Knock can't listen for Claude Code"
+					error={r.kind === "failed" ? r.message : null}
+					actions={
+						<>
+							{notNow}
+							<button
+								type="button"
+								className="primary"
+								disabled={r.kind === "working"}
+								onClick={() => void repairServer()}
+							>
+								{r.kind === "working"
+									? "Repairing…"
+									: r.kind === "failed"
+										? "Try again"
+										: "Repair"}
+							</button>
+						</>
+					}
+				>
+					<p>{status.serverError || REPAIR_FALLBACK}</p>
+					<p>
+						Until this is fixed, your sessions can't show up on the taskbar.
+						Repair picks a new connection. Then Knock shows you the change this
+						needs in your Claude Code settings, and saves it only when you
+						confirm.
+					</p>
+				</Screen>
+			);
+		}
+
+		case "fixed":
+			return (
+				<Screen
+					counter={counter}
+					title="Knock is fixed"
+					actions={
+						<>
+							{back}
+							<button type="button" className="primary" onClick={onFinish}>
+								Finish
+							</button>
+						</>
+					}
+				>
+					<p role="status">
+						Knock is listening for Claude Code again, and Claude Code's settings
+						point to the new connection.
+					</p>
+					<p>
+						Claude Code windows that are already open connect within about 10
+						seconds; no restart needed.
+					</p>
+					{flow.connect.kind === "connected" && (
+						<Backup path={flow.connect.backup} />
+					)}
+				</Screen>
+			);
+
 		case "welcome":
 			return (
 				<Screen
@@ -215,11 +330,20 @@ export function Setup({ status, settings, update, onLeave, onFinish }: Props) {
 						</>
 					}
 				>
-					<p>
-						To know when a session needs you, Knock adds a few entries to your
-						Claude Code settings file. With them, Claude Code tells Knock when a
-						session is working, finishes, or is waiting for you.
-					</p>
+					{repair ? (
+						<p>
+							Claude Code's settings still point to Knock's old connection.
+							Knock updates its own entries in the file to use the new one, so
+							Claude Code can tell Knock again when a session is working,
+							finishes, or is waiting for you.
+						</p>
+					) : (
+						<p>
+							To know when a session needs you, Knock adds a few entries to your
+							Claude Code settings file. With them, Claude Code tells Knock when
+							a session is working, finishes, or is waiting for you.
+						</p>
+					)}
 					<ul>
 						<li>
 							Knock only learns what kind of moment happened. It never sees your
@@ -234,7 +358,10 @@ export function Setup({ status, settings, update, onLeave, onFinish }: Props) {
 					{c.kind === "loading" ? (
 						<p role="status">Reading your Claude Code settings file…</p>
 					) : (
-						<HookChange preview={c.preview} installed={status.hooksInstalled} />
+						<HookChange
+							preview={c.preview}
+							installed={status.hooksInstalled && !repair}
+						/>
 					)}
 				</Screen>
 			);

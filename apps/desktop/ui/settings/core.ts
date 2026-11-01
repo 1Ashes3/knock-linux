@@ -5,6 +5,8 @@ export interface SetupStatus {
 	firstRun: boolean;
 	hooksInstalled: boolean;
 	serverOk: boolean;
+	/** Why the server can't start, in plain words; null when it's fine (ADR 0023). */
+	serverError: string | null;
 	monitorCount: number;
 }
 

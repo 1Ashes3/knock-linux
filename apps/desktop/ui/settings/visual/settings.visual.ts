@@ -88,6 +88,22 @@ const SCREENS: [string, string, string[]][] = [
 	["done", "", [...TO_TEST, "Play a test knock", "Yes, I saw it"]],
 ];
 
+// The way to each Repair screen (ADR 0023). Claude Code's entries point at the old port.
+const BROKEN = "server=fail&installed=1";
+const REPAIR_SCREENS: [string, string, string[]][] = [
+	["start", BROKEN, []],
+	["start-fallback", "installed=1", []],
+	["failed", `${BROKEN}&fix=fail`, ["Repair"]],
+	["connect", BROKEN, ["Repair"]],
+	[
+		"connect-write-failed",
+		`${BROKEN}&apply=fail`,
+		["Repair", "Confirm and connect"],
+	],
+	["repaired", BROKEN, ["Repair", "Back"]],
+	["fixed", BROKEN, ["Repair", "Confirm and connect"]],
+];
+
 for (const theme of THEMES) {
 	for (const [name, query, path] of SCREENS)
 		test(`setup: ${name}, ${theme}`, async ({ page }) => {
@@ -96,6 +112,34 @@ for (const theme of THEMES) {
 			await expect(page.getByText("Reading your")).toHaveCount(0);
 			await shot(page, `setup-${name}-${theme}`);
 		});
+
+	for (const [name, query, path] of REPAIR_SCREENS)
+		test(`repair: ${name}, ${theme}`, async ({ page }) => {
+			await open(page, `repair=1&${query}`, theme);
+			for (const b of path) await click(page, b);
+			await expect(page.getByText("Reading your")).toHaveCount(0);
+			await expect(
+				page.getByRole("button", { name: "Repairing…" }),
+			).toHaveCount(0);
+			await shot(page, `repair-${name}-${theme}`);
+		});
+
+	test(`repair: the new connection in the exact change, ${theme}`, async ({
+		page,
+	}) => {
+		await open(page, "repair=1&server=fail&installed=1", theme);
+		await click(page, "Repair");
+		await page.getByText("Show the exact change").click();
+		await expect(page.locator(".diff .add")).toContainText(["51874"]);
+		await expect(page.locator(".diff .del")).toContainText(["47615"]);
+		await shot(page, `repair-connect-diff-${theme}`);
+	});
+
+	test(`settings: can't listen, with Repair, ${theme}`, async ({ page }) => {
+		await open(page, "installed=1&server=fail", theme);
+		await expect(page.locator(".checks li")).toHaveCount(3);
+		await shot(page, `settings-server-error-${theme}`);
+	});
 
 	test(`setup: the exact change, opened, ${theme}`, async ({ page }) => {
 		await open(page, "setup=1&monitors=1", theme);
@@ -335,4 +379,113 @@ test("Settings: every control has a label and a one-line explanation; no sounds 
 	await expect(page.getByLabel(/sound/i)).toHaveCount(0);
 	await click(page, "Run setup again");
 	await heading(page, "Welcome to Knock");
+});
+
+test("Repair: two clicks, in order, then Settings shows the connection is fine", async ({
+	page,
+}) => {
+	await open(page, "repair=1&server=fail&installed=1");
+	await expect(page).toHaveTitle("Repair Knock");
+	await heading(page, "Knock can't listen for Claude Code");
+	await expect(
+		page.getByText("Another program on this PC took the connection"),
+	).toBeVisible();
+	await expect(page.getByText("Step 1 of 3")).toBeVisible();
+	await click(page, "Repair");
+	await heading(page, "Connect Knock to Claude Code");
+	await expect(page.getByText("Knock is already connected")).toHaveCount(0);
+	await click(page, "Confirm and connect");
+	await heading(page, "Knock is fixed");
+	await expect(page.locator(".path")).toHaveText(/backups\\settings\./);
+	const names = (await calls(page)).map(([c]) => c);
+	const at = (c: string) => names.indexOf(c);
+	expect(at("repair_server")).toBeGreaterThan(-1);
+	expect(at("setup_preview_hooks")).toBeGreaterThan(at("repair_server"));
+	expect(at("setup_apply_hooks")).toBeGreaterThan(at("setup_preview_hooks"));
+	await click(page, "Finish");
+	// The mock has no window to close, so the app shows Settings, read afresh.
+	await heading(page, "Knock Settings");
+	await expect(page.locator(".banner")).toHaveCount(0);
+	await expect(page.locator(".checks .bad")).toHaveCount(0);
+});
+
+test("Repair: the fallback when the core gives no reason", async ({ page }) => {
+	await open(page, "repair=1");
+	await expect(
+		page.getByText(
+			"Another program on this PC is using the connection Knock had. Knock can pick a new one.",
+			{ exact: true },
+		),
+	).toBeVisible();
+});
+
+test("Repair: a failure shows the core's message and Try again; Not now opens Settings", async ({
+	page,
+}) => {
+	await open(page, "repair=1&server=fail&fix=fail");
+	await click(page, "Repair");
+	await expect(page.getByRole("alert")).toHaveText(
+		"Knock couldn't find a free connection. Restart your PC, then open Knock and try again.",
+	);
+	await click(page, "Try again");
+	await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+	const names = (await calls(page)).map(([c]) => c);
+	expect(names.filter((c) => c === "repair_server")).toHaveLength(2);
+	expect(names).not.toContain("setup_preview_hooks");
+	await click(page, "Not now");
+	await heading(page, "Knock Settings");
+	await expect(page.locator(".banner")).toBeVisible();
+});
+
+test("Repair by keyboard alone; focus moves to each new screen", async ({
+	page,
+}) => {
+	await open(page, "repair=1&server=fail&installed=1");
+	const focused = (name: string) =>
+		expect(page.getByRole("heading", { level: 1, name })).toBeFocused();
+	const press = async (name: string) => {
+		for (let i = 0; i < 8; i++) {
+			await page.keyboard.press("Tab");
+			const text = await page.evaluate(
+				() => document.activeElement?.textContent,
+			);
+			if (text === name) return page.keyboard.press("Enter");
+		}
+		throw new Error(`could not reach ${name} with Tab`);
+	};
+	await focused("Knock can't listen for Claude Code");
+	await press("Repair");
+	await focused("Connect Knock to Claude Code");
+	await press("Confirm and connect");
+	await focused("Knock is fixed");
+});
+
+for (const where of ["banner", "health check"] as const)
+	test(`Settings: Repair in the ${where} goes straight to Connect`, async ({
+		page,
+	}) => {
+		await open(page, "installed=1&server=fail");
+		const banner = page.getByRole("region", {
+			name: "Knock can't listen for Claude Code",
+		});
+		await expect(banner.getByRole("alert")).toHaveText(
+			"Another program on this PC took the connection Knock uses to hear from Claude Code.",
+		);
+		const row = page.locator(".checks .bad");
+		await expect(row).toContainText("Use Repair to pick a new connection.");
+		await (where === "banner" ? banner : row)
+			.getByRole("button", { name: "Repair", exact: true })
+			.click();
+		await heading(page, "Connect Knock to Claude Code");
+		expect((await calls(page)).map(([c]) => c)).toContain("repair_server");
+		await click(page, "Confirm and connect");
+		await heading(page, "Knock is fixed");
+	});
+
+test("Settings: no banner and no Repair while Knock is listening", async ({
+	page,
+}) => {
+	await open(page, "installed=1");
+	await expect(page.locator(".checks li")).toHaveCount(3);
+	await expect(page.getByRole("button", { name: "Repair" })).toHaveCount(0);
 });

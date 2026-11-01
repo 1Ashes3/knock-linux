@@ -1,4 +1,5 @@
-// The settings window (opened by the core). `?setup=1` starts the setup flow (§10.4).
+// The settings window (opened by the core). `?setup=1` starts the setup flow (§10.4);
+// `?repair=1` starts the Repair flow (§8.1, ADR 0023).
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useStore } from "zustand";
@@ -29,27 +30,50 @@ const loadStatus = () =>
 			firstRun: false,
 			hooksInstalled: false,
 			serverOk: true,
+			serverError: null,
 			monitorCount: 1,
 		}),
 	);
 
-function App(props: { status: SetupStatus; setup: boolean }) {
+type View = "setup" | "repair" | "settings";
+
+function App(props: { status: SetupStatus; view: View }) {
 	const settings = useStore(store, (s) => s.settings);
 	const [status, setStatus] = useState(props.status);
-	const [view, setView] = useState(props.setup ? "setup" : "settings");
+	const [view, setView] = useState(props.view);
 	const [run, setRun] = useState(0);
-	document.title = view === "setup" ? "Set up Knock" : "Knock Settings";
+	const [repairNow, setRepairNow] = useState(false);
+	document.title =
+		view === "setup"
+			? "Set up Knock"
+			: view === "repair"
+				? "Repair Knock"
+				: "Knock Settings";
 
-	if (view === "setup")
+	// Back on Settings, the status is read again: a repair may have fixed the connection.
+	const toSettings = async () => {
+		setStatus(await loadStatus());
+		setView("settings");
+	};
+	const open = async (next: View, now = false) => {
+		setStatus(await loadStatus());
+		setRepairNow(now);
+		setRun((r) => r + 1);
+		setView(next);
+	};
+
+	if (view !== "settings")
 		return (
 			<Setup
 				key={run}
 				status={status}
 				settings={settings}
 				update={update}
-				onLeave={() => setView("settings")}
+				repair={view === "repair"}
+				repairNow={repairNow}
+				onLeave={() => void toSettings()}
 				onFinish={async () => {
-					if (!(await closeWindow())) setView("settings");
+					if (!(await closeWindow())) await toSettings();
 				}}
 			/>
 		);
@@ -63,14 +87,19 @@ function App(props: { status: SetupStatus; setup: boolean }) {
 		<SettingsPage
 			settings={settings}
 			update={update}
-			onRunSetup={async () => {
-				setStatus(await loadStatus());
-				setRun((r) => r + 1);
-				setView("setup");
-			}}
+			serverError={status.serverError}
+			onRunSetup={() => void open("setup")}
+			onRepair={() => void open("repair", true)}
 		/>
 	);
 }
+
+const startView = (q: URLSearchParams): View =>
+	q.get("repair") === "1"
+		? "repair"
+		: q.get("setup") === "1"
+			? "setup"
+			: "settings";
 
 // Listen first, then load, so nothing sent in between is lost (§8.5).
 await listen<{ settings: Settings }>("settings-changed", (p) =>
@@ -84,6 +113,6 @@ applyInitialSettings(settings);
 createRoot(document.getElementById("root") as HTMLElement).render(
 	<App
 		status={status}
-		setup={new URLSearchParams(location.search).get("setup") === "1"}
+		view={startView(new URLSearchParams(location.search))}
 	/>,
 );

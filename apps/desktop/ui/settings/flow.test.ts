@@ -14,6 +14,7 @@ import {
 	quietHoursPatch,
 	selectedMonitor,
 	startFlow,
+	startRepair,
 	stepOf,
 	TIME_ERROR,
 } from "./flow";
@@ -143,6 +144,85 @@ test("Back works from every screen and keeps a finished connection", () => {
 	expect(f.connect).toEqual({ kind: "connected", backup: "b" });
 	// Coming back to the test screen asks again.
 	expect(run(f, next, next, next, next).test).toBe("ready");
+});
+
+test("Repair: a new connection, then Connect, then Fixed after Confirm (two clicks)", () => {
+	let f = startRepair();
+	expect(f.steps).toEqual(["repair", "connect", "fixed"]);
+	expect(f.repair).toEqual({ kind: "idle" });
+	expect(canGoNext(f)).toBe(false);
+	expect(run(f, next)).toBe(f);
+	f = run(f, { type: "repair" });
+	expect(f.repair).toEqual({ kind: "working" });
+	// A second press while working does nothing.
+	expect(run(f, { type: "repair" })).toBe(f);
+	f = run(f, { type: "repaired", result: { ok: true } });
+	expect(stepOf(f)).toBe("connect");
+	expect(f.connect).toEqual({ kind: "loading" });
+	expect(canGoNext(f)).toBe(false);
+	f = run(
+		f,
+		{ type: "previewed", result: PREVIEW },
+		{ type: "apply" },
+		{ type: "applied", result: { ok: true, backup: "b" } },
+	);
+	expect(stepOf(f)).toBe("fixed");
+	expect(f.connect).toEqual({ kind: "connected", backup: "b" });
+	expect(canGoNext(f)).toBe(false);
+	// Back keeps the work done: Connect stays connected, Repair stays repaired.
+	f = run(f, back);
+	expect(stepOf(f)).toBe("connect");
+	expect(f.connect.kind).toBe("connected");
+	f = run(f, back);
+	expect(stepOf(f)).toBe("repair");
+	expect(f.repair).toEqual({ kind: "repaired" });
+	expect(run(f, { type: "repair" })).toBe(f);
+	expect(stepOf(run(f, next))).toBe("connect");
+});
+
+test("Repair: a failure keeps the core's message and allows Try again", () => {
+	let f = run(
+		startRepair(),
+		{ type: "repair" },
+		{ type: "repaired", result: { ok: false, message: "No free port." } },
+	);
+	expect(stepOf(f)).toBe("repair");
+	expect(f.repair).toEqual({ kind: "failed", message: "No free port." });
+	expect(canGoNext(f)).toBe(false);
+	f = run(f, { type: "repair" });
+	expect(f.repair).toEqual({ kind: "working" });
+	// A reply without a press is ignored.
+	const idle = startRepair();
+	expect(run(idle, { type: "repaired", result: { ok: true } })).toBe(idle);
+});
+
+test("Repair: a failed write stays on Connect, Back, then Next tries again", () => {
+	let f = run(
+		startRepair(),
+		{ type: "repair" },
+		{ type: "repaired", result: { ok: true } },
+		{ type: "previewed", result: PREVIEW },
+		{ type: "apply" },
+		{ type: "applied", result: { ok: false, message: "In use." } },
+	);
+	expect(stepOf(f)).toBe("connect");
+	expect(f.connect).toMatchObject({ kind: "failed", stage: "apply" });
+	f = run(f, back, next);
+	expect(stepOf(f)).toBe("connect");
+	expect(f.connect).toEqual({ kind: "loading" });
+});
+
+test("setup itself never goes past Connected on its own", () => {
+	const f = run(
+		startFlow(1),
+		next,
+		{ type: "previewed", result: PREVIEW },
+		{ type: "apply" },
+		{ type: "applied", result: { ok: true, backup: "b" } },
+	);
+	expect(stepOf(f)).toBe("connect");
+	// And Repair can't be pressed from setup.
+	expect(run(f, { type: "repair" })).toBe(f);
 });
 
 test("minutes: whole numbers 1 to 1440", () => {
