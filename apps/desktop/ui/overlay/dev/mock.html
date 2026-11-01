@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<title>Knock strip (mock)</title>
+		<!-- Dev only. The strip sits on a fake taskbar, 8 px from the right (§9.2). -->
+		<style>
+			:root {
+				--strip-right: 8px;
+				--strip-bottom: 48px;
+			}
+			/* Close to the Windows 11 taskbar colors, as in the gallery. */
+			body.light {
+				background: #eeeeee;
+				--taskbar: #f3f3f3;
+				color: #1b1b1b;
+			}
+			body.dark {
+				background: #1c1c1c;
+				--taskbar: #202020;
+				color: #ffffff;
+			}
+			.taskbar {
+				position: fixed;
+				left: 0;
+				right: 0;
+				bottom: 0;
+				height: 48px;
+				background: var(--taskbar);
+				border-top: 1px solid #8884;
+			}
+			#log {
+				margin: 0;
+				padding: 12px;
+				font: 12px/1.4 Consolas, monospace;
+				max-height: 50vh;
+				overflow: auto;
+				opacity: 0.7;
+			}
+		</style>
+	</head>
+	<body>
+		<pre id="log"></pre>
+		<div class="taskbar"></div>
+		<div id="root"></div>
+		<script type="module" src="./mock.ts"></script>
+	</body>
+</html>

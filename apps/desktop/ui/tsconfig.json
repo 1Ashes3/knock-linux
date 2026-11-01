@@ -10,7 +10,8 @@
 		"skipLibCheck": true,
 		"noEmit": true,
 		"allowImportingTsExtensions": true,
-		"erasableSyntaxOnly": true
+		"erasableSyntaxOnly": true,
+		"jsx": "react-jsx"
 	},
-	"include": ["overlay", "settings", "gallery"]
+	"include": ["overlay", "settings", "gallery", "playwright.config.ts"]
 }

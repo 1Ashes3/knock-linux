@@ -8,6 +8,7 @@
 	"scripts": {
 		"dev": "tauri dev",
 		"check": "biome check . && pnpm --filter @knock/ui typecheck && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @knock/ui test",
+		"test:visual": "pnpm --filter @knock/ui test:visual",
 		"gallery": "pnpm --filter @knock/ui gallery",
 		"art:check": "pnpm --filter @knock/ui art:check"
 	},

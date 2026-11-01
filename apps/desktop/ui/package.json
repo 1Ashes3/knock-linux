@@ -7,12 +7,21 @@
 		"build": "vite build",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run --passWithNoTests",
+		"test:visual": "playwright test",
 		"gallery": "vite --open /gallery/index.html",
 		"art:check": "node gallery/artCheck.ts"
 	},
 	"devDependencies": {
+		"@playwright/test": "1.64.1",
+		"@types/react": "19.3.0",
+		"@types/react-dom": "19.3.0",
 		"typescript": "7.0.2",
 		"vite": "8.3.4",
 		"vitest": "5.0.4"
+	},
+	"dependencies": {
+		"react": "19.3.1",
+		"react-dom": "19.3.1",
+		"zustand": "5.0.16"
 	}
 }

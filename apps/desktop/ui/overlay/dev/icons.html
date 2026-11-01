@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<title>Knock icons (preview)</title>
+		<!-- Dev only: art/icon at tray and app sizes, on light and dark taskbars. -->
+		<style>
+			body {
+				margin: 0;
+				font: 12px "Segoe UI", system-ui, sans-serif;
+			}
+			.row {
+				display: flex;
+				align-items: center;
+				gap: 12px;
+				padding: 8px 12px;
+			}
+			.light {
+				background: #f3f3f3;
+				color: #1b1b1b;
+			}
+			.dark {
+				background: #202020;
+				color: #ffffff;
+			}
+			span {
+				width: 48px;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="sheet"></div>
+		<script type="module">
+			const urls = import.meta.glob("../../../../../art/icon/*.svg", {
+				query: "?url",
+				import: "default",
+				eager: true,
+			});
+			const order = (p) => p.replace(/.*\//, "").replace("knock", "a").replace("9plus", "9z");
+			const icons = Object.entries(urls).sort(([a], [b]) => order(a).localeCompare(order(b)));
+			const sheet = document.getElementById("sheet");
+			for (const theme of ["light", "dark"])
+				for (const px of [16, 32, 64]) {
+					const row = document.createElement("div");
+					row.className = `row ${theme}`;
+					row.innerHTML = `<span>${px} px</span>${icons
+						.map(([p, url]) => `<img src="${url}" width="${px}" height="${px}" title="${p.replace(/.*\//, "")}" />`)
+						.join("")}`;
+					sheet.append(row);
+				}
+		</script>
+	</body>
+</html>

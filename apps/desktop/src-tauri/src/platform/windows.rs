@@ -5,6 +5,7 @@ use crate::jump::{self, Proc, ProcessId, Target, TcpRow, Win};
 use crate::strip::Rect;
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_INSUFFICIENT_BUFFER, FILETIME, HWND, LPARAM, NO_ERROR, POINT, RECT,
+    STILL_ACTIVE,
 };
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
@@ -16,8 +17,9 @@ use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BC
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
+use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Shell::{
@@ -59,6 +61,14 @@ pub fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Minutes since local midnight, for quiet hours (§8.6). Not on [`Platform`]
+/// because the pipeline needs it without a window.
+pub fn local_minute() -> u32 {
+    // SAFETY: no arguments; returns a plain struct.
+    let t = unsafe { GetLocalTime() };
+    u32::from(t.wHour) * 60 + u32::from(t.wMinute)
+}
+
 /// AF_INET: the server listens on IPv4 loopback only.
 const AF_INET: u32 = 2;
 
@@ -93,13 +103,17 @@ fn tcp_table() -> Option<Vec<TcpRow>> {
     None
 }
 
-/// Creation time of `pid`, or `None` if it can't be opened.
+/// Creation time of `pid` while it is still running, or `None` if it has
+/// exited or can't be opened. A process that exited but whose handle someone
+/// still holds can be opened; its exit code tells it apart.
 fn process_start(pid: u32) -> Option<u64> {
     // SAFETY: the handle is checked by `?` and closed before returning.
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut code = 0u32;
+        let running = GetExitCodeProcess(h, &mut code).is_ok() && code == STILL_ACTIVE.0 as u32;
         let [mut c, mut e, mut k, mut u] = [FILETIME::default(); 4];
-        let ok = GetProcessTimes(h, &mut c, &mut e, &mut k, &mut u).is_ok();
+        let ok = running && GetProcessTimes(h, &mut c, &mut e, &mut k, &mut u).is_ok();
         let _ = CloseHandle(h);
         ok.then(|| (u64::from(c.dwHighDateTime) << 32) | u64::from(c.dwLowDateTime))
     }
@@ -324,6 +338,10 @@ impl Platform for WindowsPlatform {
             front
         }
     }
+
+    fn process_start(&self, pid: u32) -> Option<u64> {
+        process_start(pid)
+    }
 }
 
 #[cfg(test)]
@@ -357,6 +375,16 @@ mod tests {
             chain[0].exe
         );
         assert!(chain.len() >= 2, "a test runs under cargo or a shell");
+        // §9.7 liveness, real calls: this process runs, an exited child doesn't.
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/C", "exit 0"])
+            .spawn()
+            .unwrap();
+        let held = child.id();
+        child.wait().unwrap();
+        // `child` still holds its handle, so the exited process can be opened.
+        assert_eq!(process_start(held), None);
+        drop(child);
         // A wrong start time is treated as a reused PID.
         assert!(
             jump::chain(

@@ -1,0 +1,126 @@
+/* Plain strip (SPEC.md §10.3). Every size is a fraction of the slot (--s), so small,
+   medium and large scale together. Pill text is #1a1a1a on the tier fill: the
+   contrast is tested in pill.test.ts. The dark outline reads on a light taskbar,
+   the light fill on a dark one. */
+html,
+body {
+	margin: 0;
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+	background: transparent;
+}
+
+.strip {
+	position: fixed;
+	right: var(--strip-right, 0);
+	bottom: var(--strip-bottom, 0);
+	display: flex;
+	flex-direction: row-reverse; /* the first session sits nearest the clock */
+	font-family: "Segoe UI", system-ui, sans-serif;
+	user-select: none;
+}
+
+.slot {
+	position: relative;
+	flex: none;
+	width: var(--s);
+	height: var(--s);
+}
+
+.pill {
+	position: absolute;
+	inset: calc(var(--s) * 0.06);
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: flex-end;
+	padding: 0 calc(var(--s) * 0.05) calc(var(--s) * 0.06);
+	border: max(1.5px, calc(var(--s) * 0.03)) solid #1a1a1a;
+	border-radius: calc(var(--s) * 0.2);
+	background: var(--fill);
+	color: #1a1a1a;
+	cursor: pointer;
+}
+
+.pill:hover {
+	box-shadow: 0 0 0 2px #ffffff;
+}
+
+.overflow {
+	cursor: default;
+}
+
+.overflow:hover {
+	box-shadow: none;
+}
+
+.word,
+.project {
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	line-height: 1.2;
+}
+
+.word {
+	font-weight: 700;
+	font-size: calc(var(--s) * 0.19);
+}
+
+.project {
+	font-size: calc(var(--s) * 0.17);
+}
+
+.glyph {
+	position: absolute;
+	left: calc(var(--s) * 0.05);
+	top: calc(var(--s) * 0.05);
+	width: calc(var(--s) * 0.22);
+	height: calc(var(--s) * 0.22);
+}
+
+.dismiss {
+	position: absolute;
+	top: 0;
+	right: 0;
+	width: calc(var(--s) * 0.3);
+	height: calc(var(--s) * 0.3);
+	cursor: pointer;
+}
+
+.dismiss svg {
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+
+/* Plain-mode knock (§10.1): the glyph taps, the pill outline stays put so its hit
+   region doesn't move. Off with Windows "Animation effects" off. */
+.knock .glyph {
+	animation: knock 1.6s ease-in-out infinite;
+}
+
+@keyframes knock {
+	0%,
+	55%,
+	100% {
+		transform: none;
+	}
+	62%,
+	78% {
+		transform: translateX(-18%) rotate(-12deg);
+	}
+	70%,
+	86% {
+		transform: none;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.knock .glyph {
+		animation: none;
+	}
+}

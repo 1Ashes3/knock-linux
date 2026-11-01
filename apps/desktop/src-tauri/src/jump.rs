@@ -144,49 +144,6 @@ pub fn tcp_owner(rows: &[TcpRow], client_port: u16, server_port: u16) -> Option<
         .map(|r| r[5])
 }
 
-/// `%USERNAME%` and the last part of `%USERPROFILE%`, read once (process
-/// environment, not a Windows API call).
-static USERS: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
-    ["USERNAME", "USERPROFILE"]
-        .iter()
-        .filter_map(|k| std::env::var(k).ok())
-        .filter_map(|v| {
-            v.rsplit(['\\', '/'])
-                .find(|s| !s.is_empty())
-                .map(str::to_string)
-        })
-        .collect()
-});
-
-/// `project` (§8.3) for this user; see [`project_with`].
-pub fn project(cwd: &str) -> &str {
-    project_with(cwd, &USERS)
-}
-
-/// The last part of `cwd`, with `.` dropped and `..` applied, or `home` for
-/// a home folder: directly under `Users`, or named like a `users` entry, so
-/// a user name is never shown or logged as a project (§11.5).
-pub fn project_with<'a>(cwd: &'a str, users: &[String]) -> &'a str {
-    let mut parts = Vec::new();
-    for p in cwd.split(['\\', '/']) {
-        match p {
-            "" | "." => {}
-            ".." => {
-                parts.pop();
-            }
-            _ => parts.push(p),
-        }
-    }
-    let last = parts.last().copied().unwrap_or("");
-    let parent = parts.len().checked_sub(2).map_or("", |i| parts[i]);
-    let lower = last.to_lowercase();
-    if parent.eq_ignore_ascii_case("users") || users.iter().any(|u| u.to_lowercase() == lower) {
-        "home"
-    } else {
-        last
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,36 +397,6 @@ mod tests {
             tcp_owner(&[[5, lan, be(50001), LO, be(62451), 9]], 50001, 62451),
             None
         );
-    }
-
-    #[test]
-    fn project_is_the_last_cwd_segment() {
-        let p = |cwd| project_with(cwd, &[]);
-        assert_eq!(
-            p(r"C:\Users\me\AppData\Local\Knock\phase0-project"),
-            "phase0-project"
-        );
-        assert_eq!(p(r"C:\repo\name\"), "name");
-        assert_eq!(p("C:/repo/name"), "name");
-        assert_eq!(p(r"C:\repo\name\."), "name");
-        assert_eq!(p(""), "");
-    }
-
-    #[test]
-    fn home_folder_is_home_not_the_user_name() {
-        let alice = ["alice".to_string()];
-        for (cwd, users, want) in [
-            (r"C:\Users\alice", &[][..], "home"),
-            (r"D:\Profiles\alice", &alice[..], "home"),
-            (r"D:\Profiles\ALICE\", &alice[..], "home"),
-            ("/home/alice", &alice[..], "home"),
-            (r"C:\Users\.\alice", &[], "home"),
-            (r"C:\Users\alice\..\bob", &[], "home"),
-            (r"C:\Users\alice\code\demo", &alice[..], "demo"),
-            (r"D:\Profiles\alice", &[], "alice"),
-        ] {
-            assert_eq!(project_with(cwd, users), want, "{cwd}");
-        }
     }
 
     #[test]

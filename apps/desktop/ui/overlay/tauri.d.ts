@@ -7,5 +7,11 @@ declare var __TAURI__:
 					args?: Record<string, unknown>,
 				) => Promise<unknown>;
 			};
+			event: {
+				listen: <T>(
+					event: string,
+					handler: (e: { payload: T }) => void,
+				) => Promise<() => void>;
+			};
 	  }
 	| undefined;

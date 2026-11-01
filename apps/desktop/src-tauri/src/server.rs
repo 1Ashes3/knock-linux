@@ -1,29 +1,28 @@
 //! Local server (SPEC.md §8.1, §11). Binds 127.0.0.1 only, requires the token
-//! on every request, answers hooks with `200 {}` at once and processes them
-//! afterwards on a single worker, in arrival order. On a session's first
-//! request, and on every `UserPromptSubmit`, it records which process sent it
-//! (§7.2 step 2, §9.4, ADR 0014).
+//! on every request, answers hooks with `200 {}` at once and queues them, in
+//! arrival order, for the pipeline's owner thread to parse and process. The
+//! connection's owning process is looked up before the reply, while the
+//! client's end of the connection still exists (§7.2 step 2, §9.4).
 
-use crate::jump::{self, ProcessId};
-use crate::log::utc;
+use crate::jump::ProcessId;
+use crate::pipeline::{self, Msg, Shared};
 use crate::platform::{Platform, fill_random};
-use crate::sessions::Sessions;
 use axum::Router;
-use axum::body::{Body, Bytes, HttpBody};
+use axum::body::{Body, HttpBody};
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
-use std::io::{self, Write};
+use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::ops::RangeInclusive;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
-use tokio::sync::mpsc;
+use std::time::{Duration, Instant};
 
 /// Over this, the event is dropped but the reply is still `200 {}` (ADR 0011).
 pub const BODY_LIMIT: usize = 16 * 1024 * 1024;
@@ -68,14 +67,8 @@ pub fn listen(dir: &Path) -> io::Result<(ServerConfig, TcpListener)> {
             for _ in 0..10 {
                 let cfg = ServerConfig::generate()?;
                 if let Ok(listener) = bind(cfg.port) {
-                    std::fs::create_dir_all(dir)?;
-                    // Durable: temp file, flush to disk, then rename.
-                    let tmp = dir.join("server.json.tmp");
-                    let mut f = std::fs::File::create(&tmp)?;
-                    f.write_all(&serde_json::to_vec_pretty(&cfg)?)?;
-                    f.sync_all()?;
-                    drop(f);
-                    std::fs::rename(&tmp, &path)?;
+                    let bytes = serde_json::to_vec_pretty(&cfg)?;
+                    crate::settings::write_atomic(&path, &bytes)?;
                     return Ok((cfg, listener));
                 }
             }
@@ -108,31 +101,32 @@ fn bind(port: u16) -> io::Result<TcpListener> {
 }
 
 /// Starts the server on Tauri's async runtime. Called once by the app.
-pub fn start(platform: Arc<dyn Platform>, sessions: Arc<Sessions>) -> io::Result<()> {
-    let base = std::env::var_os("APPDATA").ok_or_else(|| io::Error::other("APPDATA not set"))?;
-    let (cfg, listener) = listen(&PathBuf::from(base).join("Knock"))?;
+pub fn start(
+    dir: &Path,
+    platform: Arc<dyn Platform>,
+    tx: Sender<Msg>,
+    published: Shared,
+) -> io::Result<()> {
+    let (cfg, listener) = listen(dir)?;
     listener.set_nonblocking(true)?;
     tracing::info!(port = cfg.port, "server listening on 127.0.0.1");
     let opts = Options {
         platform: Some(platform),
-        sessions,
         ..Options::from_env()
     };
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = serve(listener, cfg.token, opts).await {
+        if let Err(e) = serve(listener, cfg.token, opts, tx, published).await {
             tracing::error!(kind = ?e.kind(), "server stopped");
         }
     });
     Ok(())
 }
 
-/// What the server works with. Tests leave `platform` out, so no process
-/// lookups happen.
+/// Tests leave `platform` out, so no process lookups happen.
 #[derive(Default)]
 pub struct Options {
-    /// For process and window lookups (§9.4).
+    /// For the connection-owner lookup (§9.4).
     pub platform: Option<Arc<dyn Platform>>,
-    pub sessions: Arc<Sessions>,
     /// Debug builds: sleep this long before replying, to test a slow Knock (V-2).
     pub delay: Duration,
 }
@@ -159,64 +153,48 @@ impl Options {
     }
 }
 
-struct Shared {
+struct Server {
     token: String,
     /// The port clients connect to, for the connection-owner lookup.
     port: u16,
     platform: Option<Arc<dyn Platform>>,
-    sessions: Arc<Sessions>,
+    published: Shared,
     started: Instant,
     delay: Duration,
-    stats: Mutex<Stats>,
-    /// Locked so `at` is taken and the event queued in one step: queue order
-    /// then always matches timestamp order.
-    tx: Mutex<mpsc::UnboundedSender<Received>>,
+    /// Locked so the receive time is taken and the hook queued in one step:
+    /// queue order then always matches time order. Holds the last time
+    /// given out, so a clock step back can't reorder them either.
+    tx: Mutex<(u64, Sender<Msg>)>,
 }
 
-#[derive(Default)]
-struct Stats {
-    last_event_at: Option<SystemTime>,
-}
-
-struct Received {
-    /// Time the event was queued, after its body finished arriving. Never
-    /// decreases in queue order. For the engine's receive time (§8.3 `ts`);
-    /// read only by tests until the engine lands.
-    #[cfg_attr(not(test), allow(dead_code))]
-    at: Instant,
-    reply: Duration,
-    head: Option<Head>,
-    lookup: Option<Lookup>,
-}
-
-/// A connection-owner lookup made before the reply.
-struct Lookup {
-    process: Option<ProcessId>,
-    took: Duration,
-}
-
-pub async fn serve(listener: TcpListener, token: String, mut opts: Options) -> io::Result<()> {
+pub async fn serve(
+    listener: TcpListener,
+    token: String,
+    opts: Options,
+    tx: Sender<Msg>,
+    published: Shared,
+) -> io::Result<()> {
     let port = listener.local_addr()?.port();
     let listener = tokio::net::TcpListener::from_std(listener)?;
-    let (tx, rx) = mpsc::unbounded_channel();
-    let shared = Arc::new(Shared {
+    let server = Arc::new(Server {
         token,
         port,
-        platform: opts.platform.take(),
-        sessions: Arc::clone(&opts.sessions),
+        platform: opts.platform,
+        published,
         started: Instant::now(),
         delay: opts.delay,
-        stats: Mutex::default(),
-        tx: Mutex::new(tx),
+        tx: Mutex::new((0, tx)),
     });
-    tokio::spawn(worker(Arc::clone(&shared), rx));
     let app = Router::new()
         .route("/v1/hooks/claude-code", post(hook))
-        .route("/v1/health", get(health))
+        .route("/v1/health", get(health));
+    #[cfg(debug_assertions)]
+    let app = app.route("/v1/debug/snapshot", get(snapshot));
+    let app = app
         // Token check before routing, so unknown paths and wrong methods get
         // 401 too (§11.1).
-        .layer(from_fn_with_state(Arc::clone(&shared), require_token))
-        .with_state(shared);
+        .layer(from_fn_with_state(Arc::clone(&server), require_token))
+        .with_state(server);
     // Peer addresses give the client port for the connection-owner lookup.
     axum::serve(
         listener,
@@ -233,7 +211,7 @@ fn authorized(token: &str, headers: &HeaderMap) -> bool {
     })
 }
 
-async fn require_token(State(s): State<Arc<Shared>>, req: Request, next: Next) -> Response {
+async fn require_token(State(s): State<Arc<Server>>, req: Request, next: Next) -> Response {
     if !authorized(&s.token, req.headers()) {
         // Never log the body, the path or the header value.
         tracing::warn!("request rejected: missing or wrong token");
@@ -247,24 +225,23 @@ fn json(body: String) -> Response {
 }
 
 async fn hook(
-    State(s): State<Arc<Shared>>,
+    State(s): State<Arc<Server>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     req: Request,
 ) -> Response {
-    let start = Instant::now();
     let sim = req.headers().get(SIM_HEADER).is_some_and(|v| v == "1");
-    // Queue before any further await: if the client gives up, the event is
-    // still processed. `reply` is the time to here (§6: under 100 ms).
+    // Queued before any further await: if the client gives up, the event is
+    // still processed.
     match read_capped(req.into_body()).await {
         Ok(Some(body)) => {
-            let head = serde_json::from_slice::<Head>(&body).ok();
-            // A simulated session has no real process: no lookup, so its
-            // precision stays `none` (§8.1).
-            let lookup = head
-                .as_ref()
+            // Every real request is looked up (about 0.3 ms, ADR 0012); the
+            // pipeline uses the result on a session's first request and on
+            // prompts (§9.4, ADR 0014). A simulated session has no real
+            // process: no lookup (§8.1).
+            let owner = (s.platform.as_ref())
                 .filter(|_| !sim)
-                .and_then(|h| lookup(&s, h, peer.port()));
-            enqueue(&s, start, head, lookup);
+                .and_then(|p| p.connection_owner(peer.port(), s.port));
+            enqueue(&s, body, sim, owner);
         }
         // Never an error status for a request with a valid token (ADR 0011).
         _ => tracing::warn!("hook dropped: body over 16 MB or unreadable"),
@@ -280,7 +257,7 @@ async fn hook(
 /// in-flight frame). Over the limit the rest is read and discarded, then
 /// `None`: replying before the upload ends would reset the client's
 /// connection on Windows.
-async fn read_capped(mut body: Body) -> Result<Option<Bytes>, axum::Error> {
+async fn read_capped(mut body: Body) -> Result<Option<Vec<u8>>, axum::Error> {
     let mut buf = Vec::new();
     let mut over = false;
     while let Some(frame) = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
@@ -294,118 +271,39 @@ async fn read_capped(mut body: Body) -> Result<Option<Bytes>, axum::Error> {
             buf = Vec::new();
         }
     }
-    Ok((!over).then(|| buf.into()))
+    Ok((!over).then_some(buf))
 }
 
-/// §9.4 step 1, until a session's process is known and again on every
-/// `UserPromptSubmit` (ADR 0014). Runs before the reply: once the client
-/// closes, its end of the connection no longer has an owner.
-fn lookup(s: &Shared, head: &Head, client_port: u16) -> Option<Lookup> {
-    let platform = s.platform.as_ref()?;
-    if head.hook_event_name != "UserPromptSubmit" && s.sessions.process(&head.session_id).is_some()
-    {
-        return None;
-    }
-    let t = Instant::now();
-    let process = platform.connection_owner(client_port, s.port);
-    Some(Lookup {
-        process,
-        took: t.elapsed(),
-    })
-}
-
-fn enqueue(s: &Shared, start: Instant, head: Option<Head>, lookup: Option<Lookup>) {
-    let tx = s.tx.lock().unwrap_or_else(|e| e.into_inner());
-    let at = Instant::now();
-    let _ = tx.send(Received {
-        at,
-        reply: at - start,
-        head,
-        lookup,
+/// Queues a hook with its receive time (§8.3 `ts`), which never decreases
+/// in queue order.
+fn enqueue(s: &Server, body: Vec<u8>, sim: bool, owner: Option<ProcessId>) {
+    let mut tx = s.tx.lock().unwrap_or_else(|e| e.into_inner());
+    let ts = pipeline::now_ms().max(tx.0);
+    tx.0 = ts;
+    let _ = tx.1.send(Msg::Hook {
+        ts,
+        body,
+        sim,
+        owner,
     });
 }
 
-async fn health(State(s): State<Arc<Shared>>) -> Response {
-    let stats = s.stats.lock().unwrap_or_else(|e| e.into_inner());
-    json(
-        serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "uptimeS": s.started.elapsed().as_secs(),
-            "sessionCount": s.sessions.len(),
-            "lastEventAt": stats.last_event_at.map(utc),
-        })
-        .to_string(),
-    )
+async fn health(State(s): State<Arc<Server>>) -> Response {
+    let p = pipeline::read(&s.published);
+    let body = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptimeS": s.started.elapsed().as_secs(),
+        "sessionCount": p.sessions.sessions.len(),
+        "lastEventAt": p.last_event_at.map(knock_core::iso8601),
+    });
+    json(body.to_string())
 }
 
-/// The only fields read from a payload in this spike. Everything else,
-/// including all free text, is skipped by the parser and never kept. `cwd` is
-/// reduced to `project` and never stored or logged (§11.4, §11.5).
-#[derive(Deserialize)]
-struct Head {
-    session_id: String,
-    hook_event_name: String,
-    cwd: Option<String>,
-    /// Read only by the Phase 0 toast (V-12).
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
-    tool_name: Option<String>,
-}
-
-async fn worker(s: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Received>) {
-    while let Some(r) = rx.recv().await {
-        let Some(head) = r.head else {
-            tracing::warn!("hook payload not understood");
-            continue;
-        };
-        let project = jump::project(head.cwd.as_deref().unwrap_or(""));
-        tracing::info!(
-            event = ?head.hook_event_name,
-            session = ?head.session_id,
-            reply_us = r.reply.as_micros() as u64,
-            "hook"
-        );
-        // Walk only when the owner changed, PID or start time (ADR 0014). A
-        // failed lookup always goes through, so its warning is logged.
-        let found = r
-            .lookup
-            .filter(|l| l.process.is_none() || l.process != s.sessions.process(&head.session_id))
-            .and_then(|l| resolve(&s, &head.session_id, project, l));
-        s.sessions.record(&head.session_id, project, found);
-        #[cfg(debug_assertions)]
-        if head.hook_event_name == "PermissionRequest" {
-            crate::toast::permission_request(&head.session_id, project, head.tool_name.as_deref());
-        }
-        let mut stats = s.stats.lock().unwrap_or_else(|e| e.into_inner());
-        stats.last_event_at = Some(SystemTime::now());
-    }
-}
-
-/// §9.4 step 2 for a new or changed owner: walks up to the window and logs
-/// the owner exe and precision.
-fn resolve(
-    s: &Shared,
-    session: &str,
-    project: &str,
-    l: Lookup,
-) -> Option<(ProcessId, Option<jump::Target>)> {
-    let lookup_us = l.took.as_micros() as u64;
-    let Some(process) = l.process else {
-        tracing::warn!(session = ?session, lookup_us, "connection owner not found");
-        return None;
-    };
-    let t = Instant::now();
-    let target = s.platform.as_ref()?.find_window(process, project);
-    tracing::info!(
-        session = ?session,
-        project = ?project,
-        pid = process.pid,
-        lookup_us,
-        walk_us = t.elapsed().as_micros() as u64,
-        owner = ?target.as_ref().map(|t| &t.owner),
-        precision = ?target.as_ref().map(|t| t.precision),
-        "session process"
-    );
-    Some((process, target))
+/// Debug builds only (§8.1): `{ rev, sessions }`, as in `sessions-changed`.
+#[cfg(debug_assertions)]
+async fn snapshot(State(s): State<Arc<Server>>) -> Response {
+    let p = pipeline::read(&s.published);
+    json(serde_json::to_string(&p.sessions).unwrap_or_default())
 }
 
 fn base64url(bytes: &[u8]) -> String {
@@ -426,9 +324,12 @@ fn base64url(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::FakePlatform;
     use std::collections::HashSet;
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpStream};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     const TOKEN: &str = "test-token";
 
@@ -440,23 +341,34 @@ mod tests {
     }
 
     fn spawn_server() -> SocketAddr {
-        spawn_server_with(Options::default(), None)
+        spawn_server_with(Options::default(), None).0
     }
 
-    /// `log`: write this server's log lines to that folder.
-    fn spawn_server_with(opts: Options, log: Option<PathBuf>) -> SocketAddr {
+    /// A server with a pipeline owner behind it, each on its own thread, the
+    /// owner's files in a fresh temp folder. `log`: write this server's log
+    /// lines to that folder.
+    fn spawn_server_with(opts: Options, log: Option<PathBuf>) -> (SocketAddr, Shared) {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let dir = temp_dir(&format!("server-{n}"));
+        let published = Shared::default();
+        let now = pipeline::now_ms();
+        let core = pipeline::Core::new(dir, opts.platform.clone(), published.clone(), now, 720);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || pipeline::run(core, rx, |_| {}));
         let listener = bind(0).unwrap();
         listener.set_nonblocking(true).unwrap();
         let addr = listener.local_addr().unwrap();
+        let p = published.clone();
         std::thread::spawn(move || {
             let _log = log.map(|d| tracing::subscriber::set_default(crate::log::FileLog::new(d)));
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(serve(listener, TOKEN.into(), opts))
+                .block_on(serve(listener, TOKEN.into(), opts, tx, p))
         });
-        addr
+        (addr, published)
     }
 
     /// Raw HTTP/1.1 request; returns (status, body).
@@ -531,13 +443,11 @@ mod tests {
 
     #[test]
     fn event_is_kept_when_the_client_gives_up_on_a_slow_reply() {
-        let addr = spawn_server_with(
-            Options {
-                delay: Duration::from_secs(5),
-                ..Options::default()
-            },
-            None,
-        );
+        let opts = Options {
+            delay: Duration::from_secs(5),
+            ..Options::default()
+        };
+        let addr = spawn_server_with(opts, None).0;
         let mut s = TcpStream::connect(addr).unwrap();
         write!(
             s,
@@ -552,111 +462,80 @@ mod tests {
         wait_for_sessions(addr, 1);
     }
 
-    /// Records every connection-owner lookup and window walk.
-    #[derive(Default)]
-    struct FakePlatform {
-        lookups: Mutex<Vec<(u16, u16)>>,
-        /// What every lookup returns when set; otherwise the "PID" is the
-        /// client port.
-        owner: Mutex<Option<ProcessId>>,
-        /// The PID of every `find_window` call.
-        walks: Mutex<Vec<u32>>,
-    }
-
-    impl Platform for FakePlatform {
-        fn primary_display(&self) -> io::Result<crate::platform::Display> {
-            unimplemented!()
-        }
-        fn place_strip(&self, _: crate::strip::Rect) -> io::Result<()> {
-            unimplemented!()
-        }
-        fn cursor_pos(&self) -> Option<(i32, i32)> {
-            None
-        }
-        fn set_click_through(&self, _: bool) {}
-        fn connection_owner(&self, client: u16, server: u16) -> Option<ProcessId> {
-            self.lookups.lock().unwrap().push((client, server));
-            Some(self.owner.lock().unwrap().unwrap_or(ProcessId {
-                pid: client.into(),
-                start: 1,
-            }))
-        }
-        fn find_window(&self, p: ProcessId, _: &str) -> Option<jump::Target> {
-            self.walks.lock().unwrap().push(p.pid);
-            Some(jump::Target {
-                window: 1,
-                owner: "WindowsTerminal.exe".into(),
-                precision: jump::Precision::AppWindow,
-            })
-        }
-        fn focus_window(&self, _: isize) -> bool {
-            false
-        }
-    }
-
-    #[test]
-    fn process_is_looked_up_once_per_session_with_the_peer_port() {
+    fn with_fake() -> (SocketAddr, Shared, Arc<FakePlatform>) {
         let fake = Arc::new(FakePlatform::default());
-        let sessions = Arc::new(Sessions::default());
+        let platform: Arc<dyn Platform> = fake.clone();
         let opts = Options {
-            platform: Some(fake.clone()),
-            sessions: Arc::clone(&sessions),
+            platform: Some(platform),
             ..Options::default()
         };
-        let addr = spawn_server_with(opts, None);
-        let hook = "/v1/hooks/claude-code";
+        let (addr, published) = spawn_server_with(opts, None);
+        (addr, published, fake)
+    }
+
+    /// The owner handles hooks in arrival order: once a sim marker for a new
+    /// session is counted, every earlier hook has been processed.
+    fn mark(addr: SocketAddr, markers: &mut u64) {
+        *markers += 1;
+        let body = format!(r#"{{"session_id":"m{markers}","hook_event_name":"Stop"}}"#);
+        let sim = "X-Knock-Sim: 1\r\n";
+        request_with(addr, "POST", HOOK, Some(TOKEN), sim, body.as_bytes());
+    }
+
+    const HOOK: &str = "/v1/hooks/claude-code";
+
+    #[test]
+    fn real_requests_are_looked_up_with_the_peer_port_and_walked_once_per_session() {
+        let (addr, published, fake) = with_fake();
         let body = |id: &str| {
             format!(
                 r#"{{"session_id":"{id}","hook_event_name":"Stop","cwd":"C:\\work\\repo-{id}","prompt":"secret"}}"#
             )
         };
         for id in ["a", "a", "b", "a"] {
-            assert_eq!(
-                request(addr, "POST", hook, Some(TOKEN), body(id).as_bytes()).0,
-                200
-            );
+            let r = request(addr, "POST", HOOK, Some(TOKEN), body(id).as_bytes());
+            assert_eq!(r, (200, "{}".into()));
         }
-        wait_for_sessions(addr, 2);
-        // Wait for the worker to finish the last event.
-        for _ in 0..100 {
-            if sessions.views().first().is_some_and(|v| v.id == "a") {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let mut markers = 0;
+        mark(addr, &mut markers);
+        wait_for_sessions(addr, 3);
         let calls = fake.lookups.lock().unwrap().clone();
-        assert_eq!(calls.len(), 2, "one lookup per session: {calls:?}");
+        assert_eq!(calls.len(), 4, "every real request: {calls:?}");
         for (client, server) in &calls {
             assert_eq!(*server, addr.port());
             assert!(*client != 0 && client != server);
         }
-        let views = sessions.views();
-        let json = serde_json::to_string(&views).unwrap();
+        assert_eq!(fake.walks.lock().unwrap().len(), 2, "one walk per session");
+        let p = pipeline::read(&published);
+        let views: Vec<_> = (p.sessions.sessions.iter())
+            .map(|v| (v.id.as_str(), v.project.as_str(), v.precision, v.state))
+            .collect();
+        let app = crate::jump::Precision::AppWindow;
+        let none = crate::jump::Precision::None;
         assert_eq!(
-            json,
-            r#"[{"id":"a","project":"repo-a","precision":"app_window"},{"id":"b","project":"repo-b","precision":"app_window"}]"#
+            views,
+            [
+                ("a", "repo-a", app, "ready"),
+                ("b", "repo-b", app, "ready"),
+                ("m1", "", none, "ready"),
+            ]
         );
         // The first request's client port is the recorded "process".
-        let (p, _, owner) = sessions.jump_info("a").unwrap();
-        assert_eq!(p.pid, u32::from(calls[0].0));
-        assert_eq!(owner.as_deref(), Some("WindowsTerminal.exe"));
+        assert_eq!(p.jump["a"].0.pid, u32::from(calls[0].0));
+        assert!(
+            !serde_json::to_string(&p.sessions)
+                .unwrap()
+                .contains("secret")
+        );
     }
 
     #[test]
     fn simulated_requests_skip_the_process_lookup() {
-        let fake = Arc::new(FakePlatform::default());
-        let sessions = Arc::new(Sessions::default());
-        let opts = Options {
-            platform: Some(fake.clone()),
-            sessions: Arc::clone(&sessions),
-            ..Options::default()
-        };
-        let addr = spawn_server_with(opts, None);
-        let hook = "/v1/hooks/claude-code";
+        let (addr, published, fake) = with_fake();
         let body = |id: &str| format!(r#"{{"session_id":"{id}","hook_event_name":"Stop"}}"#);
         for _ in 0..2 {
             let sim = "X-Knock-Sim: 1\r\n";
-            let r = request_with(addr, "POST", hook, Some(TOKEN), sim, body("sim").as_bytes());
+            let r = request_with(addr, "POST", HOOK, Some(TOKEN), sim, body("sim").as_bytes());
             assert_eq!(r, (200, "{}".into()));
         }
         // Any other value is not a sim request: looked up as usual.
@@ -664,107 +543,105 @@ mod tests {
         request_with(
             addr,
             "POST",
-            hook,
+            HOOK,
             Some(TOKEN),
             not_sim,
             body("real").as_bytes(),
         );
         wait_for_sessions(addr, 2);
-        for _ in 0..100 {
-            if sessions.process("real").is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(sessions.process("real").is_some());
-        assert_eq!(
-            fake.lookups.lock().unwrap().len(),
-            1,
-            "only the real session"
-        );
-        assert!(sessions.process("sim").is_none());
-        assert!(sessions.jump_info("sim").is_none());
-        let view = sessions.views().into_iter().find(|v| v.id == "sim");
-        assert_eq!(view.unwrap().precision, jump::Precision::None);
+        assert_eq!(fake.lookups.lock().unwrap().len(), 1, "only the real one");
+        let p = pipeline::read(&published);
+        assert!(p.jump.contains_key("real") && !p.jump.contains_key("sim"));
+        let sim = p.sessions.sessions.iter().find(|v| v.id == "sim").unwrap();
+        assert_eq!(sim.precision, crate::jump::Precision::None);
+        assert!(sim.simulated);
     }
 
     #[test]
     fn owner_is_rechecked_on_every_prompt_and_rewalked_only_when_it_changed() {
-        let fake = Arc::new(FakePlatform::default());
-        let sessions = Arc::new(Sessions::default());
-        let opts = Options {
-            platform: Some(fake.clone()),
-            sessions: Arc::clone(&sessions),
-            ..Options::default()
-        };
-        let addr = spawn_server_with(opts, None);
+        let (addr, published, fake) = with_fake();
         let send = |event: &str, extra: &str| {
             let body = format!(r#"{{"session_id":"a","hook_event_name":"{event}"}}"#);
-            let r = request_with(
-                addr,
-                "POST",
-                "/v1/hooks/claude-code",
-                Some(TOKEN),
-                extra,
-                body.as_bytes(),
-            );
+            let r = request_with(addr, "POST", HOOK, Some(TOKEN), extra, body.as_bytes());
             assert_eq!(r, (200, "{}".into()));
         };
-        // The worker runs in arrival order: once a sim marker for another
-        // session is counted, every earlier event has been processed.
-        let mut markers = 1;
+        let mut markers = 0;
         let mut settle = || {
-            markers += 1;
-            let body = format!(r#"{{"session_id":"m{markers}","hook_event_name":"Stop"}}"#);
-            let sim = "X-Knock-Sim: 1\r\n";
-            request_with(
-                addr,
-                "POST",
-                "/v1/hooks/claude-code",
-                Some(TOKEN),
-                sim,
-                body.as_bytes(),
-            );
-            wait_for_sessions(addr, markers);
+            mark(addr, &mut markers);
+            wait_for_sessions(addr, 1 + markers);
         };
-        let lookups = || fake.lookups.lock().unwrap().len();
         let walks = || fake.walks.lock().unwrap().clone();
+        let owner = || pipeline::read(&published).jump["a"].0;
         let p1 = ProcessId { pid: 100, start: 1 };
         let p2 = ProcessId { pid: 200, start: 2 };
 
         *fake.owner.lock().unwrap() = Some(p1);
         send("UserPromptSubmit", "");
         settle();
-        assert_eq!((lookups(), walks()), (1, vec![100]));
-        // Not a prompt, process known: no lookup.
+        assert_eq!(walks(), [100]);
+        // Not a prompt: a different owner is not taken.
+        *fake.owner.lock().unwrap() = Some(p2);
         send("PreToolUse", "");
         settle();
-        assert_eq!(lookups(), 1);
-        // Same owner on the next prompt: looked up, not re-walked.
+        assert_eq!((walks(), owner()), (vec![100], p1));
+        // Same owner on the next prompt: not re-walked.
+        *fake.owner.lock().unwrap() = Some(p1);
         send("UserPromptSubmit", "");
         settle();
-        assert_eq!((lookups(), walks()), (2, vec![100]));
+        assert_eq!(walks(), [100]);
         // Same PID, new start time (a reused PID): a different owner.
-        *fake.owner.lock().unwrap() = Some(ProcessId { pid: 100, start: 9 });
+        let reused = ProcessId { pid: 100, start: 9 };
+        *fake.owner.lock().unwrap() = Some(reused);
         send("UserPromptSubmit", "");
         settle();
-        assert_eq!((lookups(), walks()), (3, vec![100, 100]));
+        assert_eq!((walks(), owner()), (vec![100, 100], reused));
         // Same session id from a different owner: replaced.
         *fake.owner.lock().unwrap() = Some(p2);
         send("UserPromptSubmit", "");
         settle();
-        assert_eq!((lookups(), walks()), (4, vec![100, 100, 200]));
-        let (p, _, owner) = sessions.jump_info("a").unwrap();
-        assert_eq!(p, p2);
-        assert_eq!(owner.as_deref(), Some("WindowsTerminal.exe"));
+        assert_eq!((walks(), owner()), (vec![100, 100, 200], p2));
+        let lookups = fake.lookups.lock().unwrap().len();
         // Sim prompts skip all of it.
         send("UserPromptSubmit", "X-Knock-Sim: 1\r\n");
         settle();
-        assert_eq!((lookups(), walks().len()), (4, 3));
-        assert_eq!(sessions.process("a"), Some(p2));
+        assert_eq!(fake.lookups.lock().unwrap().len(), lookups);
+        assert_eq!((walks().len(), owner()), (3, p2));
     }
 
-    /// The worker processes after the reply; poll health briefly.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_snapshot_needs_the_token_and_returns_session_views() {
+        let addr = spawn_server();
+        assert_eq!(request(addr, "GET", "/v1/debug/snapshot", None, b"").0, 401);
+        let (status, body) = request(addr, "GET", "/v1/debug/snapshot", Some(TOKEN), b"");
+        assert_eq!((status, body.as_str()), (200, r#"{"rev":0,"sessions":[]}"#));
+        let ask = br#"{"session_id":"s1","hook_event_name":"PermissionRequest","tool_name":"Bash","cwd":"C:\\w\\demo","tool_input":{"command":"secret"}}"#;
+        request_with(addr, "POST", HOOK, Some(TOKEN), "X-Knock-Sim: 1\r\n", ask);
+        wait_for_sessions(addr, 1);
+        let (_, body) = request(addr, "GET", "/v1/debug/snapshot", Some(TOKEN), b"");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["rev"], 1);
+        let s = &v["sessions"][0];
+        assert_eq!(
+            (s["id"].as_str(), s["project"].as_str()),
+            (Some("s1"), Some("demo"))
+        );
+        assert_eq!(
+            (s["tier"].as_str(), s["state"].as_str()),
+            (Some("needs_you"), Some("needs_input"))
+        );
+        assert_eq!(
+            s["needs"],
+            serde_json::json!({ "kind": "permission", "label": "Bash", "seen": false })
+        );
+        assert_eq!(
+            (s["precision"].as_str(), s["simulated"].as_bool()),
+            (Some("none"), Some(true))
+        );
+        assert!(!body.contains("secret"));
+    }
+
+    /// The owner processes after the reply; poll health briefly.
     fn wait_for_sessions(addr: SocketAddr, n: u64) -> serde_json::Value {
         let mut health = serde_json::Value::Null;
         for _ in 0..100 {
@@ -792,7 +669,7 @@ mod tests {
     fn body_over_16_mb_gets_200_and_is_dropped_with_a_warning() {
         assert_eq!(BODY_LIMIT, 16 * 1024 * 1024);
         let dir = temp_dir("body-limit-log");
-        let addr = spawn_server_with(Options::default(), Some(dir.clone()));
+        let addr = spawn_server_with(Options::default(), Some(dir.clone())).0;
         let hook = "/v1/hooks/claude-code";
         let ok = (200, "{}".to_owned());
         let at_limit = padded("at-limit", BODY_LIMIT);
@@ -851,7 +728,7 @@ mod tests {
         // A log here too: a callsite first hit on a thread with no subscriber
         // can be cached as off for the other tests' logs.
         let dir = temp_dir("far-over-log");
-        let addr = spawn_server_with(Options::default(), Some(dir.clone()));
+        let addr = spawn_server_with(Options::default(), Some(dir.clone())).0;
         // Under the limit, streamed the same way, is still queued.
         let (upload, reply) = stream_hook(addr, "under", 1024 * 1024);
         assert!(upload.is_ok() && reply.ends_with("\r\n\r\n{}"), "{reply}");
@@ -976,26 +853,23 @@ mod tests {
 
     #[test]
     fn queued_timestamps_never_go_backwards() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let s = Arc::new(Shared {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let s = Arc::new(Server {
             token: TOKEN.into(),
             port: 0,
             platform: None,
-            sessions: Arc::default(),
+            published: Shared::default(),
             started: Instant::now(),
             delay: Duration::ZERO,
-            stats: Mutex::default(),
-            tx: Mutex::new(tx),
+            // As if the clock had just stepped back an hour.
+            tx: Mutex::new((pipeline::now_ms() + 3_600_000, tx)),
         });
-        // Every request "started" at the same moment; queue order follows
-        // when each one is queued, across racing threads.
-        let start = Instant::now();
         let threads: Vec<_> = (0..8)
             .map(|_| {
                 let s = Arc::clone(&s);
                 std::thread::spawn(move || {
                     for _ in 0..500 {
-                        enqueue(&s, start, None, None);
+                        enqueue(&s, Vec::new(), false, None);
                     }
                 })
             })
@@ -1003,11 +877,10 @@ mod tests {
         for t in threads {
             t.join().unwrap();
         }
-        let (mut last, mut n) = (start, 0);
-        while let Ok(r) = rx.try_recv() {
-            assert!(r.at >= last, "timestamp went backwards in queue order");
-            assert_eq!(r.reply, r.at - start);
-            last = r.at;
+        let (mut last, mut n) = (0, 0);
+        while let Ok(Msg::Hook { ts, .. }) = rx.try_recv() {
+            assert!(ts >= last, "timestamp went backwards in queue order");
+            last = ts;
             n += 1;
         }
         assert_eq!(n, 8 * 500);

@@ -3,11 +3,10 @@
 
 mod windows;
 
-pub use self::windows::{WindowsPlatform, fill_random};
+pub use self::windows::{WindowsPlatform, fill_random, local_minute};
 use crate::jump::{ProcessId, Target};
 use crate::strip::Rect;
 
-/// Taskbar geometry, logged for V-13.
 #[derive(Clone, Copy)]
 pub struct Taskbar {
     pub rect: Rect,
@@ -43,4 +42,56 @@ pub trait Platform: Send + Sync {
     /// If Windows refuses, flashes its taskbar button instead. Returns
     /// whether `SetForegroundWindow` succeeded. Never blocks or sleeps.
     fn focus_window(&self, window: isize) -> bool;
+    /// §9.7 liveness: the start time of `pid` if a process with that PID is
+    /// still running, else `None`.
+    fn process_start(&self, pid: u32) -> Option<u64>;
+}
+
+/// A recording stand-in for tests: every lookup returns `owner` (or the
+/// client port as the PID), every walk finds a Windows Terminal window, and
+/// the processes in `alive` are running.
+#[cfg(test)]
+#[derive(Default)]
+pub struct FakePlatform {
+    pub lookups: std::sync::Mutex<Vec<(u16, u16)>>,
+    pub owner: std::sync::Mutex<Option<ProcessId>>,
+    /// The PID of every `find_window` call.
+    pub walks: std::sync::Mutex<Vec<u32>>,
+    pub alive: std::sync::Mutex<Vec<ProcessId>>,
+}
+
+#[cfg(test)]
+impl Platform for FakePlatform {
+    fn primary_display(&self) -> std::io::Result<Display> {
+        unimplemented!()
+    }
+    fn place_strip(&self, _: Rect) -> std::io::Result<()> {
+        unimplemented!()
+    }
+    fn cursor_pos(&self) -> Option<(i32, i32)> {
+        None
+    }
+    fn set_click_through(&self, _: bool) {}
+    fn connection_owner(&self, client: u16, server: u16) -> Option<ProcessId> {
+        self.lookups.lock().unwrap().push((client, server));
+        Some(self.owner.lock().unwrap().unwrap_or(ProcessId {
+            pid: client.into(),
+            start: 1,
+        }))
+    }
+    fn find_window(&self, p: ProcessId, _: &str) -> Option<Target> {
+        self.walks.lock().unwrap().push(p.pid);
+        Some(Target {
+            window: 1,
+            owner: "WindowsTerminal.exe".into(),
+            precision: crate::jump::Precision::AppWindow,
+        })
+    }
+    fn focus_window(&self, _: isize) -> bool {
+        false
+    }
+    fn process_start(&self, pid: u32) -> Option<u64> {
+        let alive = self.alive.lock().unwrap();
+        alive.iter().find(|p| p.pid == pid).map(|p| p.start)
+    }
 }

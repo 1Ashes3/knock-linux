@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Knock, 7 waiting">
+	<title>Knock, 7 waiting</title>
+	<path d="M4.5 2.5L14 9L5 16Z" fill="#e0702a" stroke="#2a1a12" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+	<path d="M27.5 2.5L18 9L27 16Z" fill="#e0702a" stroke="#2a1a12" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+	<path d="M6.5 6.5L11 9.6L6.8 12.8Z" fill="#a9461c"/>
+	<path d="M25.5 6.5L21 9.6L25.2 12.8Z" fill="#a9461c"/>
+	<path d="M16 7C23 7 28 11 28 17C28 21.5 25.5 24.5 21.5 26.5L16 29.5L10.5 26.5C6.5 24.5 4 21.5 4 17C4 11 9 7 16 7Z" fill="#e0702a" stroke="#2a1a12" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+	<path d="M5 18.5C9 20.5 12.5 21 16 21.5C19.5 21 23 20.5 27 18.5C26 22.5 23 25 21 26L16 28.6L11 26C9 25 6 22.5 5 18.5Z" fill="#f7e8d4"/>
+	<ellipse cx="11" cy="16" rx="1.7" ry="2.1" fill="#2a1a12"/>
+	<ellipse cx="21" cy="16" rx="1.7" ry="2.1" fill="#2a1a12"/>
+	<ellipse cx="16" cy="23.6" rx="2.2" ry="1.6" fill="#2a1a12"/>
+	<circle cx="24" cy="24" r="7.25" fill="#2a1a12" stroke="#ffffff" stroke-width="1.5"/>
+	<g fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21.2 19H27L23.1 29"/></g>
+</svg>
