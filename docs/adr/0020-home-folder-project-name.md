@@ -1,6 +1,6 @@
 # 0020: A home-folder session's project is "home"
 
-- **Status:** Proposed
+- **Status:** Approved by user on 2026-11-01
 - **Date:** 2026-10-29
 - **Spec sections:** §8.3, §11.4, §11.5
 - **VERIFY item:** none

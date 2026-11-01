@@ -217,7 +217,7 @@ During development, agents MUST NOT modify the user's real settings file. Use a 
 ```
 
 - `ts` is the server receive time.
-- `project` is the last segment of `cwd`.
+- `project` is the last segment of `cwd`, or `home` for the user's home folder (ADR 0020).
 - `pid` is present when known (§9.4).
 - `agentId` is present when the payload has `agent_id` (a sub-agent or background agent, ADR 0010).
 
@@ -293,15 +293,16 @@ The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_e
 | ------------------------------ | ------------------------------------------------------------- | ---------------------------------------- | -------------------------------- |
 | (none)                         | `session.started` or any first event                          | `idle` (or the state that event implies) | Assign animal; record process    |
 | `idle`, `ready`, `stalled`, `failed` | `turn.started`                                          | `working`                                | — (ADR 0018)                     |
-| `failed`                       | `activity`                                                    | `working`                                | — (ADR 0018)                     |
+| `failed`                       | `activity` from the main agent (no `agentId`)                 | `working`                                | — (ADR 0018, 0019)               |
 | `working`, `stalled`           | `activity`                                                    | `working`                                | Reset stall timer                |
 | `working`, `idle`, `ready`, `stalled`, `failed` | `needs.permission`, `needs.answer`               | `needs_input`                            | New episode; `Notify` (ADR 0018) |
 | `needs_input` (seen)           | A new request (`PermissionRequest` or question), not the deduplicated notification | `needs_input`  | New unseen episode; `Notify` (ADR 0018) |
 | `ended_unexpectedly`           | Any agent event                                               | The state that event implies, as a first event | As for a first event (ADR 0018) |
-| `needs_input`                  | `needs.permission`, `needs.answer`                            | `needs_input`                            | None (same episode)              |
+| `needs_input`                  | `needs.permission`, `needs.answer`                            | `needs_input`                            | Same episode; the requester is added (ADR 0019) |
 | `idle`, `ready`                | `activity`                                                    | unchanged                                | None (ADR 0010)                  |
-| `needs_input`                  | `activity` from the same agent (ADR 0010), `turn.started`     | `working`                                | Close episode                    |
-| `needs_input`                  | `turn.completed`                                              | `ready`                                  | Close episode; `ReadyBatchAdd`   |
+| `needs_input`                  | `activity` from a waiting requester (ADR 0010, 0019)          | `working` once no requester is left      | That requester is removed; close episode when none is left |
+| `needs_input`                  | `turn.started`                                                | `working`                                | Close episode                    |
+| `needs_input`                  | `turn.completed`                                              | `ready` once no sub-agent is waiting     | Main agent removed; close episode and `ReadyBatchAdd` when none is left (ADR 0019) |
 | `working`, `stalled`           | `turn.completed`                                              | `ready`                                  | `ReadyBatchAdd`                  |
 | `ready`                        | `turn.idle`                                                   | `ready`                                  | None                             |
 | `working`                      | Tick: no events for `stallMinutes`                            | `stalled`                                | `Notify` only if `notifyOnStall` |

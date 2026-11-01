@@ -1,6 +1,6 @@
 # 0019: Several pending requests in one session; background activity can't clear Failed
 
-- **Status:** Proposed
+- **Status:** Approved by user on 2026-11-01
 - **Date:** 2026-10-29
 - **Spec sections:** §8.4
 - **VERIFY item:** none
