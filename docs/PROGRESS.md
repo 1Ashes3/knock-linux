@@ -27,9 +27,20 @@ Done:
 - `core-windows` applied ADR 0018 and built `knock sim` with all 7 §12.3 scenarios, live or `--local` (aea12c3). 115 Rust tests pass and every scenario has zero missed Needs-you.
 - ADRs approved by the user on 2026-10-29: 0017 (art format details) and 0018 (gaps in the §8.4 transitions). SPEC.md §8.4 and §8.7 were updated to match.
 - **The Phase 1 exit criteria are met:** all replay and property tests pass (FR-1 partial, FR-2, FR-14).
+- Fresh review of the core is done. The user approved ADRs 0019 (several pending requests; only the main agent clears Failed), 0020 (home project name) and 0021 (two ADR 0019 edge cases) on 2026-11-01, and SPEC.md §8.3 and §8.4 were updated to match.
+  - `core-windows` fixed everything in 7b25c98 and 7ee86e2:
+    - requester sets, and per-requester dedup
+    - `session_id` and `agent_id` charset-checked
+    - wrong-typed optional fields count as missing
+    - an explicit `Input::SetSuppressed`
+    - the replay guard sees a new episode that replaces a seen one
+  - Result: 124+ Rust tests, 17/17 replays (`subagent` updated per ADR 0021), and 7/7 scenarios with no missed Needs-you.
+- Merged into `main` (fast-forward, local only).
 Next:
-- Fresh review of the core (§11.3: free text is dropped at parse time).
-- Merge into `main`, then plan Phase 2.
+- Plan Phase 2 (plain overlay, v0.1, Gate G1).
+- The fresh review's finding 7 is deferred: the adapter's install, uninstall and health-check implementations land in Phase 2 with §8.2 and FR-12.
+- The app must send `SetSuppressed` before the first event and on every settings change. Agent ids from `Needs::waiting()` must not be persisted (§11.4).
+- A background answer after the user acknowledged Ready brings the session back to Ready, with a batched ReadyBatchAdd, never a notification (lead reading of ADR 0021).
 Dependencies added: proptest 1.12.0 and insta 1.49.0 (dev-only, §13.2). knock-core uses serde and serde_json (approved).
 Clarifications (lead):
 - The app works out whether notifications are suppressed (pause or quiet hours in local time) and passes it with each `Tick`, so the engine stays pure.
