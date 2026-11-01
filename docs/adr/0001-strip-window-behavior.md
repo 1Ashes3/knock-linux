@@ -25,6 +25,7 @@ Tauri's own click-through call (`set_ignore_cursor_events`, tao 0.37.1) rewrites
 
 - All strip style logic lives in `apps/desktop/src-tauri/src/platform/`. Later phases that touch the strip window must go through it.
 - The per-tick re-assert is a follow-up fix to d81fc40; the fresh review flagged it as a latent bug.
+- Note added 2026-11-01 (lead, be83e04): since be83e04 the strip is shown by the platform layer with `SW_SHOWNOACTIVATE`, not by tao, so tao's internal VISIBLE flag stays false. Any tao window setter on the strip would therefore hide it. This is one more reason never to call tao setters on the strip.
 - Not covered by V-10: the 154 MB memory reading (dev build). Measure a release build in Phase 3, when the budgets are checked.
 
 ## Evidence
