@@ -137,7 +137,7 @@ export function Setup({ status, settings, update, onLeave, onFinish }: Props) {
 									checked={chosen === m}
 									onChange={() => void choose({ monitor: monitorValue(m) })}
 								/>
-								{monitorLabel(m, i)}
+								{monitorLabel(m, i, monitors)}
 							</label>
 						))}
 					</fieldset>
@@ -167,7 +167,7 @@ export function Setup({ status, settings, update, onLeave, onFinish }: Props) {
 						)}
 						<p>
 							Go Back, then press Next to try again. You can also run setup
-							later from Settings.
+							later from Settings: {OPEN_SETTINGS}
 						</p>
 					</Screen>
 				);
@@ -186,11 +186,7 @@ export function Setup({ status, settings, update, onLeave, onFinish }: Props) {
 						}
 					>
 						<p role="status">Your Claude Code settings file was updated.</p>
-						<p>
-							A copy of the file from before the change was saved here, in case
-							you ever need it:
-						</p>
-						<p className="path">{c.backup}</p>
+						<Backup path={c.backup} />
 					</Screen>
 				);
 			return (
@@ -229,7 +225,7 @@ export function Setup({ status, settings, update, onLeave, onFinish }: Props) {
 							Knock only learns what kind of moment happened. It never sees your
 							messages, your code, or what Claude Code writes.
 						</li>
-						<li>Everything else in the file stays exactly as it is.</li>
+						<li>Everything else in the file keeps its settings and values.</li>
 						<li>Knock saves a copy of the file before changing it.</li>
 						<li>
 							You can remove Knock from Claude Code at any time in Settings.
@@ -384,11 +380,30 @@ export function Setup({ status, settings, update, onLeave, onFinish }: Props) {
 					</p>
 					<p>
 						To change anything, or to remove Knock from Claude Code, open
-						Knock's Settings.
+						Settings: {OPEN_SETTINGS}
 					</p>
 				</Screen>
 			);
 	}
+}
+
+/** Settings opens from the tray menu; the icon may sit in the overflow behind the ^ arrow. */
+export const OPEN_SETTINGS =
+	"right-click the fox icon near the clock (you may need the ^ arrow) and choose Settings.";
+
+/** Where the core saved the old file. An empty path means there was no file to back up (§8.2). */
+export function Backup({ path }: { path: string }) {
+	return path ? (
+		<>
+			<p>
+				A copy of the file from before the change was saved here, in case you
+				ever need it:
+			</p>
+			<p className="path">{path}</p>
+		</>
+	) : (
+		<p>There was no settings file yet, so there was nothing to back up.</p>
+	);
 }
 
 /** One setup screen. The heading takes focus on each new screen, so Narrator reads it. */

@@ -185,6 +185,26 @@ test("taskbar choice: the main display is stored as primary", () => {
 	]);
 });
 
+test("taskbar labels: repeated names always show the resolution; exact twins are numbered", () => {
+	const g = "Generic PnP Monitor";
+	const ms: Monitor[] = [
+		{ id: "A", name: g, primary: true, width: 1920, height: 1080 },
+		{ id: "B", name: g, primary: false, width: 1920, height: 1080 },
+		{ id: "C", name: g, primary: false, width: 2560, height: 1440 },
+		{ id: "D", name: "", primary: false, width: 1920, height: 1080 },
+		{ id: "E", name: " ", primary: false, width: 1920, height: 1080 },
+	];
+	const labels = ms.map(monitorLabel);
+	expect(labels).toEqual([
+		"Display 1: Generic PnP Monitor (main display), 1920 × 1080",
+		"Display 2: Generic PnP Monitor, 1920 × 1080",
+		"Generic PnP Monitor, 2560 × 1440",
+		"Display 4, 1920 × 1080",
+		"Display 5, 1920 × 1080",
+	]);
+	expect(new Set(labels).size).toBe(labels.length);
+});
+
 test("line diff: exact, with every line of both files accounted for", () => {
 	const before = '{\n  "model": "opus"\n}\n';
 	const after = '{\n  "model": "opus",\n  "hooks": {}\n}\n';

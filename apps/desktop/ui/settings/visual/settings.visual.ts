@@ -80,6 +80,7 @@ const SCREENS: [string, string, string[]][] = [
 	["connect-invalid-json", "preview=invalid", ["Start", "Next"]],
 	["connect-write-failed", "apply=fail", TO_SIGNIN.slice(0, 3)],
 	["connected", "", TO_SIGNIN.slice(0, 3)],
+	["connected-no-backup", "empty=1", TO_SIGNIN.slice(0, 3)],
 	["signin", "", TO_SIGNIN],
 	["test", "", TO_TEST],
 	["test-played", "", [...TO_TEST, "Play a test knock"]],
@@ -151,16 +152,34 @@ test("setup skips the taskbar step with one display", async ({ page }) => {
 test("choosing a taskbar saves it right away", async ({ page }) => {
 	await open(page, "setup=1");
 	await click(page, "Start");
-	await page.getByLabel("Display 2, 1920 × 1080").check();
+	await page.getByLabel("Display 3: Generic PnP Monitor, 1920 × 1080").check();
 	expect(await calls(page)).toContainEqual([
 		"update_settings",
-		{ patch: { monitor: "monitor-BOE0A1C-2" } },
+		{ patch: { monitor: "monitor-GSM5B7F-3" } },
 	]);
 	await page.getByLabel("DELL U2720Q (main display), 2560 × 1440").check();
 	expect(await calls(page)).toContainEqual([
 		"update_settings",
 		{ patch: { monitor: "primary" } },
 	]);
+});
+
+test("no settings file before: says there was nothing to back up", async ({
+	page,
+}) => {
+	await open(page, "setup=1&monitors=1&empty=1");
+	await click(page, "Start");
+	await expect(
+		page.getByText("This file doesn't exist yet, so Knock will create it."),
+	).toBeVisible();
+	await click(page, "Confirm and connect");
+	await heading(page, "Knock is connected to Claude Code");
+	await expect(
+		page.getByText(
+			"There was no settings file yet, so there was nothing to back up.",
+		),
+	).toBeVisible();
+	await expect(page.locator(".path")).toHaveCount(0);
 });
 
 test("invalid JSON: the message, Back, and nothing written", async ({
@@ -204,6 +223,7 @@ test("the whole setup by keyboard alone; focus moves to each new screen", async 
 	await focused("Connect Knock to Claude Code");
 	await press("Confirm and connect");
 	await focused("Knock is connected to Claude Code");
+	await expect(page.locator(".path")).toHaveText(/backups\\settings\./);
 	await press("Next");
 	await press("No, I'll start it myself");
 	await focused("Try a test knock");
@@ -216,6 +236,11 @@ test("the whole setup by keyboard alone; focus moves to each new screen", async 
 			"already open connect within about 10 seconds; no restart needed",
 		),
 	).toBeVisible();
+	await expect(
+		page.getByText(
+			"right-click the fox icon near the clock (you may need the ^ arrow) and choose Settings",
+		),
+	).toBeVisible();
 	await press("Finish");
 	// The mock has no window to close, so the app shows Settings instead.
 	await heading(page, "Knock Settings");
@@ -223,7 +248,7 @@ test("the whole setup by keyboard alone; focus moves to each new screen", async 
 	const sent = await calls(page);
 	expect(sent).toContainEqual([
 		"update_settings",
-		{ patch: { monitor: "monitor-BOE0A1C-2" } },
+		{ patch: { monitor: "monitor-GSM5B7F-2" } },
 	]);
 	expect(sent).toContainEqual([
 		"update_settings",

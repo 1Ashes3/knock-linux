@@ -3,13 +3,13 @@
 //
 // URL parameters:
 //   setup=1                 start the setup flow (as the core's `?setup=1`)
-//   monitors=1|2            displays connected; default 2
+//   monitors=1|2|3          displays connected; default 3
 //   installed=1             Knock's hooks are already in the Claude Code settings file
 //   preview=invalid         the settings file isn't valid JSON
 //   apply=fail              writing the file fails
 //   save=fail               update_settings rejects every change
 //   knock=fail              play_test_knock rejects
-//   empty=1                 the settings file doesn't exist yet
+//   empty=1                 the settings file doesn't exist yet, so there is no backup
 // Every call is logged under the page and kept in `window.__calls`.
 import type { Settings } from "../../overlay/bridge";
 import type { Check, Monitor } from "../core";
@@ -42,14 +42,22 @@ const monitors: Monitor[] = [
 		width: 2560,
 		height: 1440,
 	},
+	// Windows names many displays alike; the labels number these two.
 	{
-		id: "monitor-BOE0A1C-2",
-		name: "",
+		id: "monitor-GSM5B7F-2",
+		name: "Generic PnP Monitor",
 		primary: false,
 		width: 1920,
 		height: 1080,
 	},
-].slice(0, q.get("monitors") === "1" ? 1 : 2);
+	{
+		id: "monitor-GSM5B7F-3",
+		name: "Generic PnP Monitor",
+		primary: false,
+		width: 1920,
+		height: 1080,
+	},
+].slice(0, Number(q.get("monitors") ?? 3));
 
 const PATH = String.raw`C:\Users\Sam\.claude\settings.json`;
 const userFile = {
@@ -169,8 +177,9 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
 				message:
 					"Knock couldn't save the file because another program is using it. Close other programs that might have it open, then try again.",
 			};
+		const backup = before() === "" ? "" : BACKUP;
 		installed = true;
-		return { ok: true, backup: BACKUP };
+		return { ok: true, backup };
 	},
 	setup_remove_hooks: () => {
 		installed = false;

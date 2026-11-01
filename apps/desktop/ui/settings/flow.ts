@@ -159,9 +159,26 @@ export function selectedMonitor(
 	);
 }
 
-export function monitorLabel(m: Monitor, index: number): string {
-	const name = m.name.trim() || `Display ${index + 1}`;
-	return `${name}${m.primary ? " (main display)" : ""}, ${m.width} × ${m.height}`;
+/**
+ * Windows' display names can repeat ("Generic PnP Monitor"), so the resolution always shows,
+ * and displays alike in name and resolution are numbered by their place in the list.
+ */
+export function monitorLabel(
+	m: Monitor,
+	index: number,
+	all: readonly Monitor[],
+): string {
+	const name = m.name.trim();
+	const twin = all.some(
+		(o) =>
+			o !== m &&
+			o.name.trim() === name &&
+			o.width === m.width &&
+			o.height === m.height,
+	);
+	const number = `Display ${index + 1}`;
+	const title = !name ? number : twin ? `${number}: ${name}` : name;
+	return `${title}${m.primary ? " (main display)" : ""}, ${m.width} × ${m.height}`;
 }
 
 // --- The exact change, line by line ---

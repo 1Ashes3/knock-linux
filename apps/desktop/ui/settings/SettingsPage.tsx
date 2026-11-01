@@ -20,7 +20,7 @@ import {
 	quietHoursPatch,
 	selectedMonitor,
 } from "./flow";
-import type { Update } from "./Setup";
+import { Backup, type Update } from "./Setup";
 
 interface Props {
 	settings: Settings;
@@ -47,7 +47,7 @@ export function SettingsPage({ settings: s, update, onRunSetup }: Props) {
 						help="Which display's taskbar Knock rests on."
 						options={monitors.map((m, i) => ({
 							value: monitorValue(m),
-							label: monitorLabel(m, i),
+							label: monitorLabel(m, i, monitors),
 						}))}
 						value={chosen ? monitorValue(chosen) : ""}
 						onChange={(monitor) => update({ monitor })}
@@ -327,7 +327,7 @@ function Connection({ onRunSetup }: { onRunSetup(): void }) {
 				<ul>
 					<li>
 						Knock deletes only its own entries from your Claude Code settings
-						file. Everything else stays exactly as it is.
+						file. Everything else in the file keeps its settings and values.
 					</li>
 					<li>Knock saves a copy of the file before changing it.</li>
 					<li>
@@ -360,10 +360,7 @@ function Connection({ onRunSetup }: { onRunSetup(): void }) {
 					(removal.result.ok ? (
 						<div role="status">
 							<p>Knock was removed from Claude Code.</p>
-							<p>
-								A copy of the file from before the change was saved here:{" "}
-								<span className="path">{removal.result.backup}</span>
-							</p>
+							<Backup path={removal.result.backup} />
 						</div>
 					) : (
 						<p className="error" role="alert">
