@@ -1,7 +1,17 @@
 {
 	"$schema": "../gen/schemas/desktop-schema.json",
 	"identifier": "strip",
-	"description": "The strip receives sessions-changed and settings-changed (SPEC.md §8.5). Nothing else from Tauri's core or plugins.",
+	"description": "The strip: its §8.5 commands, and sessions-changed and settings-changed. Nothing else from Tauri's core or plugins.",
 	"windows": ["strip"],
-	"permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+	"permissions": [
+		"core:event:allow-listen",
+		"core:event:allow-unlisten",
+		"allow-get-sessions",
+		"allow-jump-to-session",
+		"allow-acknowledge",
+		"allow-dismiss",
+		"allow-set-hit-regions",
+		"allow-request-strip-size",
+		"allow-get-settings"
+	]
 }

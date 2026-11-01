@@ -15,6 +15,27 @@ pub struct Taskbar {
     pub auto_hide: bool,
 }
 
+/// One display, for the setup step that picks a taskbar (§10.4).
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct Monitor {
+    /// Stable across restarts and reconnects: a hash of the monitor's
+    /// device interface path (see [`monitor_id`]). Used as §8.6 `monitor`.
+    pub id: String,
+    pub name: String,
+    pub primary: bool,
+    /// Resolution in physical pixels.
+    pub width: i32,
+    pub height: i32,
+}
+
+/// §8.6 `monitor` id for a monitor's device interface path (stable for the
+/// same monitor on the same port): the same 64-bit FNV-1a as the project
+/// key, as 16 hex digits, so it fits the §8.6 id rule. Device paths are
+/// case-insensitive, so the lower-casing is harmless.
+pub fn monitor_id(device_path: &str) -> String {
+    knock_core::project_key(device_path)
+}
+
 #[derive(Clone, Copy)]
 pub struct Display {
     pub monitor: Rect,
@@ -49,6 +70,10 @@ pub trait Platform: Send + Sync {
     /// §9.7 liveness: the start time of `pid` if a process with that PID is
     /// still running, else `None`.
     fn process_start(&self, pid: u32) -> Option<u64>;
+    /// Every connected display, the primary one first.
+    fn monitors(&self) -> Vec<Monitor>;
+    /// §9.7: adds or removes Knock's launch-at-sign-in entry.
+    fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()>;
 }
 
 /// A recording stand-in for tests: every lookup returns `owner` (or the
@@ -62,6 +87,8 @@ pub struct FakePlatform {
     /// The PID of every `find_window` call.
     pub walks: std::sync::Mutex<Vec<u32>>,
     pub alive: std::sync::Mutex<Vec<ProcessId>>,
+    /// Every `set_launch_at_sign_in` call.
+    pub sign_in: std::sync::Mutex<Vec<bool>>,
 }
 
 #[cfg(test)]
@@ -98,5 +125,30 @@ impl Platform for FakePlatform {
     fn process_start(&self, pid: u32) -> Option<u64> {
         let alive = self.alive.lock().unwrap();
         alive.iter().find(|p| p.pid == pid).map(|p| p.start)
+    }
+    fn monitors(&self) -> Vec<Monitor> {
+        Vec::new()
+    }
+    fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()> {
+        self.sign_in.lock().unwrap().push(on);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn monitor_id_is_stable_and_fits_the_settings_rule() {
+        // The shape EnumDisplayDevicesW returns with EDD_GET_DEVICE_INTERFACE_NAME.
+        let path =
+            r"\\?\DISPLAY#VSC9C2E#5&1a2b3c4d&0&UID4352#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
+        let id = super::monitor_id(path);
+        assert_eq!(id, super::monitor_id(&path.to_uppercase()));
+        assert_eq!(
+            id, "ce99b1e1b13dd0b5",
+            "changing it forgets the chosen taskbar"
+        );
+        let s = crate::settings::Settings::default();
+        assert!(crate::settings::merged(&s, &serde_json::json!({ "monitor": id })).is_ok());
     }
 }

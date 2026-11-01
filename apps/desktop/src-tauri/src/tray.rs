@@ -59,7 +59,12 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
             "pause" => {
                 let _ = tx.send(Msg::TogglePause);
             }
-            "settings" => tracing::info!("tray: the settings window is not built yet"),
+            "settings" => {
+                // Off the main thread: creating a window in an event
+                // handler deadlocks on Windows.
+                let app = app.clone();
+                std::thread::spawn(move || crate::open_settings(&app, false));
+            }
             "quit" => app.exit(0),
             _ => {}
         });

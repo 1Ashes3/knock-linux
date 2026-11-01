@@ -29,6 +29,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
 
 const SNAPSHOT: &str = "sessions.json";
+/// The test knock's project name and how long it stays.
+const TEST_PROJECT: &str = "Knock test";
+const TEST_MS: u64 = 10_000;
 
 pub enum Msg {
     /// A hook request (§8.1), received at `ts` (ms since the Unix epoch).
@@ -44,6 +47,9 @@ pub enum Msg {
     Dismiss(String),
     /// The tray's Pause notifications item: flips the in-effect value.
     TogglePause,
+    /// The setup's test knock: a simulated session that needs you, with its
+    /// toast even while notifications are suppressed, gone after 10 s.
+    TestKnock,
     /// A §8.6 merge patch; `reply` gets the saved settings or why not.
     Settings {
         patch: serde_json::Value,
@@ -139,6 +145,8 @@ pub struct Core {
     /// FR-8: sessions that became Ready, never shown. For Phase 4 (FR-9).
     #[cfg_attr(not(test), allow(dead_code))]
     ready: Vec<String>,
+    /// Test-knock sessions and when they end.
+    tests: Vec<(String, u64)>,
     view: SessionsChanged,
     needs_you: usize,
     last_event_at: Option<u64>,
@@ -170,6 +178,7 @@ impl Core {
             unowned: HashSet::new(),
             dirty: None,
             ready: Vec::new(),
+            tests: Vec::new(),
             view: SessionsChanged::default(),
             needs_you: 0,
             last_event_at: None,
@@ -196,6 +205,7 @@ impl Core {
             Msg::Ack(id) => self.user(Kind::UserAck, &id, now, &mut run),
             Msg::Dismiss(id) => self.user(Kind::UserDismiss, &id, now, &mut run),
             Msg::TogglePause => self.toggle_pause(local_minute, &mut run),
+            Msg::TestKnock => self.test_knock(now, &mut run),
             Msg::Settings { patch, reply } => {
                 let r = self.update(&patch, local_minute, &mut run);
                 if let Some(tx) = reply {
@@ -221,6 +231,13 @@ impl Core {
                 };
                 self.step(input, &mut run);
             }
+        }
+        let (done, left) = std::mem::take(&mut self.tests)
+            .into_iter()
+            .partition(|(_, end)| *end <= now);
+        self.tests = left;
+        for (id, _) in done {
+            self.test_hook(now, &id, "SessionEnd", &mut run);
         }
         self.step(Input::Tick { now }, &mut run);
         self.finish(run, now)
@@ -266,6 +283,44 @@ impl Core {
             },
             run,
         );
+    }
+
+    /// The user's own test (§10.4 step 5), so its toast shows even when
+    /// paused or in quiet hours; only this one bypasses suppression.
+    fn test_knock(&mut self, now: u64, run: &mut Run) {
+        let id = format!("knock-test-{now}");
+        self.test_hook(now, &id, "Notification", run);
+        let shown =
+            (run.outs.iter()).any(|o| matches!(o, Out::Toast { session, .. } if *session == id));
+        let fx = Effect::Notify {
+            session_id: id.clone(),
+            reason: Reason::NeedsAnswer,
+        };
+        if let (false, Some((title, body))) =
+            (shown, toast_text(&fx, TEST_PROJECT, None, &self.settings))
+        {
+            tracing::info!(session = ?id, "notify (test knock)");
+            run.outs.push(Out::Toast {
+                session: id.clone(),
+                title,
+                body,
+            });
+        }
+        self.tests.push((id, now + TEST_MS));
+    }
+
+    /// A simulated hook for a test knock. Not a Claude Code event, so the
+    /// health check's last event time stays as it was.
+    fn test_hook(&mut self, now: u64, id: &str, hook: &str, run: &mut Run) {
+        let body = serde_json::json!({
+            "session_id": id,
+            "hook_event_name": hook,
+            "notification_type": "elicitation_dialog",
+            "cwd": TEST_PROJECT,
+        });
+        let last = self.last_event_at;
+        self.hook(now, body.to_string().as_bytes(), true, None, run);
+        self.last_event_at = last;
     }
 
     /// §9.4 step 2 for a new or changed owner.
@@ -1291,5 +1346,63 @@ mod tests {
         ];
         assert_eq!(gone(known, start_of), ["reused", "exited"]);
         assert!(gone([], start_of).is_empty());
+    }
+
+    #[test]
+    fn the_test_knock_toasts_even_when_suppressed_and_ends_after_ten_seconds() {
+        let mut t = core("test-knock");
+        t.hook(0, "real", "Stop", "", None);
+        let last = read(&t.shared).last_event_at;
+        for (n, suppress) in [None, Some("pause"), Some("quiet")].into_iter().enumerate() {
+            match suppress {
+                Some("pause") => {
+                    t.core.handle(Msg::TogglePause, T0, NOON);
+                }
+                Some(_) => {
+                    t.core.handle(Msg::TogglePause, T0, NOON);
+                    let patch = json!({ "quietHours": { "enabled": true, "start": "00:00", "end": "23:59" } });
+                    t.core
+                        .handle(Msg::Settings { patch, reply: None }, T0, NOON);
+                    assert!(
+                        t.core.settings.suppressed(NOON) && !t.core.settings.pause_notifications
+                    );
+                }
+                None => {}
+            }
+            let at = T0 + 100_000 * (n as u64 + 1);
+            let id = format!("knock-test-{at}");
+            let outs = t.core.handle(Msg::TestKnock, at, NOON);
+            let want = (
+                "Knock test needs you".to_string(),
+                "Claude Code has a question for you.".to_string(),
+            );
+            assert_eq!(toasts(&outs), [want], "{suppress:?}");
+            {
+                let p = read(&t.shared);
+                let v = p.sessions.sessions.iter().find(|v| v.id == id).unwrap();
+                assert_eq!(
+                    (v.tier, v.state, v.simulated),
+                    ("needs_you", "needs_input", true)
+                );
+                assert_eq!(v.project, "Knock test");
+                assert_eq!(p.last_event_at, last, "not a Claude Code event");
+            }
+            t.core.tick(at + 9_999, NOON);
+            assert!(t.states().iter().any(|(s, _)| *s == id));
+            t.core.tick(at + 10_000, NOON);
+            assert!(!t.states().iter().any(|(s, _)| *s == id));
+            assert_eq!(read(&t.shared).last_event_at, last);
+        }
+        // A real session's toast is still suppressed.
+        assert!(
+            toasts(&t.hook(
+                400_000,
+                "s2",
+                "PermissionRequest",
+                r#","tool_name":"Bash""#,
+                None
+            ))
+            .is_empty()
+        );
     }
 }

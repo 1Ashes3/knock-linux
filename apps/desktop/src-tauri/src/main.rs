@@ -4,6 +4,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod hooks;
 mod jump;
 mod log;
 mod pipeline;
@@ -14,7 +15,8 @@ mod strip;
 mod tray;
 
 use pipeline::{Msg, Out, SessionsChanged, Shared};
-use platform::{Platform, WindowsPlatform};
+use platform::{Monitor, Platform, WindowsPlatform};
+use serde_json::{Value, json};
 use settings::Settings;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -35,6 +37,10 @@ struct Knock {
     shared: Shared,
     platform: Arc<dyn Platform>,
     strip: Arc<Mutex<Strip>>,
+    /// Claude Code hook setup (§8.2).
+    hooks: hooks::Setup,
+    /// No Knock `settings.json` existed when the app started.
+    first_run: bool,
 }
 
 impl Knock {
@@ -134,11 +140,25 @@ fn get_settings(k: tauri::State<'_, Knock>) -> Settings {
 
 /// §8.6: merges `patch`, validates, saves, applies at once and emits
 /// `settings-changed`. Async, so the main thread never waits on the owner.
+/// `launchAtSignIn: true/false` also adds or removes the sign-in entry
+/// (§9.7) first; `null` leaves it untouched.
 #[tauri::command]
 async fn update_settings(
     patch: serde_json::Value,
     k: tauri::State<'_, Knock>,
 ) -> Result<Settings, String> {
+    if let Some(on) = patch.get("launchAtSignIn").and_then(Value::as_bool) {
+        // An invalid patch changes nothing, the sign-in entry included.
+        let current = pipeline::read(&k.shared).settings.clone();
+        settings::merged(&current, &patch)?;
+        // The error can name the exe's path; it is not logged (§11.5).
+        k.platform.set_launch_at_sign_in(on).map_err(|_| {
+            tracing::warn!(on, "launch at sign-in not changed");
+            "Knock couldn't change whether it starts when you sign in. Please try again."
+                .to_string()
+        })?;
+        tracing::info!(on, "launch at sign-in set");
+    }
     let (tx, rx) = tokio::sync::oneshot::channel();
     let stopping = || "Knock is shutting down.".to_string();
     let msg = Msg::Settings {
@@ -147,6 +167,169 @@ async fn update_settings(
     };
     k.tx.send(msg).map_err(|_| stopping())?;
     rx.await.map_err(|_| stopping())?
+}
+
+/// `{ ok: false, message }` for a setup problem, else `ok(t)`.
+fn reply<T>(r: Result<T, hooks::Problem>, ok: impl FnOnce(T) -> Value) -> Value {
+    match r {
+        Ok(t) => ok(t),
+        Err(p) => {
+            tracing::info!(problem = ?p, "hook setup stopped");
+            json!({ "ok": false, "message": p.message() })
+        }
+    }
+}
+
+/// The real server check (FR-12), off the async workers: it blocks up to 1 s.
+async fn server_ok(k: &Knock) -> bool {
+    let Some((port, token)) = k.hooks.server.clone() else {
+        return false;
+    };
+    let probe = move || server::probe(port, &token);
+    tauri::async_runtime::spawn_blocking(probe)
+        .await
+        .unwrap_or(false)
+}
+
+/// §8.5, §10.4.
+#[tauri::command]
+async fn setup_status(k: tauri::State<'_, Knock>) -> Result<Value, String> {
+    Ok(json!({
+        "firstRun": k.first_run,
+        "hooksInstalled": k.hooks.installed().unwrap_or(false),
+        "serverOk": server_ok(&k).await,
+        "monitorCount": k.platform.monitors().len(),
+    }))
+}
+
+/// §8.5: every display, primary first; `id` is the §8.6 `monitor` value.
+#[tauri::command]
+async fn setup_list_monitors(k: tauri::State<'_, Knock>) -> Result<Vec<Monitor>, String> {
+    Ok(k.platform.monitors())
+}
+
+/// §8.2 step 2: the whole file before and after, token masked. Writes nothing.
+#[tauri::command]
+async fn setup_preview_hooks(k: tauri::State<'_, Knock>) -> Result<Value, String> {
+    Ok(reply(
+        k.hooks.preview(),
+        |p| json!({ "ok": true, "path": p.path, "before": p.before, "after": p.after }),
+    ))
+}
+
+/// §8.2 steps 3-7: after the user confirmed the preview.
+#[tauri::command]
+async fn setup_apply_hooks(k: tauri::State<'_, Knock>) -> Result<Value, String> {
+    let r = k.hooks.apply(pipeline::now_ms());
+    Ok(reply(r, |backup| json!({ "ok": true, "backup": backup })))
+}
+
+/// §8.2 removal.
+#[tauri::command]
+async fn setup_remove_hooks(k: tauri::State<'_, Knock>) -> Result<Value, String> {
+    let r = k.hooks.remove(pipeline::now_ms());
+    Ok(reply(r, |backup| json!({ "ok": true, "backup": backup })))
+}
+
+#[derive(serde::Serialize)]
+struct Check {
+    id: &'static str,
+    label: &'static str,
+    ok: bool,
+    detail: String,
+}
+
+/// FR-12: real checks, in plain language, with no path but the file name
+/// and no token.
+#[tauri::command]
+async fn run_health_check(k: tauri::State<'_, Knock>) -> Result<Vec<Check>, String> {
+    let hooks = match k.hooks.installed() {
+        Ok(true) => (true, "Knock is in your Claude Code settings (settings.json).".into()),
+        Ok(false) => (
+            false,
+            "Knock isn't in your Claude Code settings (settings.json), or its entry is out of date. Run setup to connect it."
+                .into(),
+        ),
+        Err(p) => (false, p.message().to_string()),
+    };
+    let server = match server_ok(&k).await {
+        true => (
+            true,
+            "Knock is listening for Claude Code, on this computer only.".into(),
+        ),
+        false => (
+            false,
+            "Knock isn't answering Claude Code right now. Please restart Knock.".into(),
+        ),
+    };
+    let last = pipeline::read(&k.shared).last_event_at;
+    let event = match last {
+        Some(t) => (
+            true,
+            format!(
+                "Knock last heard from Claude Code {}.",
+                ago(pipeline::now_ms().saturating_sub(t))
+            ),
+        ),
+        None => (
+            false,
+            "Knock hasn't heard from Claude Code since it started. Send a message in a Claude Code window, then check again."
+                .into(),
+        ),
+    };
+    let check = |id, label, (ok, detail): (bool, String)| Check {
+        id,
+        label,
+        ok,
+        detail,
+    };
+    Ok(vec![
+        check("hooks", "Connected to Claude Code", hooks),
+        check("server", "Listening for Claude Code", server),
+        check("lastEvent", "Last event from Claude Code", event),
+    ])
+}
+
+/// "just now", "5 minutes ago", "1 hour ago", "2 days ago".
+fn ago(ms: u64) -> String {
+    let s = ms / 1000;
+    let (n, unit) = match s {
+        0..60 => return "just now".into(),
+        60..3600 => (s / 60, "minute"),
+        3600..86_400 => (s / 3600, "hour"),
+        _ => (s / 86_400, "day"),
+    };
+    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+}
+
+/// §10.4 step 5: a simulated session knocks, with its toast, then leaves.
+#[tauri::command]
+fn play_test_knock(k: tauri::State<'_, Knock>) {
+    let _ = k.tx.send(Msg::TestKnock);
+}
+
+/// Opens the settings window, or brings it back if it is open. `setup`:
+/// start the setup flow (§10.4). A normal, focusable window, unlike the
+/// strip. From an event handler, call it off the main thread: creating a
+/// window there deadlocks on Windows.
+fn open_settings(app: &AppHandle, setup: bool) {
+    if let Some(w) = app.get_webview_window("settings") {
+        let _ = (w.unminimize(), w.show(), w.set_focus());
+        return;
+    }
+    let url = match setup {
+        true => "/settings/index.html?setup=1",
+        false => "/settings/index.html",
+    };
+    let built = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App(url.into()))
+        .title("Knock Settings")
+        .inner_size(640.0, 720.0)
+        .min_inner_size(420.0, 480.0)
+        .center()
+        .build();
+    if built.is_err() {
+        tracing::warn!("settings window not opened");
+    }
 }
 
 /// The effect runner's output side, on the owner thread. Tray and menu
@@ -208,6 +391,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let platform: Arc<dyn Platform> = Arc::new(WindowsPlatform::new(&window)?);
 
     let dir = settings::data_dir()?;
+    let first_run = !dir.join(settings::FILE).exists();
     let shared = Shared::default();
     let now = pipeline::now_ms();
     let core = pipeline::Core::new(
@@ -244,9 +428,21 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // The Repair flow for a port that can't bind is not built yet (§8.1).
-    if let Err(e) = server::start(&dir, Arc::clone(&platform), tx.clone(), shared.clone()) {
-        tracing::error!(kind = ?e.kind(), "server failed to start");
-    }
+    let server = match server::start(&dir, Arc::clone(&platform), tx.clone(), shared.clone()) {
+        Ok(cfg) => Some((cfg.port, cfg.token)),
+        Err(e) => {
+            tracing::error!(kind = ?e.kind(), "server failed to start");
+            None
+        }
+    };
+    let spec = knock_core::Adapter::hooks(&knock_core::ClaudeCode { users: vec![] });
+    let claude = hooks::claude_settings();
+    tracing::info!(
+        path_set = claude.is_some(),
+        test_file = cfg!(debug_assertions) && claude.is_some(),
+        "claude settings file"
+    );
+    let hooks = hooks::Setup::new(spec, claude, dir.join("backups"), server);
 
     let d = platform.primary_display()?;
     tracing::info!(
@@ -282,12 +478,21 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // §10.4: setup opens by itself on first run, or while Knock isn't
+    // connected to Claude Code.
+    let installed = hooks.installed().unwrap_or(false);
+    tracing::info!(first_run, installed, "setup status");
     app.manage(Knock {
         tx,
         shared,
         platform,
         strip,
+        hooks,
+        first_run,
     });
+    if first_run || !installed {
+        open_settings(app.handle(), true);
+    }
     Ok(())
 }
 
@@ -300,6 +505,8 @@ fn main() {
             tracing::info!("second launch ignored");
         }))
         .plugin(tauri_plugin_notification::init())
+        // Used from Rust only, through the platform layer (§9.7).
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_sessions,
             jump_to_session,
@@ -309,8 +516,30 @@ fn main() {
             request_strip_size,
             get_settings,
             update_settings,
+            setup_status,
+            setup_list_monitors,
+            setup_preview_hooks,
+            setup_apply_hooks,
+            setup_remove_hooks,
+            run_health_check,
+            play_test_knock,
         ])
         .setup(setup)
         .run(tauri::generate_context!())
         .expect("error while running Knock");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ago_in_plain_words() {
+        let (s, m, h, d) = (1000, 60_000, 3_600_000, 86_400_000);
+        assert_eq!(super::ago(0), "just now");
+        assert_eq!(super::ago(59 * s), "just now");
+        assert_eq!(super::ago(m), "1 minute ago");
+        assert_eq!(super::ago(59 * m + 59 * s), "59 minutes ago");
+        assert_eq!(super::ago(h), "1 hour ago");
+        assert_eq!(super::ago(23 * h), "23 hours ago");
+        assert_eq!(super::ago(2 * d), "2 days ago");
+    }
 }

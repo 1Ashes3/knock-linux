@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const FILE: &str = "settings.json";
+pub const FILE: &str = "settings.json";
 /// Upper bound for `stallMinutes` and `escalationMinutes`: one day.
 const MAX_MINUTES: u32 = 24 * 60;
 

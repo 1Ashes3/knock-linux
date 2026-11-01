@@ -100,14 +100,16 @@ fn bind(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind((Ipv4Addr::LOCALHOST, port))
 }
 
-/// Starts the server on Tauri's async runtime. Called once by the app.
+/// Starts the server on Tauri's async runtime and returns its port and
+/// token. Called once by the app.
 pub fn start(
     dir: &Path,
     platform: Arc<dyn Platform>,
     tx: Sender<Msg>,
     published: Shared,
-) -> io::Result<()> {
+) -> io::Result<ServerConfig> {
     let (cfg, listener) = listen(dir)?;
+    let started = cfg.clone();
     listener.set_nonblocking(true)?;
     tracing::info!(port = cfg.port, "server listening on 127.0.0.1");
     let opts = Options {
@@ -119,7 +121,24 @@ pub fn start(
             tracing::error!(kind = ?e.kind(), "server stopped");
         }
     });
-    Ok(())
+    Ok(started)
+}
+
+/// The health check's "server listening" (FR-12): a real `GET /v1/health`
+/// to 127.0.0.1:`port` with the token answers `200` within 1 s. Blocking.
+pub fn probe(port: u16, token: &str) -> bool {
+    use std::io::{Read, Write};
+    let t = Duration::from_secs(1);
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr, t) else {
+        return false;
+    };
+    let _ = (s.set_read_timeout(Some(t)), s.set_write_timeout(Some(t)));
+    let req = format!(
+        "GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n{TOKEN_HEADER}: {token}\r\nConnection: close\r\n\r\n"
+    );
+    let mut head = [0u8; 12];
+    s.write_all(req.as_bytes()).is_ok() && s.read_exact(&mut head).is_ok() && &head[9..12] == b"200"
 }
 
 /// Tests leave `platform` out, so no process lookups happen.
@@ -406,6 +425,15 @@ mod tests {
         let status = out[9..12].parse().unwrap();
         let body = out.split_once("\r\n\r\n").unwrap().1.to_owned();
         (status, body)
+    }
+
+    #[test]
+    fn probe_needs_the_server_and_the_right_token() {
+        let addr = spawn_server();
+        assert!(probe(addr.port(), TOKEN));
+        assert!(!probe(addr.port(), "wrong"));
+        let free = bind(0).unwrap().local_addr().unwrap().port();
+        assert!(!probe(free, TOKEN));
     }
 
     const PAYLOAD: &[u8] = br#"{"session_id":"s1","hook_event_name":"Stop"}"#;

@@ -1,6 +1,6 @@
 //! Windows implementation of [`Platform`]. All Win32 calls live here.
 
-use super::{Display, Platform, Taskbar};
+use super::{Display, Monitor, Platform, Taskbar, monitor_id};
 use crate::jump::{self, Proc, ProcessId, Target, TcpRow, Win};
 use crate::strip::Rect;
 use windows::Win32::Foundation::{
@@ -8,7 +8,8 @@ use windows::Win32::Foundation::{
     STILL_ACTIVE,
 };
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
+    DISPLAY_DEVICEW, EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
+    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MONITORINFOEXW, MonitorFromPoint,
 };
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, TCP_TABLE_OWNER_PID_CONNECTIONS,
@@ -26,25 +27,30 @@ use windows::Win32::UI::Shell::{
     ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA, SHAppBarMessage,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO, FlashWindowEx, GA_ROOTOWNER,
-    GWL_EXSTYLE, GetAncestor, GetClassNameW, GetCursorPos, GetWindowLongPtrW, GetWindowTextW,
-    GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible, SW_RESTORE,
-    SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, ShowWindowAsync, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    EDD_GET_DEVICE_INTERFACE_NAME, EnumWindows, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO,
+    FlashWindowEx, GA_ROOTOWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetCursorPos,
+    GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow,
+    IsWindowVisible, MONITORINFOF_PRIMARY, SW_RESTORE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    ShowWindowAsync, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TRANSPARENT,
 };
-use windows::core::BOOL;
+use windows::core::{BOOL, PCWSTR};
 
 pub struct WindowsPlatform {
     // HWND is !Send; the raw value is safe to use from any thread for the
     // style and position calls below.
     strip: isize,
+    /// For the autostart plugin (§9.7 launch at sign-in).
+    app: tauri::AppHandle,
 }
 
 impl WindowsPlatform {
     pub fn new(strip: &tauri::WebviewWindow) -> tauri::Result<Self> {
+        use tauri::Manager;
         Ok(Self {
             strip: strip.hwnd()?.0 as isize,
+            app: strip.app_handle().clone(),
         })
     }
 
@@ -206,6 +212,67 @@ unsafe extern "system" fn enum_window(h: HWND, l: LPARAM) -> BOOL {
     true.into()
 }
 
+fn utf16(s: &[u16]) -> String {
+    let n = s.iter().position(|&c| c == 0).unwrap_or(s.len());
+    String::from_utf16_lossy(&s[..n])
+}
+
+unsafe extern "system" fn each_monitor(h: HMONITOR, _: HDC, _: *mut RECT, l: LPARAM) -> BOOL {
+    // SAFETY: `l` is the Vec passed by `monitors`.
+    unsafe { (*(l.0 as *mut Vec<HMONITOR>)).push(h) };
+    true.into()
+}
+
+/// Every display: its device interface path (stable), the name Windows
+/// gives it, primary flag and resolution. Primary first.
+fn monitors() -> Vec<Monitor> {
+    let mut handles: Vec<HMONITOR> = Vec::new();
+    // SAFETY: `handles` outlives the synchronous enumeration.
+    let _ = unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(each_monitor),
+            LPARAM(&raw mut handles as isize),
+        )
+    };
+    let mut out: Vec<Monitor> = (handles.iter().enumerate())
+        .filter_map(|(i, &h)| {
+            let mut info = MONITORINFOEXW::default();
+            info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+            let mut dd = DISPLAY_DEVICEW {
+                cb: size_of::<DISPLAY_DEVICEW>() as u32,
+                ..Default::default()
+            };
+            // SAFETY: valid out-params with their sizes set; szDevice is
+            // NUL-terminated by GetMonitorInfoW.
+            let found = unsafe {
+                if !GetMonitorInfoW(h, (&raw mut info).cast()).as_bool() {
+                    return None;
+                }
+                let device = PCWSTR(info.szDevice.as_ptr());
+                EnumDisplayDevicesW(device, 0, &mut dd, EDD_GET_DEVICE_INTERFACE_NAME).as_bool()
+            };
+            let r = info.monitorInfo.rcMonitor;
+            // Without an interface path, the GDI name (\\.\DISPLAY1) is the
+            // best id there is; it can change when displays are re-plugged.
+            let path = Some(utf16(&dd.DeviceID))
+                .filter(|p| found && !p.is_empty())
+                .unwrap_or_else(|| utf16(&info.szDevice));
+            let name = Some(utf16(&dd.DeviceString)).filter(|n| found && !n.is_empty());
+            Some(Monitor {
+                id: monitor_id(&path),
+                name: name.unwrap_or_else(|| format!("Display {}", i + 1)),
+                primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+                width: r.right - r.left,
+                height: r.bottom - r.top,
+            })
+        })
+        .collect();
+    out.sort_by_key(|m| !m.primary);
+    out
+}
+
 fn rect(r: RECT) -> Rect {
     Rect {
         left: r.left,
@@ -353,12 +420,38 @@ impl Platform for WindowsPlatform {
     fn process_start(&self, pid: u32) -> Option<u64> {
         process_start(pid)
     }
+
+    fn monitors(&self) -> Vec<Monitor> {
+        monitors()
+    }
+
+    fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()> {
+        use tauri_plugin_autostart::ManagerExt;
+        let a = self.app.autolaunch();
+        let r = if on { a.enable() } else { a.disable() };
+        r.map_err(|e| std::io::Error::other(e.to_string()))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, TcpListener, TcpStream};
+
+    // Real OS calls: at least one display, exactly one primary and first,
+    // and the same ids on a second read.
+    #[test]
+    fn monitors_of_this_machine() {
+        let a = monitors();
+        assert!(!a.is_empty());
+        assert!(a[0].primary);
+        assert_eq!(a.iter().filter(|m| m.primary).count(), 1);
+        assert!(
+            a.iter()
+                .all(|m| m.width > 0 && m.height > 0 && !m.name.is_empty())
+        );
+        assert_eq!(a, monitors());
+    }
 
     // Real OS calls (V-7 mechanics): this test process owns the client end of
     // its own loopback connection, and its parent chain can be walked.
