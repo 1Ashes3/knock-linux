@@ -300,7 +300,7 @@ The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_e
 | `ended_unexpectedly`           | Any agent event                                               | The state that event implies, as a first event | As for a first event (ADR 0018) |
 | `needs_input`                  | `needs.permission`, `needs.answer`                            | `needs_input`                            | Same episode; the requester is added (ADR 0019) |
 | `idle`, `ready`                | `activity`                                                    | unchanged                                | None (ADR 0010)                  |
-| `needs_input`                  | `activity` from a waiting requester (ADR 0010, 0019)          | `working` once no requester is left      | That requester is removed; close episode when none is left |
+| `needs_input`                  | `activity` from a waiting requester (ADR 0010, 0019)          | `working` once no requester is left, or `ready` + `ReadyBatchAdd` if the main agent's turn already completed (ADR 0021) | That requester is removed; close episode when none is left |
 | `needs_input`                  | `turn.started`                                                | `working`                                | Close episode                    |
 | `needs_input`                  | `turn.completed`                                              | `ready` once no sub-agent is waiting     | Main agent removed; close episode and `ReadyBatchAdd` when none is left (ADR 0019) |
 | `working`, `stalled`           | `turn.completed`                                              | `ready`                                  | `ReadyBatchAdd`                  |
@@ -321,7 +321,7 @@ The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_e
 - A session with no events and no live process for 6 hours is removed. A session whose process was never found counts as having no live process (ADR 0018).
 - Any (state, input) pair not listed above leaves the session unchanged (ADR 0018).
 
-**Deduplication:** a `PermissionRequest` and a `permission_prompt` notification for the same session within 10 s are one episode, with one `Notify`, even if the episode closed in between (ADR 0010). An episode's `needs.kind` is set by the event that opened it.
+**Deduplication:** a `PermissionRequest` and a `permission_prompt` notification for the same session within 10 s are one episode, with one `Notify`, even if the episode closed in between (ADR 0010). Dedup is per requester (ADR 0019); a prompt without `agentId` matches any requester's request in the last 10 s (ADR 0021). An episode's `needs.kind` is set by the event that opened it.
 
 **Effects:**
 
