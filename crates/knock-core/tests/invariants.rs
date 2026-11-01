@@ -1,5 +1,6 @@
 //! §12.1 Invariants: the §8.4 invariants (with ADR 0016's) over random
-//! input sequences.
+//! input sequences, plus the ADR 0019 requester rules: no waiting requester
+//! is ever lost, and background activity never clears Failed.
 
 use knock_core::{
     Context, Detail, Effect, Engine, Event, Input, Kind, Reason, Session, Settings, State, Tier,
@@ -25,8 +26,9 @@ const KINDS: [Kind; 11] = [
 enum Op {
     /// session, kind, agent (0 = main), has a tool, ms later.
     Event(u8, usize, u8, bool, u64),
-    /// ms later, suppressed.
-    Tick(u64, bool),
+    /// ms later.
+    Tick(u64),
+    Suppress(bool),
     Gone(u8, u64),
 }
 
@@ -34,7 +36,8 @@ fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
         6 => (0..3u8, 0..KINDS.len(), 0..3u8, any::<bool>(), 0..12_000u64)
             .prop_map(|(s, k, a, t, d)| Op::Event(s, k, a, t, d)),
-        3 => (prop_oneof![0..3_000u64, 0..400_000u64], any::<bool>()).prop_map(|(d, q)| Op::Tick(d, q)),
+        3 => prop_oneof![0..3_000u64, 0..400_000u64].prop_map(Op::Tick),
+        1 => any::<bool>().prop_map(Op::Suppress),
         1 => (0..3u8, 0..3_000u64).prop_map(|(s, d)| Op::Gone(s, d)),
     ]
 }
@@ -66,10 +69,11 @@ fn inputs(ops: &[Op]) -> Vec<Input> {
                     simulated: false,
                 }
             }
-            Op::Tick(d, q) => {
+            Op::Tick(d) => {
                 now += d;
-                Input::Tick { now, suppressed: q }
+                Input::Tick { now }
             }
+            Op::Suppress(q) => Input::SetSuppressed(q),
             Op::Gone(s, d) => {
                 now += d;
                 Input::ProcessGone {
@@ -131,17 +135,21 @@ proptest! {
     fn invariants_hold(settings in settings(), ops in prop::collection::vec(op(), 1..150)) {
         let inputs = inputs(&ops);
         let mut engine = Engine::new(settings.clone());
-        // State, and for needs_input the episode's (seen, opened).
-        type Prev = (State, Option<(bool, u64)>);
+        // State, and for needs_input the episode's (seen, opened, waiting).
+        type Prev = (State, Option<(bool, u64, Vec<Option<String>>)>);
         let mut prev: HashMap<String, Prev> = HashMap::new();
-        let now = |s: &Session| (s.state, s.needs.as_ref().map(|n| (n.seen, n.opened)));
+        let now = |s: &Session| (s.state, s.needs.as_ref().map(|n| (n.seen, n.opened, n.waiting().to_vec())));
         let mut ep: HashMap<String, u32> = HashMap::new();
         let mut episodes: HashMap<(String, u32), Episode> = HashMap::new();
         let mut suppressed = false;
         for input in &inputs {
-            if let Input::Tick { suppressed: q, .. } = input {
+            if let Input::SetSuppressed(q) = input {
                 suppressed = *q;
             }
+            let event = match input {
+                Input::Event { event, .. } => Some(event),
+                _ => None,
+            };
             let fx = engine.step(input.clone());
             let mut entered = Vec::new();
             for s in engine.sessions() {
@@ -149,17 +157,59 @@ proptest! {
                 prop_assert_eq!(tier_of(s.state), Some(s.state.tier()), "{:?}", s.state);
                 // 2. needs_input always has needs.kind (and only needs_input has needs).
                 prop_assert_eq!(s.state == State::NeedsInput, s.needs.is_some());
-                let before = prev.get(&s.id).copied();
+                let before = prev.get(&s.id).cloned();
                 // A new episode: entering Needs you, or a new request after
                 // the open one was seen (ADR 0018). Unseen, it stays the same.
-                let reopened = match (before, now(s)) {
-                    (Some((State::NeedsInput, Some((seen, opened)))), (State::NeedsInput, Some(n))) => {
-                        prop_assert!(seen || n.1 == opened, "unseen episode replaced");
-                        seen && !n.0
+                let reopened = match (&before, now(s)) {
+                    (Some((State::NeedsInput, Some((seen, opened, _)))), (State::NeedsInput, Some(n))) => {
+                        prop_assert!(*seen || n.1 == *opened, "unseen episode replaced");
+                        *seen && !n.0
                     }
                     _ => false,
                 };
-                if reopened || (before.map(|p| p.0) != Some(s.state) && s.state.tier() == Tier::NeedsYou) {
+                // ADR 0019 requester rules for this input's event, if it is
+                // for this session.
+                let mine = event.filter(|e| e.session_id == s.id);
+                let who = mine.map(|e| e.context.agent_id.clone());
+                let kind = mine.map(|e| e.kind);
+                if let Some(n) = &s.needs {
+                    prop_assert!(!n.waiting().is_empty(), "an episode with no requester");
+                    // A request is always waited on after it arrives.
+                    let request = matches!(kind, Some(Kind::NeedsAnswer))
+                        || matches!(mine, Some(e) if e.kind == Kind::NeedsPermission && e.detail.tool.is_some());
+                    if request {
+                        prop_assert!(n.waiting().contains(who.as_ref().unwrap()), "request not waited on");
+                    }
+                }
+                if let Some((State::NeedsInput, Some((_, _, was)))) = &before {
+                    // Only that requester's activity, or the main agent's Stop,
+                    // removes one.
+                    let removed = match kind {
+                        Some(Kind::Activity) => who.clone(),
+                        Some(Kind::TurnCompleted) => Some(None),
+                        _ => None,
+                    };
+                    let left: Vec<_> = was.iter().filter(|a| Some(*a) != removed.as_ref()).collect();
+                    match &s.needs {
+                        Some(n) => {
+                            for a in &left {
+                                prop_assert!(n.waiting().contains(a), "requester {:?} lost", a);
+                            }
+                            prop_assert!(!left.is_empty() || removed.is_none(), "kept open with none left");
+                        }
+                        None => {
+                            // Left Needs you: none was left, or the user typed,
+                            // it failed, or its process went.
+                            let closes_all = s.state == State::EndedUnexpectedly
+                                || matches!(kind, Some(Kind::TurnStarted | Kind::AgentFailed));
+                            prop_assert!(left.is_empty() || closes_all, "{:?} with {:?} waiting", s.state, left);
+                        }
+                    }
+                }
+                if let (Some((State::Failed, _)), Some(Kind::Activity), Some(Some(_))) = (&before, kind, &who) {
+                    prop_assert_eq!(s.state, State::Failed, "background activity cleared Failed");
+                }
+                if reopened || (before.as_ref().map(|p| p.0) != Some(s.state) && s.state.tier() == Tier::NeedsYou) {
                     *ep.entry(s.id.clone()).or_default() += 1;
                     entered.push((s.id.clone(), s.state));
                 }

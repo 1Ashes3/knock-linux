@@ -320,3 +320,80 @@ fn timestamps_are_iso_8601_utc() {
     assert_eq!(iso8601(BASE), "2026-10-16T14:02:11.120Z");
     assert_eq!(iso8601(951_868_799_999), "2000-02-29T23:59:59.999Z");
 }
+
+// Finding 3: an optional allow-listed field that isn't a string counts as
+// missing, so the event is kept. Only session_id and hook_event_name are
+// required (pinned in `bad_bodies_are_errors_without_content`).
+#[test]
+fn optional_fields_of_the_wrong_type_count_as_missing() {
+    let e = parse(json!({
+        "session_id": "s1", "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+        "agent_id": 7, "error": {}, "cwd": ["SECRET do not keep"], "notification_type": null,
+    }))
+    .unwrap()
+    .unwrap();
+    assert_eq!(e.kind, Kind::NeedsPermission);
+    assert_eq!(e.detail.tool.as_deref(), Some("Bash"));
+    assert_eq!((e.context.agent_id, e.context.cwd.as_str()), (None, ""));
+    for (field, v) in [
+        ("tool_name", json!(true)),
+        ("tool_name", json!({ "x": "SECRET do not keep" })),
+        ("tool_name", json!(1.5)),
+        ("tool_name", json!(-3)),
+    ] {
+        let mut p = json!({ "session_id": "s1", "hook_event_name": "PermissionRequest" });
+        p[field] = v;
+        let e = parse(p).unwrap().unwrap();
+        assert_eq!(e.detail.tool.as_deref(), Some("other"), "{field}");
+    }
+    let e = parse(json!({ "session_id": "s1", "hook_event_name": "StopFailure", "error": 42 }));
+    assert_eq!(
+        e.unwrap().unwrap().detail.reason.as_deref(),
+        Some("unknown")
+    );
+    let e = parse(
+        json!({ "session_id": "s1", "hook_event_name": "Notification", "notification_type": [] }),
+    );
+    assert_eq!(e.unwrap(), None, "no type: ignored, as when it is missing");
+    assert_eq!(
+        cc().parse(br#"{"session_id":"s1","hook_event_name":7}"#, 0),
+        Err(ParseError::BadPayload)
+    );
+}
+
+// Finding 5: ids are ^[A-Za-z0-9_-]{1,128}$. A bad session_id drops the
+// event with an error that carries nothing; a bad agent_id becomes "other".
+#[test]
+fn ids_are_checked_and_never_carry_free_text() {
+    let id = |s: &str| json!({ "session_id": s, "hook_event_name": "Stop" });
+    let long = "a".repeat(128);
+    for good in ["s1", "0b7c1f3e-6a2d-4c55-9e1f-2b9d7a1c4e80", "A_b-9", &long] {
+        assert_eq!(parse(id(good)).unwrap().unwrap().session_id, good);
+    }
+    let too_long = "a".repeat(129);
+    for bad in [
+        "please rm -rf my secrets",
+        &too_long,
+        r"C:\Users\someone",
+        "s1\n",
+        "s/1",
+        "ünï",
+    ] {
+        let err = parse(id(bad)).unwrap_err();
+        assert_eq!(err, ParseError::BadSessionId);
+        assert_eq!(
+            format!("{err:?}"),
+            "BadSessionId",
+            "no content in the error"
+        );
+    }
+    let agent = |a: Value| {
+        let p = json!({ "session_id": "s1", "hook_event_name": "SubagentStop", "agent_id": a });
+        parse(p).unwrap().unwrap().context.agent_id
+    };
+    assert_eq!(agent(json!("a1")).as_deref(), Some("a1"));
+    for bad in ["please rm -rf my secrets", "", &too_long, "a b"] {
+        let got = agent(json!(bad));
+        assert_eq!(got.as_deref(), Some("other"), "{bad}");
+    }
+}

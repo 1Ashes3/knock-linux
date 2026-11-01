@@ -3,6 +3,10 @@
 //! `<name>.expected.json`. Any difference fails, and so does a Needs-you
 //! entry without its `Notify`.
 //!
+//! The timeline has an entry for each state a session enters, and another
+//! `needs_input` entry when a new episode replaces a seen one (ADR 0018,
+//! 0019), so that episode's `Notify` is checked too.
+//!
 //! Clock: a tick every whole second from 1000 ms; an event at the same ms as
 //! a tick goes first. Every fixture runs on to its last event + 6 h + 60 s,
 //! past every timer (stall, escalation, the 60 s fade, the 6 h removal).
@@ -89,27 +93,42 @@ pub fn run(name: &str, fixture: &str) -> Result<Value, String> {
     play(settings_for(name), &steps(fixture)?, false).map(|(out, _)| out)
 }
 
-/// Plays `steps` on the virtual clock. Returns `{timeline, effects}` and the
-/// most sessions alive at once.
-pub fn play(settings: Settings, steps: &[Step], simulated: bool) -> Result<(Value, usize), String> {
-    let adapter = ClaudeCode { users: Vec::new() };
-    let mut engine = Engine::new(settings);
-    let (mut timeline, mut effects) = (Vec::new(), Vec::new());
-    let mut seen: Vec<(String, State)> = Vec::new();
-    let mut live = 0;
-    let mut record = |engine: &Engine, t: u64, fx: Vec<Effect>| {
-        live = live.max(engine.sessions().len());
-        for s in engine.sessions() {
-            if !seen.contains(&(s.id.clone(), s.state)) {
-                timeline.push(json!({"tMs": t, "sessionId": s.id, "state": s.state.as_str(), "tier": s.state.tier().as_str()}));
-            }
-        }
-        seen = engine
+/// Builds `{timeline, effects}` from the engine after each input.
+#[derive(Default)]
+struct Recorder {
+    timeline: Vec<Value>,
+    effects: Vec<Value>,
+    /// Each session's state, and whether its episode was seen, after the
+    /// last input.
+    last: Vec<(String, State, bool)>,
+    /// The most sessions alive at once.
+    live: usize,
+}
+
+impl Recorder {
+    fn record(&mut self, engine: &Engine, t: u64, fx: Vec<Effect>) {
+        self.live = self.live.max(engine.sessions().len());
+        let now: Vec<_> = engine
             .sessions()
             .iter()
-            .map(|s| (s.id.clone(), s.state))
+            .map(|s| {
+                (
+                    s.id.clone(),
+                    s.state,
+                    s.needs.as_ref().is_some_and(|n| n.seen),
+                )
+            })
             .collect();
-        effects.extend(fx.into_iter().map(|e| match e {
+        for (id, state, seen) in &now {
+            let before = self.last.iter().find(|(i, ..)| i == id);
+            // Only a new episode turns a seen one unseen.
+            let replaced = before.is_some_and(|b| b.2 && !seen);
+            if before.map(|b| b.1) != Some(*state) || replaced {
+                self.timeline.push(json!({"tMs": t, "sessionId": id, "state": state.as_str(), "tier": state.tier().as_str()}));
+            }
+        }
+        self.last = now;
+        self.effects.extend(fx.into_iter().map(|e| match e {
             Effect::Notify { session_id, reason } => {
                 json!({"tMs": t, "type": "Notify", "sessionId": session_id, "reason": reason.as_str()})
             }
@@ -119,17 +138,22 @@ pub fn play(settings: Settings, steps: &[Step], simulated: bool) -> Result<(Valu
             }
             Effect::Persist => json!({"tMs": t, "type": "Persist"}),
         }));
-    };
+    }
+}
+
+/// Plays `steps` on the virtual clock. Returns `{timeline, effects}` and the
+/// most sessions alive at once.
+pub fn play(settings: Settings, steps: &[Step], simulated: bool) -> Result<(Value, usize), String> {
+    let adapter = ClaudeCode { users: Vec::new() };
+    let mut engine = Engine::new(settings);
+    let mut rec = Recorder::default();
     let mut clock = 1000;
     let mut end = 0;
     for (n, step) in steps.iter().enumerate() {
         let t = step.t();
         while clock < t {
-            let fx = engine.step(Input::Tick {
-                now: BASE + clock,
-                suppressed: false,
-            });
-            record(&engine, clock, fx);
+            let fx = engine.step(Input::Tick { now: BASE + clock });
+            rec.record(&engine, clock, fx);
             clock += 1000;
         }
         let input = match step {
@@ -144,23 +168,22 @@ pub fn play(settings: Settings, steps: &[Step], simulated: bool) -> Result<(Valu
         };
         if let Some(input) = input {
             let fx = engine.step(input);
-            record(&engine, t, fx);
+            rec.record(&engine, t, fx);
         }
         end = t;
     }
     while clock <= end + TAIL_MS {
-        let fx = engine.step(Input::Tick {
-            now: BASE + clock,
-            suppressed: false,
-        });
-        record(&engine, clock, fx);
+        let fx = engine.step(Input::Tick { now: BASE + clock });
+        rec.record(&engine, clock, fx);
         clock += 1000;
     }
-    Ok((json!({"timeline": timeline, "effects": effects}), live))
+    let out = json!({"timeline": rec.timeline, "effects": rec.effects});
+    Ok((out, rec.live))
 }
 
-/// Zero missed Needs-you (§6): every entry into Needs you has its `Notify`
-/// at the same time, except a stall with stall notifications off.
+/// Zero missed Needs-you (§6): every entry into Needs you, and every new
+/// episode that replaces a seen one, has its `Notify` at the same time,
+/// except a stall with stall notifications off.
 pub fn missed_needs_you(notify_stall: bool, out: &Value) -> Result<(), String> {
     let effects = out["effects"].as_array().map_or(&[][..], Vec::as_slice);
     for e in out["timeline"].as_array().map_or(&[][..], Vec::as_slice) {
@@ -281,6 +304,53 @@ mod tests {
         let mut short = want;
         short["timeline"].as_array_mut().unwrap().pop();
         assert!(diff("timeline", &short["timeline"], &got["timeline"]).is_err());
+    }
+
+    /// ADR 0019 / finding 8: a new episode that replaces a seen one gets its
+    /// own timeline entry, so a missing `Notify` for it is caught.
+    #[test]
+    fn a_new_episode_after_a_seen_one_must_notify() {
+        use knock_core::{Event, Kind};
+        let adapter = ClaudeCode { users: Vec::new() };
+        let request = |t: u64| {
+            let body =
+                br#"{"session_id":"s1","hook_event_name":"PermissionRequest","tool_name":"Write"}"#;
+            let event = adapter.parse(body, t).unwrap().unwrap();
+            Input::Event {
+                event,
+                simulated: false,
+            }
+        };
+        let ack = Input::Event {
+            event: Event::user(Kind::UserAck, "s1", 1000),
+            simulated: false,
+        };
+        for drop_notify in [false, true] {
+            let mut engine = Engine::new(Settings::default());
+            let mut rec = Recorder::default();
+            for (t, input) in [(0, request(0)), (1000, ack.clone()), (2000, request(2000))] {
+                let mut fx = engine.step(input);
+                if drop_notify && t == 2000 {
+                    fx.retain(|f| !matches!(f, Effect::Notify { .. }));
+                }
+                rec.record(&engine, t, fx);
+            }
+            let states: Vec<_> = rec
+                .timeline
+                .iter()
+                .map(|e| (e["tMs"].clone(), e["state"].clone()))
+                .collect();
+            assert_eq!(
+                states,
+                [
+                    (json!(0), json!("needs_input")),
+                    (json!(2000), json!("needs_input"))
+                ]
+            );
+            let out = json!({"timeline": rec.timeline, "effects": rec.effects});
+            let res = missed_needs_you(false, &out);
+            assert_eq!(res.is_err(), drop_notify, "{res:?}");
+        }
     }
 
     /// The clock ticks between events, so timers fire inside a recording.

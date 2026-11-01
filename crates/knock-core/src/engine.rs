@@ -1,10 +1,15 @@
-//! The state engine (SPEC.md §8.4; ADR 0010, 0016, 0018). One `step` per
-//! input; every effect it returns belongs to that input's time.
+//! The state engine (SPEC.md §8.4; ADR 0010, 0016, 0018, 0019). One `step`
+//! per input; every effect it returns belongs to that input's time.
 //!
 //! Inputs the app provides instead of the engine reading them: the clock
-//! (`Tick`), whether notifications are suppressed (pause or quiet hours,
-//! worked out by the app from local time and sent with each tick), process
-//! liveness (`ProcessGone`) and the user actions (`user.ack`, `user.dismiss`).
+//! (`Tick`), whether notifications are suppressed (`SetSuppressed`: pause or
+//! quiet hours, worked out by the app from local time; sent before the first
+//! event and on every change), process liveness (`ProcessGone`) and the user
+//! actions (`user.ack`, `user.dismiss`).
+//!
+//! Requesters (ADR 0019): the agent that asked, `None` for the main agent or
+//! `Some(agentId)` for a sub-agent. An episode holds every requester still
+//! waiting and closes when none is left.
 //!
 //! Known process (ADR 0018 item 7): an event's `context.pid` is set by the
 //! app exactly when it found the session's process (§8.3, §9.4). A session
@@ -52,9 +57,12 @@ impl Default for Settings {
 pub enum Input {
     /// `simulated`: the request carried `X-Knock-Sim: 1` (§8.1).
     Event { event: Event, simulated: bool },
-    /// Once a second. `suppressed`: `pauseNotifications` is on or it is quiet
-    /// hours. It also applies to the events that follow, until the next tick.
-    Tick { now: u64, suppressed: bool },
+    /// Once a second.
+    Tick { now: u64 },
+    /// `pauseNotifications` is on or it is quiet hours. Holds from this input
+    /// on, until the next one; starts `false`. The app sends it before the
+    /// first event and whenever the value changes, never waiting for a tick.
+    SetSuppressed(bool),
     /// The session's recorded process is no longer alive (§9.7).
     ProcessGone { session_id: String, now: u64 },
 }
@@ -180,8 +188,16 @@ pub struct Needs {
     pub seen: bool,
     pub opened: u64,
     pub escalated: bool,
-    /// Who opened it, for the same-agent rule; kept only for the episode (ADR 0009).
-    agent_id: Option<String>,
+    /// The requesters still waiting (ADR 0019); never empty. Kept only for
+    /// the episode.
+    waiting: Vec<Option<String>>,
+}
+
+impl Needs {
+    /// The requesters still waiting: `None` is the main agent.
+    pub fn waiting(&self) -> &[Option<String>] {
+        &self.waiting
+    }
 }
 
 /// Everything `SessionView` (§8.5) needs except precision, which is app-side.
@@ -204,8 +220,9 @@ pub struct Session {
     gone_at: Option<u64>,
     /// Some event carried a pid (see the module docs).
     process_known: bool,
-    /// Last request-type `needs.*`, for the dedup.
-    last_request: Option<u64>,
+    /// Last request-type `needs.*` per requester, for the dedup; only the
+    /// last 10 s are kept.
+    requests: Vec<(Option<String>, u64)>,
 }
 
 impl Session {
@@ -225,7 +242,7 @@ impl Session {
             last_event: e.ts,
             gone_at: None,
             process_known: e.context.pid.is_some(),
-            last_request: None,
+            requests: Vec::new(),
         }
     }
 
@@ -271,10 +288,8 @@ impl Engine {
         let mut fx = Vec::new();
         match input {
             Input::Event { event, simulated } => self.event(event, simulated, &mut fx),
-            Input::Tick { now, suppressed } => {
-                self.suppressed = suppressed;
-                self.tick(now, &mut fx);
-            }
+            Input::Tick { now } => self.tick(now, &mut fx),
+            Input::SetSuppressed(on) => self.suppressed = on,
             Input::ProcessGone { session_id, now } => {
                 if let Some(s) = self.sessions.iter_mut().find(|s| s.id == session_id) {
                     s.gone_at.get_or_insert(now);
@@ -351,36 +366,53 @@ impl Engine {
                 s.activity = None;
                 s.set(Working, ts);
             }
+            // ADR 0019: background activity leaves Failed as it is.
+            (Kind::Activity, Failed) if e.context.agent_id.is_some() => {}
             (Kind::Activity, Working | Stalled | Failed) => {
                 s.activity = e.detail.category.or(s.activity);
                 s.set(Working, ts);
             }
+            // Removes that requester only; closes when none is left (ADR 0019).
             (Kind::Activity, NeedsInput) => {
-                let opener = s.needs.as_ref().and_then(|n| n.agent_id.as_deref());
-                if opener == e.context.agent_id.as_deref() {
+                if remove(s, &e.context.agent_id) == 0 {
                     s.activity = e.detail.category.or(s.activity);
                     s.set(Working, ts);
                 }
             }
             (Kind::NeedsPermission | Kind::NeedsAnswer, from) => {
                 let dup = dedup(s, &e);
-                let opens = match from {
-                    Working | Idle | Ready | Stalled | Failed => !dup,
+                let who = &e.context.agent_id;
+                // `Some(waiting)`: open a new episode that also waits on them.
+                let opens = match (from, &mut s.needs) {
+                    _ if dup => None,
+                    (Working | Idle | Ready | Stalled | Failed, _) => Some(Vec::new()),
                     // ADR 0018 item 1: a new request (never the
                     // `permission_prompt` Notification) after the user saw
-                    // the episode is a new one. Unseen: same episode.
-                    NeedsInput => s.needs.as_ref().is_some_and(|n| n.seen) && !is_prompt(&e),
-                    _ => false,
+                    // the episode is a new one; the old requesters still wait.
+                    (NeedsInput, Some(n)) if n.seen && !is_prompt(&e) => {
+                        Some(std::mem::take(&mut n.waiting))
+                    }
+                    // Otherwise the same episode; the requester is added.
+                    (NeedsInput, Some(n)) => {
+                        if !n.waiting.contains(who) {
+                            n.waiting.push(who.clone());
+                        }
+                        None
+                    }
+                    _ => None,
                 };
-                if opens {
-                    self.open(i, e, fx);
+                if let Some(waiting) = opens {
+                    self.open(i, e, waiting, fx);
                 }
             }
+            // The Stop removes the main agent only (ADR 0019).
             (Kind::TurnCompleted, NeedsInput | Working | Stalled) => {
-                s.set(Ready, ts);
-                fx.push(Effect::ReadyBatchAdd {
-                    session_id: s.id.clone(),
-                });
+                if remove(s, &None) == 0 {
+                    s.set(Ready, ts);
+                    fx.push(Effect::ReadyBatchAdd {
+                        session_id: s.id.clone(),
+                    });
+                }
             }
             (Kind::AgentFailed, from) => {
                 s.set(Failed, ts);
@@ -415,7 +447,7 @@ impl Engine {
             }
             Kind::NeedsPermission | Kind::NeedsAnswer => {
                 dedup(&mut self.sessions[i], &e);
-                self.open(i, e, fx);
+                self.open(i, e, Vec::new(), fx);
             }
             Kind::TurnCompleted => {
                 self.sessions[i].set(State::Ready, ts);
@@ -431,8 +463,12 @@ impl Engine {
         }
     }
 
-    /// New `needs_input` episode, with its one `Notify`.
-    fn open(&mut self, i: usize, e: Event, fx: &mut Vec<Effect>) {
+    /// New `needs_input` episode, with its one `Notify`, waiting on
+    /// `waiting` and the event's requester.
+    fn open(&mut self, i: usize, e: Event, mut waiting: Vec<Option<String>>, fx: &mut Vec<Effect>) {
+        if !waiting.contains(&e.context.agent_id) {
+            waiting.push(e.context.agent_id.clone());
+        }
         let (kind, reason) = match e.kind {
             Kind::NeedsAnswer => (NeedsKind::Answer, Reason::NeedsAnswer),
             _ => (NeedsKind::Permission, Reason::NeedsPermission),
@@ -445,7 +481,7 @@ impl Engine {
             seen: false,
             opened: e.ts,
             escalated: false,
-            agent_id: e.context.agent_id,
+            waiting,
         });
         self.notify(fx, &e.session_id, reason);
     }
@@ -490,19 +526,32 @@ impl Engine {
     }
 }
 
-/// The 10 s dedup (§8.4, ADR 0010): a `permission_prompt` Notification (the
-/// `needs.permission` with no tool) within 10 s after a PermissionRequest
-/// belongs to that request's episode, even if it closed. Every other `needs.*`
-/// counts as the request half and is never a duplicate itself, so a second
-/// request right after a prompt still knocks.
+/// The 10 s dedup (§8.4, ADR 0010; per requester, ADR 0019): a
+/// `permission_prompt` Notification (the `needs.permission` with no tool)
+/// within 10 s after a PermissionRequest from the same requester belongs to
+/// that request's episode, even if it closed. Every other `needs.*` counts as
+/// the request half and is never a duplicate itself, so a second request
+/// right after a prompt still knocks.
 fn dedup(s: &mut Session, e: &Event) -> bool {
+    let who = &e.context.agent_id;
+    s.requests
+        .retain(|(_, t)| e.ts.saturating_sub(*t) <= DEDUP_MS);
     if is_prompt(e) {
-        s.last_request
-            .is_some_and(|t| e.ts.saturating_sub(t) <= DEDUP_MS)
+        s.requests.iter().any(|(a, _)| a == who)
     } else {
-        s.last_request = Some(e.ts);
+        s.requests.retain(|(a, _)| a != who);
+        s.requests.push((who.clone(), e.ts));
         false
     }
+}
+
+/// Removes `who` from the open episode's requesters; returns how many are
+/// left (0 when no episode is open).
+fn remove(s: &mut Session, who: &Option<String>) -> usize {
+    s.needs.as_mut().map_or(0, |n| {
+        n.waiting.retain(|a| a != who);
+        n.waiting.len()
+    })
 }
 
 /// The `permission_prompt` Notification: the `needs.permission` with no tool.

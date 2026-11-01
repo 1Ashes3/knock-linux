@@ -2,7 +2,9 @@
 //! (§8.3 mapping; ADR 0007, 0009, 0010).
 
 use crate::event::{Category, Context, Detail, Event, Kind};
-use serde::Deserialize;
+use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
+use std::fmt;
 
 /// What every agent integration provides (§7.3).
 pub trait Adapter {
@@ -37,9 +39,12 @@ pub struct HookSpec {
 /// Carries no payload content, so it is safe to log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseError {
-    /// Not JSON, not an object, or an allow-listed field has the wrong type.
+    /// Not JSON, not an object, or `session_id` or `hook_event_name` is not
+    /// a string.
     BadPayload,
     NoSessionId,
+    /// `session_id` is not `^[A-Za-z0-9_-]{1,128}$`.
+    BadSessionId,
 }
 
 pub struct ClaudeCode {
@@ -48,20 +53,70 @@ pub struct ClaudeCode {
 }
 
 /// The ADR 0009 allow-list. serde skips every other field without keeping
-/// it, so free text never leaves the parser.
+/// it, so free text never leaves the parser. Only `session_id` and
+/// `hook_event_name` must have the right type; any other field that is not
+/// a string counts as missing.
 #[derive(Deserialize)]
 struct Raw {
     session_id: Option<String>,
-    cwd: Option<String>,
     hook_event_name: Option<String>,
+    #[serde(default, deserialize_with = "string_or_none")]
+    cwd: Option<String>,
+    #[serde(default, deserialize_with = "string_or_none")]
     tool_name: Option<String>,
+    #[serde(default, deserialize_with = "string_or_none")]
     notification_type: Option<String>,
+    #[serde(default, deserialize_with = "string_or_none")]
     error: Option<String>,
+    #[serde(default, deserialize_with = "string_or_none")]
     agent_id: Option<String>,
+}
+
+/// A string, or `None` for any other value, which is skipped unkept.
+fn string_or_none<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    struct V;
+    impl<'de> Visitor<'de> for V {
+        type Value = Option<String>;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("any value")
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(v.into()))
+        }
+        fn visit_bool<E: de::Error>(self, _: bool) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_i64<E: de::Error>(self, _: i64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_u64<E: de::Error>(self, _: u64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_f64<E: de::Error>(self, _: f64) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, a: A) -> Result<Self::Value, A::Error> {
+            IgnoredAny.visit_seq(a).map(|_| None)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, a: A) -> Result<Self::Value, A::Error> {
+            IgnoredAny.visit_map(a).map(|_| None)
+        }
+    }
+    d.deserialize_any(V)
 }
 
 fn charset(s: &str, max: usize, ok: impl Fn(char) -> bool) -> bool {
     (1..=max).contains(&s.len()) && s.chars().all(ok)
+}
+
+/// `^[A-Za-z0-9_-]{1,128}$`, for `session_id` and `agent_id`.
+fn is_id(s: &str) -> bool {
+    charset(s, 128, |c| {
+        c.is_ascii_alphanumeric() || c == '_' || c == '-'
+    })
 }
 
 impl Adapter for ClaudeCode {
@@ -105,6 +160,9 @@ impl Adapter for ClaudeCode {
             .session_id
             .filter(|s| !s.is_empty())
             .ok_or(ParseError::NoSessionId)?;
+        if !is_id(&session_id) {
+            return Err(ParseError::BadSessionId);
+        }
         // Shown in chips and notifications: a name, never anything longer.
         let tool = raw.tool_name.map(|t| {
             if charset(&t, 128, |c| c.is_ascii_alphanumeric() || "_.:-".contains(c)) {
@@ -173,7 +231,10 @@ impl Adapter for ClaudeCode {
                 project: project_with(&cwd, &self.users).into(),
                 cwd,
                 pid: None,
-                agent_id: raw.agent_id,
+                // Never free text; a bad one is still one requester (ADR 0019).
+                agent_id: raw
+                    .agent_id
+                    .map(|a| if is_id(&a) { a } else { "other".into() }),
             },
         }))
     }
