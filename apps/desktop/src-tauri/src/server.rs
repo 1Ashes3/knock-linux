@@ -117,14 +117,14 @@ fn no_free_port() -> io::Error {
 
 /// Repair's `{ ok: false, message }` text for its error (§6 plain language).
 /// Only "no free port" ([`pick`]'s AddrInUse) asks for a restart, since
-/// Windows may free reserved ports then; any other step that failed (most
-/// likely saving `server.json`) changed nothing and can simply be retried.
+/// Windows may free reserved ports then; any other step that failed changed
+/// nothing and can simply be retried (ADR 0023).
 pub fn repair_failed(e: &io::Error) -> &'static str {
     match e.kind() {
         io::ErrorKind::AddrInUse => {
             "Knock couldn't find a free connection to listen on. Please restart your computer, then try Repair again."
         }
-        _ => "Knock couldn't save its new connection, so nothing changed. Please try Repair again.",
+        _ => "Knock couldn't set up a new connection, so nothing changed. Please try Repair again.",
     }
 }
 
@@ -1025,7 +1025,7 @@ mod tests {
         let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
         let e = repair(&dir, |_, _| Ok(stop)).unwrap_err();
         let retry =
-            "Knock couldn't save its new connection, so nothing changed. Please try Repair again.";
+            "Knock couldn't set up a new connection, so nothing changed. Please try Repair again.";
         assert_eq!(repair_failed(&e), retry);
         // Only "no free port" asks for a restart.
         let restart = "Knock couldn't find a free connection to listen on. Please restart your computer, then try Repair again.";

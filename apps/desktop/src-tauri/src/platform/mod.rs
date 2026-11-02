@@ -3,9 +3,7 @@
 
 mod windows;
 
-pub use self::windows::{
-    WindowsPlatform, fill_random, launch_at_sign_in, link_count, local_minute,
-};
+pub use self::windows::{WindowsPlatform, fill_random, link_count, local_minute};
 use crate::jump::{ProcessId, Target};
 use crate::strip::Rect;
 use std::sync::Arc;

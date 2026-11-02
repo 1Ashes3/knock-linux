@@ -176,9 +176,9 @@ fn apply_run_ops(ops: &[RunOp], own: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// [`Platform::set_launch_at_sign_in`]. Not only on [`Platform`] because
-/// the uninstaller turns it off without a window (`--remove-sign-in`).
-pub fn launch_at_sign_in(on: bool) -> std::io::Result<()> {
+/// [`Platform::set_launch_at_sign_in`] on the real entry, with the
+/// debug-build guard.
+fn launch_at_sign_in(on: bool) -> std::io::Result<()> {
     let test_var = std::env::var_os("KNOCK_AUTOSTART_TEST");
     if !super::sign_in_allowed(cfg!(debug_assertions), test_var.as_deref()) {
         tracing::info!(on, "debug build: sign-in entry not changed");

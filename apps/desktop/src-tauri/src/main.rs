@@ -661,15 +661,6 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
-    // The uninstaller (installer-hooks.nsh) runs this before removing the
-    // app: the sign-in entry goes if it starts Knock's app, and stays if it
-    // starts another program (§9.7, ADR 0025). Then exits; no window, no log.
-    if std::env::args_os()
-        .nth(1)
-        .is_some_and(|a| a == "--remove-sign-in")
-    {
-        std::process::exit(platform::launch_at_sign_in(false).map_or(1, |()| 0));
-    }
     log::init();
     tauri::Builder::default()
         // First, so a second launch exits before anything else starts (§9.7).
