@@ -91,6 +91,9 @@ pub trait Platform: Send + Sync {
     /// `HKCU\...\Run\Knock` value only (per-user install; never HKLM), as
     /// [`sign_in_ops`] says.
     fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()>;
+    /// ADR 0027, at app start: rewrites the entry as [`start_ops`] says for
+    /// the `launchAtSignIn` `setting`. Returns whether it wrote.
+    fn restore_launch_at_sign_in(&self, setting: Option<bool>) -> std::io::Result<bool>;
 }
 
 /// The `Run\Knock` value: the exe's path, quoted, so a path with spaces
@@ -124,6 +127,20 @@ pub fn sign_in_ops(on: bool, current: Option<&str>, own: &str) -> &'static [RunO
             &[RunOp::Delete, RunOp::ClearApproved]
         }
         false => &[],
+    }
+}
+
+/// ADR 0027: what Knock does at start, given the `launchAtSignIn` setting,
+/// the current `Run\Knock` data (as for [`sign_in_ops`]) and Knock's `own`
+/// value. On: anything but Knock's own value (missing, an old path, another
+/// program's) is rewritten; letter case doesn't count, as paths ignore it.
+/// The Task Manager mark stays: only turning the setting on clears it.
+/// Off or unset: nothing.
+pub fn start_ops(setting: Option<bool>, current: Option<&str>, own: &str) -> &'static [RunOp] {
+    match (setting, current) {
+        (Some(true), Some(c)) if c.eq_ignore_ascii_case(own) => &[],
+        (Some(true), _) => &[RunOp::Write],
+        _ => &[],
     }
 }
 
@@ -245,6 +262,17 @@ impl Platform for FakePlatform {
         }
         Ok(())
     }
+    fn restore_launch_at_sign_in(&self, setting: Option<bool>) -> std::io::Result<bool> {
+        if *self.sign_in_fails.lock().unwrap() {
+            return Err(std::io::Error::other("refused"));
+        }
+        let mut run = self.run.lock().unwrap();
+        let write = !start_ops(setting, run.as_deref(), FAKE_EXE).is_empty();
+        if write {
+            *run = Some(FAKE_EXE.into());
+        }
+        Ok(write)
+    }
 }
 
 #[cfg(test)]
@@ -363,6 +391,37 @@ mod tests {
             let on = sign_in_ops(true, current, FAKE_EXE);
             assert_eq!(on, [RunOp::Write, RunOp::ClearApproved]);
         }
+    }
+
+    #[test]
+    fn at_start_a_missing_or_stale_entry_is_rewritten_while_on() {
+        let write = [RunOp::Write];
+        let on = |current: Option<&str>| start_ops(Some(true), current, FAKE_EXE);
+        assert_eq!(on(None), write, "missing");
+        assert_eq!(on(Some(FAKE_EXE)), [], "own");
+        assert_eq!(on(Some(&FAKE_EXE.to_uppercase())), [], "own, other case");
+        let old = r#""C:\Old\Knock\knock-desktop.exe""#;
+        assert_eq!(on(Some(old)), write, "old path");
+        assert_eq!(
+            on(Some(r#""C:\Other\NotKnock.exe""#)),
+            write,
+            "other program"
+        );
+        assert_eq!(on(Some(FAKE_EXE.trim_matches('"'))), write, "unquoted");
+        assert_eq!(on(Some(&format!("{FAKE_EXE} --x"))), write, "arguments");
+        for setting in [Some(false), None] {
+            for current in [None, Some(FAKE_EXE), Some(old)] {
+                assert_eq!(start_ops(setting, current, FAKE_EXE), [], "{setting:?}");
+            }
+        }
+        // Through the fake: the Task Manager mark is left as it was.
+        let fake = FakePlatform::default();
+        *fake.approved.lock().unwrap() = Some(DISABLED.to_vec());
+        assert!(fake.restore_launch_at_sign_in(Some(true)).unwrap());
+        assert_eq!(fake.run.lock().unwrap().as_deref(), Some(FAKE_EXE));
+        assert!(!fake.restore_launch_at_sign_in(Some(true)).unwrap());
+        let approved = fake.approved.lock().unwrap().clone();
+        assert_eq!(approved.as_deref(), Some(&DISABLED[..]));
     }
 
     #[test]

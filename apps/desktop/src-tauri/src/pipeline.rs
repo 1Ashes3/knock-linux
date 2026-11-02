@@ -186,8 +186,21 @@ impl Core {
             platform,
             shared,
         };
+        core.restore_sign_in();
         core.publish();
         core
+    }
+
+    /// ADR 0027: while `launchAtSignIn` is on, a missing or stale sign-in
+    /// entry is rewritten at start (an upgrade's uninstall step removes it).
+    /// A failure is logged, by kind only (§11.5), and Knock carries on.
+    fn restore_sign_in(&self) {
+        let Some(p) = &self.platform else { return };
+        match p.restore_launch_at_sign_in(self.settings.launch_at_sign_in) {
+            Ok(true) => tracing::info!("sign-in entry restored"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(kind = ?e.kind(), "sign-in entry not checked"),
+        }
     }
 
     /// Handles one message. Suppression is re-checked first, so an event in
@@ -1221,6 +1234,31 @@ mod tests {
         assert!(set(&mut t, json!({ "launchAtSignIn": true })).is_err());
         assert_eq!(calls(&t).len(), 6);
         std::fs::remove_dir(&block).unwrap();
+    }
+
+    /// ADR 0027: at start, only while on, and a failure doesn't stop Knock.
+    #[test]
+    fn at_start_the_sign_in_entry_is_restored_only_while_on() {
+        let start = |name: &str, setting: Option<bool>, fails: bool| {
+            let dir = temp_dir(name);
+            let s = Settings {
+                launch_at_sign_in: setting,
+                ..Settings::default()
+            };
+            settings::save(&dir, &s).unwrap();
+            let fake = Arc::new(FakePlatform::default());
+            *fake.sign_in_fails.lock().unwrap() = fails;
+            let platform: Arc<dyn Platform> = fake.clone();
+            let core = Core::new(dir.clone(), Some(platform), Shared::default(), T0, NOON);
+            assert_eq!(core.settings.launch_at_sign_in, setting);
+            std::fs::remove_dir_all(&dir).unwrap();
+            fake.run.lock().unwrap().clone()
+        };
+        let own = Some(platform::FAKE_EXE.to_string());
+        assert_eq!(start("start-on", Some(true), false), own);
+        assert_eq!(start("start-off", Some(false), false), None);
+        assert_eq!(start("start-unset", None, false), None);
+        assert_eq!(start("start-fails", Some(true), true), None, "still starts");
     }
 
     #[test]

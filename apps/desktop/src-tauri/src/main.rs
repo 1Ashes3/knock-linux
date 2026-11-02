@@ -251,10 +251,7 @@ async fn repair_server(app: AppHandle, k: tauri::State<'_, Knock>) -> Result<Val
         }
         Err(e) => {
             tracing::warn!(kind = ?e.kind(), "server not repaired");
-            json!({
-                "ok": false,
-                "message": "Knock couldn't find a free connection to listen on. Please restart your computer, then try Repair again.",
-            })
+            json!({ "ok": false, "message": server::repair_failed(&e) })
         }
     })
 }

@@ -142,6 +142,10 @@ fn set_run_value(on: bool) -> std::io::Result<()> {
     if !on && ops.is_empty() && current.is_some() {
         tracing::info!("sign-in entry is not Knock's own; left as it is");
     }
+    apply_run_ops(ops, &own)
+}
+
+fn apply_run_ops(ops: &[RunOp], own: &str) -> std::io::Result<()> {
     for op in ops {
         let r = match op {
             RunOp::Write => {
@@ -181,6 +185,20 @@ pub fn launch_at_sign_in(on: bool) -> std::io::Result<()> {
         return Ok(());
     }
     set_run_value(on)
+}
+
+/// [`Platform::restore_launch_at_sign_in`]: [`super::start_ops`] on the
+/// real entry, with the same debug-build guard.
+fn restore_sign_in(setting: Option<bool>) -> std::io::Result<bool> {
+    let test_var = std::env::var_os("KNOCK_AUTOSTART_TEST");
+    if !super::sign_in_allowed(cfg!(debug_assertions), test_var.as_deref()) {
+        tracing::info!("debug build: sign-in entry not checked");
+        return Ok(false);
+    }
+    let own = super::run_value(&std::env::current_exe()?);
+    let ops = super::start_ops(setting, get_run_value()?.as_deref(), &own);
+    apply_run_ops(ops, &own)?;
+    Ok(!ops.is_empty())
 }
 
 /// AF_INET: the server listens on IPv4 loopback only.
@@ -586,6 +604,10 @@ impl Platform for WindowsPlatform {
     fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()> {
         launch_at_sign_in(on)
     }
+
+    fn restore_launch_at_sign_in(&self, setting: Option<bool>) -> std::io::Result<bool> {
+        restore_sign_in(setting)
+    }
 }
 
 #[cfg(test)]
@@ -738,6 +760,28 @@ mod tests {
         reg(&["delete", &hk_approved, "/v", "Knock", "/f"]);
         assert!(kept.0.unwrap().contains(other));
         assert!(kept.1.is_some());
+        assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
+
+        // ADR 0027, at start. Off or unset: nothing, even if missing.
+        assert!(!p.restore_launch_at_sign_in(Some(false)).unwrap());
+        assert!(!p.restore_launch_at_sign_in(None).unwrap());
+        assert_eq!(reg_knock(run), None);
+        // On and missing: written; a disabled mark stays.
+        reg(&[&disabled[..], &["/d", "030000000000000000000000", "/f"]].concat());
+        assert!(p.restore_launch_at_sign_in(Some(true)).unwrap());
+        assert!(reg_knock(run).unwrap().contains(&want));
+        assert!(reg_knock(approved).is_some(), "the user's mark stays");
+        // Already Knock's own: left.
+        assert!(!p.restore_launch_at_sign_in(Some(true)).unwrap());
+        // Another program's or an old path: rewritten.
+        for data in [other, r#""C:\Old\knock-desktop.exe""#] {
+            reg(&[
+                "add", &hk_run, "/v", "Knock", "/t", "REG_SZ", "/d", data, "/f",
+            ]);
+            assert!(p.restore_launch_at_sign_in(Some(true)).unwrap());
+            assert!(reg_knock(run).unwrap().contains(&want), "{data}");
+        }
+        p.set_launch_at_sign_in(false).unwrap();
         assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
     }
 

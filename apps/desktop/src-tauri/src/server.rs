@@ -108,7 +108,24 @@ fn pick(token: String, avoid: Option<u16>) -> io::Result<(ServerConfig, TcpListe
             return Ok((ServerConfig { port, token }, listener));
         }
     }
-    Err(io::Error::other("no free port found"))
+    Err(no_free_port())
+}
+
+fn no_free_port() -> io::Error {
+    io::Error::new(io::ErrorKind::AddrInUse, "no free port found")
+}
+
+/// Repair's `{ ok: false, message }` text for its error (§6 plain language).
+/// Only "no free port" ([`pick`]'s AddrInUse) asks for a restart, since
+/// Windows may free reserved ports then; any other step that failed (most
+/// likely saving `server.json`) changed nothing and can simply be retried.
+pub fn repair_failed(e: &io::Error) -> &'static str {
+    match e.kind() {
+        io::ErrorKind::AddrInUse => {
+            "Knock couldn't find a free connection to listen on. Please restart your computer, then try Repair again."
+        }
+        _ => "Knock couldn't save its new connection, so nothing changed. Please try Repair again.",
+    }
 }
 
 fn save(dir: &Path, cfg: &ServerConfig) -> io::Result<()> {
@@ -1006,7 +1023,14 @@ mod tests {
         let dir = temp_dir("repair-save-fails");
         std::fs::create_dir(dir.join("server.json")).unwrap();
         let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
-        assert!(repair(&dir, |_, _| Ok(stop)).is_err());
+        let e = repair(&dir, |_, _| Ok(stop)).unwrap_err();
+        let retry =
+            "Knock couldn't save its new connection, so nothing changed. Please try Repair again.";
+        assert_eq!(repair_failed(&e), retry);
+        // Only "no free port" asks for a restart.
+        let restart = "Knock couldn't find a free connection to listen on. Please restart your computer, then try Repair again.";
+        assert_eq!(repair_failed(&no_free_port()), restart);
+        assert_eq!(repair_failed(&io::Error::other("refused")), retry);
         assert_eq!(
             stopped.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Closed)
