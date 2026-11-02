@@ -54,53 +54,66 @@ impl ServerConfig {
 
 /// Loads `server.json` from `dir` and binds its port. On first run (no file)
 /// picks a free port and a new token, then saves them; after that the port is
-/// fixed. A port that can't be bound later is an error; Repair
-/// ([`relisten`]) picks a new one (ADR 0023).
+/// fixed. A port that can't be bound later is an error; Repair ([`repair`])
+/// picks a new one (ADR 0023).
 pub fn listen(dir: &Path) -> io::Result<(ServerConfig, TcpListener)> {
-    let path = dir.join("server.json");
-    match std::fs::read(&path) {
+    match std::fs::read(dir.join("server.json")) {
         Ok(bytes) => {
             let cfg = parse_config(&bytes)?;
             let listener = bind(cfg.port)?;
             Ok((cfg, listener))
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            pick(&path, ServerConfig::generate()?.token, None)
+            let (cfg, listener) = pick(ServerConfig::generate()?.token, None)?;
+            save(dir, &cfg)?;
+            Ok((cfg, listener))
         }
         Err(e) => Err(e),
     }
 }
 
-/// Repair (§8.1, ADR 0023): a new free port in 49152-65535, never the saved
-/// one, with the saved token kept (a new token only if `server.json` is
-/// missing or invalid, since then there is none to keep). Saved atomically.
-pub fn relisten(dir: &Path) -> io::Result<(ServerConfig, TcpListener)> {
-    let path = dir.join("server.json");
-    let old = std::fs::read(&path)
+/// Repair (§8.1, ADR 0023), as one step: binds a new free port in
+/// 49152-65535, never the saved one, with the saved token kept (a new token
+/// only if `server.json` is missing or invalid, since then there is none to
+/// keep); `start`s the server there; and only then saves `server.json`,
+/// atomically. If binding or `start` fails, `server.json` is as it was. If
+/// saving fails, `start`'s result is dropped (for a server, its stop
+/// sender, so it stops) and `server.json` is as it was.
+pub fn repair<T>(
+    dir: &Path,
+    start: impl FnOnce(&ServerConfig, TcpListener) -> io::Result<T>,
+) -> io::Result<(ServerConfig, T)> {
+    let old = std::fs::read(dir.join("server.json"))
         .ok()
         .and_then(|b| parse_config(&b).ok());
     let token = match &old {
         Some(c) => c.token.clone(),
         None => ServerConfig::generate()?.token,
     };
-    pick(&path, token, old.map(|c| c.port))
+    let (cfg, listener) = pick(token, old.map(|c| c.port))?;
+    let started = start(&cfg, listener)?;
+    save(dir, &cfg)?;
+    Ok((cfg, started))
 }
 
-/// Binds a random port in the range other than `avoid`, then saves it with
-/// `token` to `path`. Gives up after 50 ports that can't be bound.
-fn pick(path: &Path, token: String, avoid: Option<u16>) -> io::Result<(ServerConfig, TcpListener)> {
+/// Binds a random port in the range other than `avoid`, for `token`. Gives
+/// up after 50 ports that can't be bound.
+fn pick(token: String, avoid: Option<u16>) -> io::Result<(ServerConfig, TcpListener)> {
     for _ in 0..50 {
         let port = ServerConfig::generate()?.port;
         if Some(port) == avoid {
             continue;
         }
         if let Ok(listener) = bind(port) {
-            let cfg = ServerConfig { port, token };
-            crate::settings::write_atomic(path, &serde_json::to_vec_pretty(&cfg)?)?;
-            return Ok((cfg, listener));
+            return Ok((ServerConfig { port, token }, listener));
         }
     }
     Err(io::Error::other("no free port found"))
+}
+
+fn save(dir: &Path, cfg: &ServerConfig) -> io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(cfg)?;
+    crate::settings::write_atomic(&dir.join("server.json"), &bytes)
 }
 
 /// Parses `server.json` and rejects anything `generate` could not have made:
@@ -125,7 +138,7 @@ fn bind(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind((Ipv4Addr::LOCALHOST, port))
 }
 
-/// Serves on `listener` (from [`listen`] or [`relisten`]) on Tauri's async
+/// Serves on `listener` (from [`listen`] or [`repair`]) on Tauri's async
 /// runtime until `stop` fires or is dropped. Every step that can fail runs
 /// here, before the task starts, so a listener that can't be used is an
 /// `Err` (ADR 0023). Once started it can't fail: axum 0.8's `serve` retries
@@ -942,7 +955,7 @@ mod tests {
         let e = listen(&dir).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::AddrInUse, "{e:?}");
         // Repair: another port in range, same token, saved, bound, no temp file.
-        let (fixed, listener) = relisten(&dir).unwrap();
+        let (fixed, listener) = repair(&dir, |_, l| Ok(l)).unwrap();
         assert_ne!(fixed.port, taken);
         assert!(PORTS.contains(&fixed.port));
         assert_eq!(fixed.token, first.token);
@@ -958,11 +971,50 @@ mod tests {
         // Never the saved port, even when it is free again.
         for _ in 0..20 {
             std::fs::write(dir.join("server.json"), serde_json::to_vec(&fixed).unwrap()).unwrap();
-            let (next, _l) = relisten(&dir).unwrap();
+            let (next, _l) = repair(&dir, |_, l| Ok(l)).unwrap();
             assert_ne!(next.port, fixed.port);
             assert_eq!(next.token, first.token);
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// ADR 0023: Repair saves `server.json` only once the new server has
+    /// started; if starting or saving fails, the file stays as it was.
+    #[test]
+    fn repair_saves_server_json_only_after_the_server_started() {
+        let dir = temp_dir("repair-order");
+        let file = dir.join("server.json");
+        let (first, listener) = listen(&dir).unwrap();
+        drop(listener);
+        let before = std::fs::read(&file).unwrap();
+        // Starting fails: nothing saved, and the error comes back.
+        let refused = || Err::<(), _>(io::Error::other("refused"));
+        let e = repair(&dir, |_, _| refused()).unwrap_err();
+        assert_eq!(e.to_string(), "refused");
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        // While the server starts, the old file is still there.
+        let (cfg, seen) = repair(&dir, |cfg, l| {
+            assert_eq!(l.local_addr()?.port(), cfg.port);
+            std::fs::read(&file)
+        })
+        .unwrap();
+        assert_eq!(seen, before, "saved before the server started");
+        assert_eq!(parse_config(&std::fs::read(&file).unwrap()).unwrap(), cfg);
+        assert_eq!(cfg.token, first.token);
+        // Saving fails (a folder is in the way): the started server's stop
+        // sender is dropped, so it stops, and the error comes back.
+        let dir = temp_dir("repair-save-fails");
+        std::fs::create_dir(dir.join("server.json")).unwrap();
+        let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+        assert!(repair(&dir, |_, _| Ok(stop)).is_err());
+        assert_eq!(
+            stopped.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        );
+        assert!(dir.join("server.json").is_dir());
+        assert!(!dir.join("server.json.tmp").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -970,11 +1022,11 @@ mod tests {
         let dir = temp_dir("repair-invalid");
         std::fs::write(dir.join("server.json"), b"{ not json").unwrap();
         assert_eq!(listen(&dir).unwrap_err().kind(), io::ErrorKind::InvalidData);
-        let (cfg, _l) = relisten(&dir).unwrap();
+        let (cfg, _l) = repair(&dir, |_, l| Ok(l)).unwrap();
         let saved = parse_config(&std::fs::read(dir.join("server.json")).unwrap()).unwrap();
         assert_eq!(saved, cfg);
         let dir2 = temp_dir("repair-none");
-        let (cfg2, _l2) = relisten(&dir2).unwrap();
+        let (cfg2, _l2) = repair(&dir2, |_, l| Ok(l)).unwrap();
         assert_ne!(cfg2.token, cfg.token);
         std::fs::remove_dir_all(&dir).unwrap();
         std::fs::remove_dir_all(&dir2).unwrap();

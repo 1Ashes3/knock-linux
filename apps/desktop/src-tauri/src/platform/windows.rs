@@ -21,7 +21,8 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Registry::{
-    HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
+    HKEY_CURRENT_USER, REG_SZ, RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
+    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{
@@ -95,7 +96,10 @@ const APPROVED: PCWSTR =
 const RUN_NAME: PCWSTR = w!("Knock");
 
 /// `HKCU\...\Run\Knock`'s data, or `None` if there is no such value or it
-/// isn't a string (then it can't be Knock's).
+/// isn't a string (then it can't be Knock's). An expandable string
+/// (REG_EXPAND_SZ) comes back as written, `%VAR%`s unexpanded (ADR 0025).
+/// Without RRF_NOEXPAND, RegGetValueW expands it and reports REG_SZ; with
+/// it, only RRF_RT_REG_EXPAND_SZ admits it (both seen on Windows 11 25H2).
 fn get_run_value() -> std::io::Result<Option<String>> {
     let mut buf = vec![0u16; 260];
     loop {
@@ -106,7 +110,7 @@ fn get_run_value() -> std::io::Result<Option<String>> {
                 HKEY_CURRENT_USER,
                 RUN,
                 RUN_NAME,
-                RRF_RT_REG_SZ,
+                RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
                 None,
                 Some(buf.as_mut_ptr().cast()),
                 Some(&mut size),
@@ -166,6 +170,17 @@ fn set_run_value(on: bool) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// [`Platform::set_launch_at_sign_in`]. Not only on [`Platform`] because
+/// the uninstaller turns it off without a window (`--remove-sign-in`).
+pub fn launch_at_sign_in(on: bool) -> std::io::Result<()> {
+    let test_var = std::env::var_os("KNOCK_AUTOSTART_TEST");
+    if !super::sign_in_allowed(cfg!(debug_assertions), test_var.as_deref()) {
+        tracing::info!(on, "debug build: sign-in entry not changed");
+        return Ok(());
+    }
+    set_run_value(on)
 }
 
 /// AF_INET: the server listens on IPv4 loopback only.
@@ -569,12 +584,7 @@ impl Platform for WindowsPlatform {
     }
 
     fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()> {
-        let test_var = std::env::var_os("KNOCK_AUTOSTART_TEST");
-        if !super::sign_in_allowed(cfg!(debug_assertions), test_var.as_deref()) {
-            tracing::info!(on, "debug build: sign-in entry not changed");
-            return Ok(());
-        }
-        set_run_value(on)
+        launch_at_sign_in(on)
     }
 }
 
@@ -659,14 +669,42 @@ mod tests {
         p.set_launch_at_sign_in(true).unwrap();
         assert!(reg_knock(run).unwrap().contains(&want));
         assert_eq!(reg_knock(approved), None, "Task Manager shows it enabled");
-        // An older copy of Knock's value, in another folder: off removes it.
-        let old = r#""C:\Old\Knock.exe""#;
+        // An older copy of Knock's value, in another folder, plain or
+        // expandable (`%VAR%`s left as written): off removes it. Knock's app
+        // is whatever this exe is named (ADR 0025).
+        let name = exe.file_name().unwrap().to_str().unwrap();
+        let old = format!(r#""C:\Old\{name}""#);
+        let expand = format!(r#""%LOCALAPPDATA%\Old\{name}" --x"#);
+        for (kind, data) in [("REG_SZ", &old), ("REG_EXPAND_SZ", &expand)] {
+            reg(&["add", &hk_run, "/v", "Knock", "/t", kind, "/d", data, "/f"]);
+            reg(&[&disabled[..], &["/d", "030000000000000000000000", "/f"]].concat());
+            let before = reg_knock(run).unwrap();
+            eprintln!("{}", before.trim());
+            assert!(before.contains(&format!("{kind}    {data}")), "{before}");
+            p.set_launch_at_sign_in(false).unwrap();
+            assert_eq!(
+                (reg_knock(run), reg_knock(approved)),
+                (None, None),
+                "{kind}"
+            );
+        }
+        // An expandable value that starts another program survives off.
+        let other = r"%LOCALAPPDATA%\Other\knock.exe";
         reg(&[
-            "add", &hk_run, "/v", "Knock", "/t", "REG_SZ", "/d", old, "/f",
+            "add",
+            &hk_run,
+            "/v",
+            "Knock",
+            "/t",
+            "REG_EXPAND_SZ",
+            "/d",
+            other,
+            "/f",
         ]);
-        reg(&[&disabled[..], &["/d", "030000000000000000000000", "/f"]].concat());
         p.set_launch_at_sign_in(false).unwrap();
-        assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
+        let kept = reg_knock(run);
+        reg(&["delete", &hk_run, "/v", "Knock", "/f"]);
+        assert!(kept.unwrap().contains(other));
         // A value that isn't a string: off leaves it, on overwrites it.
         let dword = [
             "add",

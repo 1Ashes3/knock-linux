@@ -235,15 +235,17 @@ async fn setup_status(k: tauri::State<'_, Knock>) -> Result<Value, String> {
     }))
 }
 
-/// §8.1, ADR 0023: a new free port, the same token, `server.json` saved,
-/// the server started there (and the old one, if any, stopped). Claude
-/// Code's hooks still name the old port, so the UI runs Connect next.
+/// §8.1, ADR 0023: a new free port, the same token, the server started
+/// there, then `server.json` saved, then the old server (if any) stopped.
+/// If any step fails, the old server and `server.json` stay as they were.
+/// Claude Code's hooks still name the old port, so the UI runs Connect next.
 #[tauri::command]
 async fn repair_server(app: AppHandle, k: tauri::State<'_, Knock>) -> Result<Value, String> {
     let _one = lock(&k.repairing);
-    let r = server::relisten(&k.dir).and_then(|bound| start_server(&app, &k, bound));
+    let r = server::repair(&k.dir, |cfg, listener| serve(&k, cfg, listener));
     Ok(match r {
-        Ok(()) => {
+        Ok((cfg, stop)) => {
+            adopt(&app, &k, cfg, stop);
             tracing::info!("server repaired");
             json!({ "ok": true })
         }
@@ -257,22 +259,31 @@ async fn repair_server(app: AppHandle, k: tauri::State<'_, Knock>) -> Result<Val
     })
 }
 
-/// Serves on `bound`, replacing (and so stopping) any running server, and
-/// tells hook setup the port and token. Clears the server error.
-fn start_server(
-    app: &AppHandle,
+/// Starts a server on `listener` with `cfg`'s token, beside any running
+/// one. Dropping the returned sender stops it.
+fn serve(
     k: &Knock,
-    (cfg, listener): (server::ServerConfig, TcpListener),
-) -> std::io::Result<()> {
+    cfg: &server::ServerConfig,
+    listener: TcpListener,
+) -> std::io::Result<tokio::sync::oneshot::Sender<()>> {
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let (platform, tx, shared) = (Arc::clone(&k.platform), k.tx.clone(), k.shared.clone());
-    let current = (cfg.port, cfg.token.clone());
     // Once started, the server can't stop on its own (`server::spawn`).
-    server::spawn(cfg, listener, platform, tx, shared, stopped)?;
-    k.hooks.set_server(Some(current));
+    server::spawn(cfg.clone(), listener, platform, tx, shared, stopped)?;
+    Ok(stop)
+}
+
+/// Makes the server [`serve`] started the current one: stops the old one,
+/// tells hook setup the port and token, and clears the server error.
+fn adopt(
+    app: &AppHandle,
+    k: &Knock,
+    cfg: server::ServerConfig,
+    stop: tokio::sync::oneshot::Sender<()>,
+) {
+    k.hooks.set_server(Some((cfg.port, cfg.token)));
     lock(&k.server).stop = Some(stop);
     server_down(app, k, None);
-    Ok(())
 }
 
 /// Records why the server isn't running (`None`: it is), and shows it in
@@ -579,7 +590,11 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     // If the port can't be bound, Knock keeps running and offers Repair
     // (§8.1, ADR 0023).
-    let started = server::listen(&k.dir).and_then(|bound| start_server(app.handle(), &k, bound));
+    let started = server::listen(&k.dir).and_then(|(cfg, listener)| {
+        let stop = serve(&k, &cfg, listener)?;
+        adopt(app.handle(), &k, cfg, stop);
+        Ok(())
+    });
     if let Err(e) = &started {
         tracing::error!(kind = ?e.kind(), "server failed to start");
         server_down(app.handle(), &k, Some(CANT_START));
@@ -649,6 +664,15 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
+    // The uninstaller (installer-hooks.nsh) runs this before removing the
+    // app: the sign-in entry goes if it starts Knock's app, and stays if it
+    // starts another program (§9.7, ADR 0025). Then exits; no window, no log.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == "--remove-sign-in")
+    {
+        std::process::exit(platform::launch_at_sign_in(false).map_or(1, |()| 0));
+    }
     log::init();
     tauri::Builder::default()
         // First, so a second launch exits before anything else starts (§9.7).

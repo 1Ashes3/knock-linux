@@ -3,7 +3,9 @@
 
 mod windows;
 
-pub use self::windows::{WindowsPlatform, fill_random, link_count, local_minute};
+pub use self::windows::{
+    WindowsPlatform, fill_random, launch_at_sign_in, link_count, local_minute,
+};
 use crate::jump::{ProcessId, Target};
 use crate::strip::Rect;
 use std::sync::Arc;
@@ -110,10 +112,11 @@ pub enum RunOp {
 }
 
 /// What turning sign-in `on` or off does, given the current `Run\Knock`
-/// string data (`None`: no value, or not a string) and Knock's `own` value
-/// ([`run_value`]). On: always overwrite (the user asked; `current` is not
-/// needed) and clear a "disabled" mark. Off: delete a value that starts
-/// Knock ([`starts_knock`]); one that starts another program stays.
+/// string data (`None`: no value, or not a string; an expandable string
+/// unexpanded) and Knock's `own` value ([`run_value`] of the running exe).
+/// On: always overwrite (the user asked; `current` is not needed) and clear
+/// a "disabled" mark. Off: delete a value that starts Knock's app
+/// ([`starts_knock`]); one that starts another program stays (ADR 0025).
 pub fn sign_in_ops(on: bool, current: Option<&str>, own: &str) -> &'static [RunOp] {
     match on {
         true => &[RunOp::Write, RunOp::ClearApproved],
@@ -124,12 +127,19 @@ pub fn sign_in_ops(on: bool, current: Option<&str>, own: &str) -> &'static [RunO
     }
 }
 
-/// `Run\Knock` data is Knock's: its `own` value, or a command whose program
-/// is named `Knock.exe` (any letter case, any folder, quoted or not, with
-/// or without arguments), since an older copy of Knock may have written it.
-/// An unquoted program ends at the first `.exe` that ends a word.
+/// ADR 0025: `Run\Knock` data starts Knock's app if its program has the
+/// same file name as `own`'s (the running exe), ignoring letter case, from
+/// any folder, quoted or not, with or without arguments, since an older
+/// copy of Knock may have written it.
 fn starts_knock(data: &str, own: &str) -> bool {
-    let d = data.trim_start();
+    let name = program_name(own);
+    !name.is_empty() && program_name(data).eq_ignore_ascii_case(name)
+}
+
+/// The file name of the program a command starts. A quoted program ends at
+/// the next quote; an unquoted one at the first `.exe` that ends a word.
+fn program_name(command: &str) -> &str {
+    let d = command.trim_start();
     let program = match d.strip_prefix('"') {
         Some(rest) => rest.split('"').next().unwrap_or(""),
         None => {
@@ -140,8 +150,7 @@ fn starts_knock(data: &str, own: &str) -> bool {
             end.map_or(d, |e| &d[..e])
         }
     };
-    let name = program.rsplit(['\\', '/']).next().unwrap_or("");
-    data.eq_ignore_ascii_case(own) || name.eq_ignore_ascii_case("Knock.exe")
+    program.rsplit(['\\', '/']).next().unwrap_or("")
 }
 
 /// Whether to change the real sign-in entry. A debug build does only with
@@ -171,9 +180,10 @@ pub struct FakePlatform {
     pub approved: std::sync::Mutex<Option<Vec<u8>>>,
 }
 
-/// The fake's own `Run\Knock` value.
+/// The fake's own `Run\Knock` value: the installed app (`mainBinaryName`
+/// unset, so the exe keeps its Cargo name).
 #[cfg(test)]
-pub const FAKE_EXE: &str = r#""C:\Users\A B\AppData\Local\Knock\Knock.exe""#;
+pub const FAKE_EXE: &str = r#""C:\Users\A B\AppData\Local\Knock\knock-desktop.exe""#;
 
 #[cfg(test)]
 impl Platform for FakePlatform {
@@ -243,7 +253,7 @@ mod tests {
 
     #[test]
     fn the_run_value_is_the_quoted_exe_path() {
-        let exe = std::path::Path::new(r"C:\Users\A B\AppData\Local\Knock\Knock.exe");
+        let exe = std::path::Path::new(r"C:\Users\A B\AppData\Local\Knock\knock-desktop.exe");
         assert_eq!(run_value(exe), FAKE_EXE);
         // Through the trait, a fake records the call and touches nothing.
         let fake = FakePlatform::default();
@@ -260,7 +270,7 @@ mod tests {
     #[test]
     fn enabling_overwrites_any_value_and_clears_a_disabled_mark() {
         let fake = FakePlatform::default();
-        *fake.run.lock().unwrap() = Some(r#""C:\Other\Knock.exe" --x"#.into());
+        *fake.run.lock().unwrap() = Some(r#""C:\Other\NotKnock.exe" --x"#.into());
         *fake.approved.lock().unwrap() = Some(DISABLED.to_vec());
         fake.set_launch_at_sign_in(true).unwrap();
         assert_eq!(fake.run.lock().unwrap().as_deref(), Some(FAKE_EXE));
@@ -299,37 +309,54 @@ mod tests {
     }
 
     #[test]
-    fn any_command_starting_a_knock_exe_is_knocks() {
-        let off = |data: &str| sign_in_ops(false, Some(data), FAKE_EXE);
+    fn any_command_starting_the_apps_own_exe_name_is_knocks() {
         let delete = [RunOp::Delete, RunOp::ClearApproved];
-        for ours in [
-            FAKE_EXE,
-            FAKE_EXE.trim_matches('"'),
-            r#""C:\Old\Knock.exe""#,
-            r"C:\Old\Knock.exe",
-            r#""C:\Program Files\Knock\Knock.exe" --minimized"#,
-            r"C:\Program Files\Knock\Knock.exe --minimized",
-            "C:\\Old\\Knock.exe\t-x",
-            r#"  "C:\OLD\KNOCK.EXE""#,
-            "c:/old/knock.Exe",
-            "Knock.exe",
-            r#""C:\Old\Knock.exe"#,
+        // The rule follows the running exe's name, whatever it is.
+        for (own, name) in [
+            (FAKE_EXE, "knock-desktop.exe"),
+            (r#""D:\Apps\Knock\Knock.exe""#, "Knock.exe"),
         ] {
-            assert_eq!(off(ours), delete, "{ours}");
+            let off = |data: &str| sign_in_ops(false, Some(data), own);
+            let (upper, stem) = (name.to_uppercase(), name.trim_end_matches(".exe"));
+            for ours in [
+                own.to_string(),
+                own.trim_matches('"').to_string(),
+                format!(r#""C:\Old\{name}""#),
+                format!(r"C:\Old\{name}"),
+                format!(r#""C:\Program Files\Knock\{name}" --minimized"#),
+                format!(r"C:\Program Files\Knock\{name} --minimized"),
+                format!("C:\\Old\\{name}\t-x"),
+                format!(r#"  "C:\OLD\{upper}""#),
+                format!("c:/old/{}.Exe", stem.to_lowercase()),
+                name.to_string(),
+                format!(r#""C:\Old\{name}"#),
+                // REG_EXPAND_SZ data, read unexpanded: only the name counts.
+                format!(r#""%LOCALAPPDATA%\Knock\{name}""#),
+            ] {
+                assert_eq!(off(&ours), delete, "{own}: {ours}");
+            }
+            for theirs in [
+                String::new(),
+                "   ".into(),
+                r#""C:\Old\NotKnock.exe""#.into(),
+                format!(r"C:\Old\Not{name} --knock"),
+                format!(r"C:\Old\{name}.bak"),
+                format!(r#""C:\Old\{name}.bak""#),
+                format!(r#""C:\Old\Other.exe" C:\Old\{name}"#),
+                format!(r"C:\Tools\Other.exe C:\Old\{name}"),
+                format!(r"C:\{name}\Other.exe"),
+                format!(r"C:\Old\{stem}"),
+            ] {
+                assert_eq!(off(&theirs), [], "{own}: {theirs}");
+            }
         }
-        for theirs in [
-            "",
-            "   ",
-            r#""C:\Old\NotKnock.exe""#,
-            r"C:\Old\NotKnock.exe --knock",
-            r"C:\Old\Knock.exe.bak",
-            r#""C:\Old\Knock.exe.bak""#,
-            r#""C:\Old\Other.exe" C:\Old\Knock.exe"#,
-            r"C:\Tools\Other.exe C:\Old\Knock.exe",
-            r"C:\Knock.exe\Other.exe",
-            r"C:\Old\Knock",
+        // The app is knock-desktop.exe; the CLI, knock.exe, is not Knock's app.
+        for cli in [
+            r"C:\src\knock\target\release\knock.exe",
+            r#""C:\Tools\knock.exe" sim demo"#,
+            "knock.exe",
         ] {
-            assert_eq!(off(theirs), [], "{theirs}");
+            assert_eq!(sign_in_ops(false, Some(cli), FAKE_EXE), [], "{cli}");
         }
         // Turning on never looks at the value.
         for current in [None, Some(""), Some("anything")] {
