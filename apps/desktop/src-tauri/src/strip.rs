@@ -1,6 +1,8 @@
-//! Pure strip geometry (SPEC.md §9.2, §9.3). No OS calls; unit-tested on
+//! Pure strip geometry (SPEC.md §9.2, §9.3; ADR 0002): which display, where
+//! on it, how big, and the hit test. No OS calls; unit-tested on
 //! recorded monitor data.
 
+use crate::platform::{Display, Taskbar};
 use serde::Deserialize;
 
 /// Rectangle in physical screen pixels; `right` and `bottom` are exclusive.
@@ -17,25 +19,99 @@ const RIGHT_MARGIN: f64 = 8.0;
 /// Most slots the strip is ever wide: 5 characters plus the den (§9.2).
 const MAX_SLOTS: f64 = 6.0;
 
+/// `Taskbar::edge` for the bottom of the screen (ABE_BOTTOM).
+const BOTTOM: u32 = 3;
+
 /// Where the strip is and what the cursor poll tests against (§9.3).
 pub struct Strip {
     pub rect: Rect,
     pub scale: f64,
     pub regions: Vec<Region>,
+    /// The size the UI last asked for, in logical px (`None`: not yet).
+    pub want: Option<(f64, f64)>,
+    /// The chosen monitor was missing at the last placement.
+    pub fell_back: bool,
 }
 
-/// Physical rect of a strip `width` by `height` logical px, resting on the
-/// bottom edge of `work_area` and 8 logical px from its right edge, so it
-/// grows leftward and upward from that corner.
-pub fn place(work_area: Rect, scale: f64, width: f64, height: f64) -> Rect {
+/// Physical rect of a strip `width` by `height` logical px whose bottom
+/// edge sits at `corner.1` and whose right edge is 8 logical px left of
+/// `corner.0`, so it grows leftward and upward from that corner.
+pub fn place(corner: (i32, i32), scale: f64, width: f64, height: f64) -> Rect {
     let px = |logical: f64| (logical * scale).round() as i32;
-    let right = work_area.right - px(RIGHT_MARGIN);
+    let (right, bottom) = (corner.0 - px(RIGHT_MARGIN), corner.1);
     Rect {
         left: right - px(width),
-        top: work_area.bottom - px(height),
+        top: bottom - px(height),
         right,
-        bottom: work_area.bottom,
+        bottom,
     }
+}
+
+/// Which display the §8.6 `monitor` setting means: the primary for
+/// `"primary"`, else the one with that id. An id that isn't connected falls
+/// back to the primary, with `true`. `None` only with no display at all.
+pub fn choose<'a>(monitor: &str, displays: &'a [Display]) -> Option<(&'a Display, bool)> {
+    let primary = displays.iter().find(|d| d.primary).or(displays.first());
+    match displays
+        .iter()
+        .find(|d| monitor != "primary" && d.id == monitor)
+    {
+        Some(d) => Some((d, false)),
+        None => primary.map(|d| (d, monitor != "primary")),
+    }
+}
+
+/// The point the strip's bottom-right corner rests on (§9.2): the work
+/// area's bottom-right, or with an auto-hidden bottom taskbar the top edge
+/// of the shown taskbar (ADR 0002). A taskbar on another edge leaves the
+/// work area's bottom-right. `primary_scale` is the primary display's.
+pub fn corner(d: &Display, taskbar: Option<Taskbar>, primary_scale: f64) -> (i32, i32) {
+    let wa = (d.work_area.right, d.work_area.bottom);
+    let Some(t) = taskbar.filter(|t| t.auto_hide && t.edge == BOTTOM) else {
+        return wa;
+    };
+    let top = match d.primary {
+        true => t.rect.top,
+        // ponytail: the shell reports only the primary taskbar. Another
+        // display's taskbar is taken to be at its bottom with the same
+        // logical height; read Shell_SecondaryTrayWnd if that proves wrong.
+        false => {
+            let logical = f64::from(t.rect.bottom - t.rect.top) / primary_scale;
+            d.monitor.bottom - (logical * d.scale).round() as i32
+        }
+    };
+    (wa.0, top.min(wa.1))
+}
+
+/// The result of [`layout`].
+#[derive(Debug, PartialEq)]
+pub struct Layout {
+    pub rect: Rect,
+    pub scale: f64,
+    /// The chosen monitor is missing; this is the primary.
+    pub fell_back: bool,
+}
+
+/// Where the strip goes (§9.2): on the display `monitor` names, `want`
+/// logical px (default 3 slots) capped at 6 slots of `slot` px and the work
+/// area's height, resting on [`corner`]. `None` with no display.
+pub fn layout(
+    monitor: &str,
+    displays: &[Display],
+    taskbar: Option<Taskbar>,
+    want: Option<(f64, f64)>,
+    slot: f64,
+) -> Option<Layout> {
+    let (d, fell_back) = choose(monitor, displays)?;
+    let primary_scale = displays.iter().find(|d| d.primary).map_or(1.0, |p| p.scale);
+    let (w, h) = want.unwrap_or((3.0 * slot, slot));
+    let max_height = f64::from(d.work_area.bottom - d.work_area.top) / d.scale;
+    let (w, h) = clamp(w, h, slot, max_height)?;
+    Some(Layout {
+        rect: place(corner(d, taskbar, primary_scale), d.scale, w, h),
+        scale: d.scale,
+        fell_back,
+    })
 }
 
 /// The size `request_strip_size` gets (§8.5, §9.2), in logical px: at most 6
@@ -82,26 +158,183 @@ mod tests {
     const MEDIUM: f64 = 64.0;
     const THREE: f64 = 3.0 * MEDIUM;
 
+    fn br(r: Rect) -> (i32, i32) {
+        (r.right, r.bottom)
+    }
+
+    fn display(id: &str, primary: bool, monitor: Rect, work_area: Rect, scale: f64) -> Display {
+        Display {
+            id: id.into(),
+            primary,
+            monitor,
+            work_area,
+            scale,
+        }
+    }
+
+    // Recorded on the user's machine (ADR 0002 evidence and Spike A, Windows
+    // 11 25H2): 1920x1080 at 100%, bottom taskbar (0,1032)-(1920,1080).
+    const MON: Rect = rect(0, 0, 1920, 1080);
+    const BAR: Taskbar = Taskbar {
+        rect: rect(0, 1032, 1920, 1080),
+        edge: 3,
+        auto_hide: false,
+    };
+    const HIDDEN: Taskbar = Taskbar {
+        auto_hide: true,
+        ..BAR
+    };
+
+    #[test]
+    fn auto_hide_off_rests_on_the_work_area() {
+        let d = [display("a", true, MON, rect(0, 0, 1920, 1032), 1.0)];
+        let l = layout("primary", &d, Some(BAR), None, MEDIUM).unwrap();
+        assert_eq!(l.rect, rect(1720, 968, 1912, 1032));
+        assert!(!l.fell_back);
+    }
+
+    #[test]
+    fn auto_hide_on_rests_on_the_shown_taskbar_not_the_screen_bottom() {
+        // With auto-hide on, the work area is the whole monitor (ADR 0002).
+        let d = [display("a", true, MON, MON, 1.0)];
+        let l = layout("primary", &d, Some(HIDDEN), None, MEDIUM).unwrap();
+        assert_eq!(l.rect, rect(1720, 968, 1912, 1032), "same as auto-hide off");
+        // Without taskbar info it can only use the work area.
+        let l = layout("primary", &d, None, None, MEDIUM).unwrap();
+        assert_eq!(l.rect.bottom, 1080);
+    }
+
+    #[test]
+    fn a_taskbar_on_another_edge_falls_back_to_the_work_area() {
+        let wa = rect(48, 0, 1920, 1080);
+        let left = Taskbar {
+            rect: rect(0, 0, 48, 1080),
+            edge: 0,
+            auto_hide: true,
+        };
+        let d = display("a", true, MON, wa, 1.0);
+        assert_eq!(corner(&d, Some(left), 1.0), (1920, 1080));
+        let top = Taskbar { edge: 1, ..left };
+        assert_eq!(corner(&d, Some(top), 1.0), (1920, 1080));
+    }
+
+    // Derived, not recorded (one monitor here): the primary above at 100%,
+    // and a 3840x2160 display at 150% to its right.
+    const SECOND: Rect = rect(1920, 0, 5760, 2160);
+
+    #[test]
+    fn two_displays_with_different_scale() {
+        let d = [
+            display("a", true, MON, rect(0, 0, 1920, 1032), 1.0),
+            display("b", false, SECOND, rect(1920, 0, 5760, 2088), 1.5),
+        ];
+        let l = layout("b", &d, Some(BAR), None, MEDIUM).unwrap();
+        // 64*1.5 = 96 tall, 192*1.5 = 288 wide, 8*1.5 = 12 margin.
+        assert_eq!(l.rect, rect(5460, 1992, 5748, 2088));
+        assert_eq!((l.scale, l.fell_back), (1.5, false));
+        // Size setting large (80) at 150%: 120 physical, from logical px.
+        let l = layout("b", &d, Some(BAR), Some((80.0, 80.0)), 80.0).unwrap();
+        assert_eq!(l.rect, rect(5628, 1968, 5748, 2088));
+        // "primary" still means the 100% one.
+        let l = layout("primary", &d, Some(BAR), None, MEDIUM).unwrap();
+        assert_eq!((l.rect, l.scale), (rect(1720, 968, 1912, 1032), 1.0));
+    }
+
+    #[test]
+    fn two_displays_with_auto_hide_use_the_taskbars_logical_height() {
+        let d = [
+            display("a", true, MON, MON, 1.0),
+            display("b", false, SECOND, SECOND, 1.5),
+        ];
+        // 48 logical px at 150% = 72: the shown taskbar's top is 2088.
+        let l = layout("b", &d, Some(HIDDEN), None, MEDIUM).unwrap();
+        assert_eq!(l.rect, rect(5460, 1992, 5748, 2088));
+        // A primary at 200% with a 96 px taskbar, the other at 100%.
+        let d = [
+            display(
+                "a",
+                true,
+                rect(0, 0, 3840, 2160),
+                rect(0, 0, 3840, 2160),
+                2.0,
+            ),
+            display(
+                "b",
+                false,
+                rect(3840, 0, 5760, 1080),
+                rect(3840, 0, 5760, 1080),
+                1.0,
+            ),
+        ];
+        let bar = Taskbar {
+            rect: rect(0, 2064, 3840, 2160),
+            ..HIDDEN
+        };
+        assert_eq!(corner(&d[1], Some(bar), 2.0), (5760, 1032));
+        assert_eq!(corner(&d[0], Some(bar), 2.0), (3840, 2064));
+    }
+
+    #[test]
+    fn a_missing_chosen_display_falls_back_to_the_primary() {
+        let d = [
+            display("b", false, SECOND, rect(1920, 0, 5760, 2088), 1.5),
+            display("a", true, MON, rect(0, 0, 1920, 1032), 1.0),
+        ];
+        let l = layout("0123456789abcdef", &d, Some(BAR), None, MEDIUM).unwrap();
+        assert_eq!((l.rect, l.fell_back), (rect(1720, 968, 1912, 1032), true));
+        assert_eq!(choose("primary", &d).unwrap().0.id, "a");
+        assert_eq!(
+            choose("b", &d).map(|(d, f)| (d.id.as_str(), f)),
+            Some(("b", false))
+        );
+        // An id equal to the word "primary" can't pick a non-primary display.
+        let odd = [display("primary", false, SECOND, SECOND, 1.0), d[1].clone()];
+        assert_eq!(choose("primary", &odd).unwrap().0.id, "a");
+        // No primary flag (shouldn't happen): the first display.
+        let none = [display("x", false, MON, MON, 1.0)];
+        assert_eq!(choose("primary", &none).unwrap().0.id, "x");
+        assert!(choose("primary", &[]).is_none());
+        assert!(layout("primary", &[], None, None, MEDIUM).is_none());
+    }
+
+    #[test]
+    fn layout_caps_the_requested_size() {
+        let d = [display("a", true, MON, rect(0, 0, 1920, 1032), 1.0)];
+        let l = layout("primary", &d, None, Some((1000.0, 64.0)), MEDIUM).unwrap();
+        assert_eq!(l.rect, rect(1528, 968, 1912, 1032), "6 slots");
+        let l = layout("primary", &d, None, Some((0.0, 64.0)), MEDIUM).unwrap();
+        assert_eq!(l.rect.left, l.rect.right, "no sessions: zero width");
+    }
+
     // 100%: recorded on the user's machine (1920x1080 monitor, bottom
     // taskbar 1032..1080, Windows 11 25H2). 150% and 200%: not recorded yet;
     // derived from a 48 logical px bottom taskbar (72 and 96 physical px).
     #[test]
     fn place_at_100_percent() {
         let wa = rect(0, 0, 1920, 1032);
-        assert_eq!(place(wa, 1.0, THREE, MEDIUM), rect(1720, 968, 1912, 1032));
+        assert_eq!(
+            place(br(wa), 1.0, THREE, MEDIUM),
+            rect(1720, 968, 1912, 1032)
+        );
     }
 
     #[test]
     fn place_at_150_percent() {
         let wa = rect(0, 0, 2560, 1368);
         // 64*1.5 = 96 tall, 192*1.5 = 288 wide, 8*1.5 = 12 margin.
-        assert_eq!(place(wa, 1.5, THREE, MEDIUM), rect(2260, 1272, 2548, 1368));
+        assert_eq!(
+            place(br(wa), 1.5, THREE, MEDIUM),
+            rect(2260, 1272, 2548, 1368)
+        );
     }
 
     #[test]
     fn place_at_200_percent() {
         let wa = rect(0, 0, 3840, 2064);
-        assert_eq!(place(wa, 2.0, THREE, MEDIUM), rect(3440, 1936, 3824, 2064));
+        assert_eq!(
+            place(br(wa), 2.0, THREE, MEDIUM),
+            rect(3440, 1936, 3824, 2064)
+        );
     }
 
     #[test]
@@ -109,7 +342,10 @@ mod tests {
         // Primary monitor need not start at 0,0; 125% gives fractional px.
         let wa = rect(-1920, 200, 0, 1232);
         // 64*1.25 = 80, 192*1.25 = 240, 8*1.25 = 10.
-        assert_eq!(place(wa, 1.25, THREE, MEDIUM), rect(-250, 1152, -10, 1232));
+        assert_eq!(
+            place(br(wa), 1.25, THREE, MEDIUM),
+            rect(-250, 1152, -10, 1232)
+        );
     }
 
     #[test]
@@ -135,7 +371,10 @@ mod tests {
         }
         // Six medium slots at 150%, right edge kept: 384*1.5 = 576 wide.
         let wa = rect(0, 0, 2560, 1368);
-        assert_eq!(place(wa, 1.5, 384.0, 64.0), rect(1972, 1272, 2548, 1368));
+        assert_eq!(
+            place(br(wa), 1.5, 384.0, 64.0),
+            rect(1972, 1272, 2548, 1368)
+        );
     }
 
     const STRIP_150: Rect = rect(2260, 1272, 2548, 1368);

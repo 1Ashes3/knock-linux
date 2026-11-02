@@ -362,7 +362,7 @@ impl Core {
         let new = settings::merged(&self.settings, patch)?;
         // §9.7: `launchAtSignIn: true/false` changes the sign-in entry first,
         // and the change is undone if the save fails, so the entry and
-        // settings.json never disagree. `null` leaves the entry untouched.
+        // settings.json never disagree. `null` is rejected by `merged`.
         let sign_in = patch
             .get("launchAtSignIn")
             .and_then(serde_json::Value::as_bool);
@@ -1193,7 +1193,9 @@ mod tests {
         assert_eq!((calls(&t), saved(&t)), (vec![true], Some(true)));
         // An invalid patch, or `null`, never touches the entry.
         assert!(set(&mut t, json!({ "launchAtSignIn": false, "size": "huge" })).is_err());
-        set(&mut t, json!({ "launchAtSignIn": null })).unwrap();
+        let e = set(&mut t, json!({ "launchAtSignIn": null })).unwrap_err();
+        assert_eq!(e, "Start when you sign in must be on or off.");
+        assert_eq!(saved(&t), Some(true));
         set(&mut t, json!({ "launchAtSignIn": true })).unwrap();
         assert_eq!(calls(&t), [true, true]);
         // The entry can't be changed: nothing is saved, the error is shown.

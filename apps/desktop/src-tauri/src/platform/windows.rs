@@ -1,15 +1,15 @@
 //! Windows implementation of [`Platform`]. All Win32 calls live here.
 
-use super::{Display, Monitor, Platform, Taskbar, monitor_id};
+use super::{Display, Monitor, Platform, RunOp, Taskbar, monitor_id};
 use crate::jump::{self, Proc, ProcessId, Target, TcpRow, Win};
 use crate::strip::Rect;
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, FILETIME, HANDLE, HWND, LPARAM,
-    NO_ERROR, POINT, RECT, STILL_ACTIVE,
+    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, FILETIME,
+    HANDLE, HWND, LPARAM, LRESULT, NO_ERROR, POINT, RECT, STILL_ACTIVE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     DISPLAY_DEVICEW, EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
-    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MONITORINFOEXW, MonitorFromPoint,
+    MONITORINFOEXW,
 };
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, TCP_TABLE_OWNER_PID_CONNECTIONS,
@@ -20,7 +20,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Registry::{
-    HKEY_CURRENT_USER, REG_SZ, RegDeleteKeyValueW, RegSetKeyValueW,
+    HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::System::Threading::{
@@ -28,16 +28,17 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Shell::{
-    ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA, SHAppBarMessage,
+    ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA, DefSubclassProc, SHAppBarMessage,
+    SetWindowSubclass,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EDD_GET_DEVICE_INTERFACE_NAME, EnumWindows, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO,
     FlashWindowEx, GA_ROOTOWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetCursorPos,
-    GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow,
-    IsWindowVisible, MONITORINFOF_PRIMARY, SW_RESTORE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    ShowWindowAsync, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT,
+    GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, HWND_TOPMOST,
+    IsIconic, IsWindow, IsWindowVisible, MONITORINFOF_PRIMARY, RegisterWindowMessageW, SW_RESTORE,
+    SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, ShowWindowAsync, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_SETTINGCHANGE,
+    WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -92,28 +93,67 @@ const APPROVED: PCWSTR =
     w!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run");
 const RUN_NAME: PCWSTR = w!("Knock");
 
-/// Writes `HKCU\...\Run\Knock` with the quoted exe path, or deletes it and
-/// any `StartupApproved\Run\Knock`. A value that isn't there is fine.
-fn set_run_value(on: bool) -> std::io::Result<()> {
-    if on {
-        let exe = std::env::current_exe()?;
-        let v: Vec<u16> = super::run_value(&exe).encode_utf16().chain([0]).collect();
-        // SAFETY: `v` is a NUL-terminated UTF-16 string of `v.len()` units.
+/// `HKCU\...\Run\Knock`'s data, or `None` if there is no such value.
+fn get_run_value() -> std::io::Result<Option<String>> {
+    let mut buf = vec![0u16; 260];
+    loop {
+        let mut size = (buf.len() * 2) as u32;
+        // SAFETY: `buf` has `size` writable bytes; constant NUL-terminated names.
         let r = unsafe {
-            RegSetKeyValueW(
+            RegGetValueW(
                 HKEY_CURRENT_USER,
                 RUN,
                 RUN_NAME,
-                REG_SZ.0,
-                Some(v.as_ptr().cast()),
-                (v.len() * 2) as u32,
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut size),
             )
         };
-        return r.ok().map_err(Into::into);
+        match r {
+            ERROR_FILE_NOT_FOUND => return Ok(None),
+            ERROR_MORE_DATA => buf.resize((size as usize).div_ceil(2) + 1, 0),
+            _ => {
+                r.ok()?;
+                return Ok(Some(utf16(&buf)));
+            }
+        }
     }
-    for key in [RUN, APPROVED] {
-        // SAFETY: constant NUL-terminated key and value names.
-        let r = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key, RUN_NAME) };
+}
+
+/// Applies [`super::sign_in_ops`]: writes `Run\Knock` with the quoted exe
+/// path, deletes it only if it holds that path, and clears
+/// `StartupApproved\Run\Knock`. A value that isn't there is fine.
+fn set_run_value(on: bool) -> std::io::Result<()> {
+    let own = super::run_value(&std::env::current_exe()?);
+    let current = get_run_value()?;
+    let ops = super::sign_in_ops(on, current.as_deref(), &own);
+    if !on && ops.is_empty() && current.is_some() {
+        tracing::info!("sign-in entry is not Knock's own; left as it is");
+    }
+    for op in ops {
+        let r = match op {
+            RunOp::Write => {
+                let v: Vec<u16> = own.encode_utf16().chain([0]).collect();
+                // SAFETY: `v` is a NUL-terminated UTF-16 string of `v.len()` units.
+                unsafe {
+                    RegSetKeyValueW(
+                        HKEY_CURRENT_USER,
+                        RUN,
+                        RUN_NAME,
+                        REG_SZ.0,
+                        Some(v.as_ptr().cast()),
+                        (v.len() * 2) as u32,
+                    )
+                }
+            }
+            // SAFETY: constant NUL-terminated key and value names.
+            RunOp::Delete => unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, RUN_NAME) },
+            // SAFETY: as above.
+            RunOp::ClearApproved => unsafe {
+                RegDeleteKeyValueW(HKEY_CURRENT_USER, APPROVED, RUN_NAME)
+            },
+        };
         if r != ERROR_FILE_NOT_FOUND {
             r.ok()?;
         }
@@ -270,8 +310,8 @@ unsafe extern "system" fn each_monitor(h: HMONITOR, _: HDC, _: *mut RECT, l: LPA
 }
 
 /// Every display: its device interface path (stable), the name Windows
-/// gives it, primary flag and resolution. Primary first.
-fn monitors() -> Vec<Monitor> {
+/// gives it, primary flag, resolution, work area and scale. Primary first.
+fn screens() -> Vec<(Monitor, Display)> {
     let mut handles: Vec<HMONITOR> = Vec::new();
     // SAFETY: `handles` outlives the synchronous enumeration.
     let _ = unsafe {
@@ -282,7 +322,7 @@ fn monitors() -> Vec<Monitor> {
             LPARAM(&raw mut handles as isize),
         )
     };
-    let mut out: Vec<Monitor> = (handles.iter().enumerate())
+    let mut out: Vec<(Monitor, Display)> = (handles.iter().enumerate())
         .filter_map(|(i, &h)| {
             let mut info = MONITORINFOEXW::default();
             info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
@@ -290,11 +330,15 @@ fn monitors() -> Vec<Monitor> {
                 cb: size_of::<DISPLAY_DEVICEW>() as u32,
                 ..Default::default()
             };
+            let (mut dpi, mut dpi_y) = (96, 96);
             // SAFETY: valid out-params with their sizes set; szDevice is
             // NUL-terminated by GetMonitorInfoW.
             let found = unsafe {
                 if !GetMonitorInfoW(h, (&raw mut info).cast()).as_bool() {
                     return None;
+                }
+                if GetDpiForMonitor(h, MDT_EFFECTIVE_DPI, &mut dpi, &mut dpi_y).is_err() {
+                    dpi = 96;
                 }
                 let device = PCWSTR(info.szDevice.as_ptr());
                 EnumDisplayDevicesW(device, 0, &mut dd, EDD_GET_DEVICE_INTERFACE_NAME).as_bool()
@@ -306,17 +350,58 @@ fn monitors() -> Vec<Monitor> {
                 .filter(|p| found && !p.is_empty())
                 .unwrap_or_else(|| utf16(&info.szDevice));
             let name = Some(utf16(&dd.DeviceString)).filter(|n| found && !n.is_empty());
-            Some(Monitor {
-                id: monitor_id(&path),
+            let (id, primary) = (
+                monitor_id(&path),
+                info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+            );
+            let m = Monitor {
+                id: id.clone(),
                 name: name.unwrap_or_else(|| format!("Display {}", i + 1)),
-                primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+                primary,
                 width: r.right - r.left,
                 height: r.bottom - r.top,
-            })
+            };
+            let d = Display {
+                id,
+                primary,
+                monitor: rect(r),
+                work_area: rect(info.monitorInfo.rcWork),
+                scale: f64::from(dpi) / 96.0,
+            };
+            Some((m, d))
         })
         .collect();
-    out.sort_by_key(|m| !m.primary);
+    out.sort_by_key(|(m, _)| !m.primary);
     out
+}
+
+fn monitors() -> Vec<Monitor> {
+    screens().into_iter().map(|(m, _)| m).collect()
+}
+
+/// "TaskbarCreated": broadcast to every top-level window when Explorer
+/// (re)creates the taskbar.
+static TASKBAR_CREATED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+/// The strip's subclass: flags display, DPI, work-area (any
+/// WM_SETTINGCHANGE, including SPI_SETWORKAREA and "TraySettings") and
+/// taskbar-recreated messages, then hands every message on unchanged.
+unsafe extern "system" fn watch(
+    h: HWND,
+    msg: u32,
+    w: WPARAM,
+    l: LPARAM,
+    _: usize,
+    flag: usize,
+) -> LRESULT {
+    let taskbar = TASKBAR_CREATED.get().is_some_and(|&m| m != 0 && m == msg);
+    if matches!(msg, WM_DISPLAYCHANGE | WM_DPICHANGED | WM_SETTINGCHANGE) || taskbar {
+        // SAFETY: `flag` is the AtomicBool leaked by `watch_displays`.
+        let flag = unsafe { &*(flag as *const std::sync::atomic::AtomicBool) };
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    // SAFETY: the arguments as received.
+    unsafe { DefSubclassProc(h, msg, w, l) }
 }
 
 fn rect(r: RECT) -> Rect {
@@ -329,36 +414,41 @@ fn rect(r: RECT) -> Rect {
 }
 
 impl Platform for WindowsPlatform {
-    fn primary_display(&self) -> std::io::Result<Display> {
-        // SAFETY: plain Win32 queries with valid, initialized out-params.
-        unsafe {
-            let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-            let mut info = MONITORINFO {
-                cbSize: size_of::<MONITORINFO>() as u32,
-                ..Default::default()
-            };
-            if !GetMonitorInfoW(mon, &mut info).as_bool() {
-                return Err(std::io::Error::last_os_error());
-            }
-            let (mut dpi_x, mut dpi_y) = (0, 0);
-            GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y)?;
+    fn displays(&self) -> Vec<Display> {
+        screens().into_iter().map(|(_, d)| d).collect()
+    }
 
-            let mut bar = APPBARDATA {
-                cbSize: size_of::<APPBARDATA>() as u32,
-                ..Default::default()
-            };
-            let taskbar = (SHAppBarMessage(ABM_GETTASKBARPOS, &mut bar) != 0).then(|| Taskbar {
+    fn taskbar(&self) -> Option<Taskbar> {
+        let mut bar = APPBARDATA {
+            cbSize: size_of::<APPBARDATA>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: valid, initialized APPBARDATA.
+        unsafe {
+            (SHAppBarMessage(ABM_GETTASKBARPOS, &mut bar) != 0).then(|| Taskbar {
                 rect: rect(bar.rc),
                 edge: bar.uEdge,
                 auto_hide: SHAppBarMessage(ABM_GETSTATE, &mut bar) & ABS_AUTOHIDE as usize != 0,
-            });
-
-            Ok(Display {
-                monitor: rect(info.rcMonitor),
-                work_area: rect(info.rcWork),
-                scale: f64::from(dpi_x) / 96.0,
-                taskbar,
             })
+        }
+    }
+
+    fn strip_rect(&self) -> Option<Rect> {
+        let mut r = RECT::default();
+        // SAFETY: valid window handle owned by this process; valid out-param.
+        unsafe { GetWindowRect(self.hwnd(), &mut r) }.ok()?;
+        Some(rect(r))
+    }
+
+    fn watch_displays(&self, changed: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        // SAFETY: constant NUL-terminated name.
+        TASKBAR_CREATED.get_or_init(|| unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) });
+        // Leaked on purpose: the strip lives as long as the app.
+        let flag = std::sync::Arc::into_raw(changed) as usize;
+        // SAFETY: called on the strip's own (main) thread, as
+        // SetWindowSubclass requires; `flag` stays valid forever.
+        if !unsafe { SetWindowSubclass(self.hwnd(), Some(watch), 1, flag) }.as_bool() {
+            tracing::warn!("display changes not watched; polling only");
         }
     }
 
@@ -532,6 +622,36 @@ mod tests {
         p.set_launch_at_sign_in(false).unwrap();
         assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
         p.set_launch_at_sign_in(false).unwrap();
+
+        let reg = |args: &[&str]| {
+            let ok = std::process::Command::new("reg.exe")
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "{args:?}");
+        };
+        let (hk_run, hk_approved) = (format!(r"HKCU\{run}"), format!(r"HKCU\{approved}"));
+        // Disabled in Task Manager (03 00 00 00 + time): enabling clears it.
+        let disabled = ["add", &hk_approved, "/v", "Knock", "/t", "REG_BINARY"];
+        reg(&[&disabled[..], &["/d", "030000000000000000000000", "/f"]].concat());
+        p.set_launch_at_sign_in(true).unwrap();
+        assert!(reg_knock(run).unwrap().contains(&want));
+        assert_eq!(reg_knock(approved), None, "Task Manager shows it enabled");
+        // A value under the same name that isn't Knock's own survives off.
+        let other = r#""C:\Other\Knock.exe""#;
+        reg(&[
+            "add", &hk_run, "/v", "Knock", "/t", "REG_SZ", "/d", other, "/f",
+        ]);
+        reg(&[&disabled[..], &["/d", "030000000000000000000000", "/f"]].concat());
+        p.set_launch_at_sign_in(false).unwrap();
+        let kept = (reg_knock(run), reg_knock(approved));
+        reg(&["delete", &hk_run, "/v", "Knock", "/f"]);
+        reg(&["delete", &hk_approved, "/v", "Knock", "/f"]);
+        assert!(kept.0.unwrap().contains(other));
+        assert!(kept.1.is_some());
+        assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
     }
 
     // Real OS calls (V-7 mechanics): this test process owns the client end of

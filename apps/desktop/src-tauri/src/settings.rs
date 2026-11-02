@@ -221,6 +221,10 @@ pub fn merged(current: &Settings, patch: &Value) -> Result<Settings, String> {
     if !patch.is_object() {
         return Err("settings change must be an object".into());
     }
+    // `null` is only the never-asked value setup starts from (§8.6).
+    if patch.get("launchAtSignIn").is_some_and(Value::is_null) {
+        return Err("Start when you sign in must be on or off.".into());
+    }
     let mut v = serde_json::to_value(current).map_err(|e| e.to_string())?;
     merge(&mut v, patch);
     let s: Settings = serde_json::from_value(v).map_err(|e| e.to_string())?;
@@ -382,12 +386,21 @@ mod tests {
 
         let s = merged(&d, &json!({ "launchAtSignIn": true })).unwrap();
         assert_eq!(s.launch_at_sign_in, Some(true));
+        // `null` is the never-asked start value only; a patch can't set it.
+        for from in [&s, &d] {
+            assert_eq!(
+                merged(from, &json!({ "launchAtSignIn": null })),
+                Err("Start when you sign in must be on or off.".into())
+            );
+        }
         assert_eq!(
-            merged(&s, &json!({ "launchAtSignIn": null }))
+            merged(&s, &json!({ "launchAtSignIn": false }))
                 .unwrap()
                 .launch_at_sign_in,
-            None
+            Some(false)
         );
+        // The file may still hold `null` (first run): it loads.
+        assert_eq!(parse(SPEC.as_bytes()).unwrap().launch_at_sign_in, None);
 
         let key = "0123456789abcdef";
         let s = merged(&d, &json!({ "animalOverrides": { key: "fox" } })).unwrap();

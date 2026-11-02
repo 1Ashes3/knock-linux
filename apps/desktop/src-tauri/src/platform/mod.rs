@@ -6,8 +6,10 @@ mod windows;
 pub use self::windows::{WindowsPlatform, fill_random, link_count, local_minute};
 use crate::jump::{ProcessId, Target};
 use crate::strip::Rect;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Taskbar {
     pub rect: Rect,
     /// Screen edge: 0 left, 1 top, 2 right, 3 bottom.
@@ -36,17 +38,28 @@ pub fn monitor_id(device_path: &str) -> String {
     knock_core::project_key(device_path)
 }
 
-#[derive(Clone, Copy)]
+/// One display's geometry, for placing the strip (§9.2).
+#[derive(Clone, Debug, PartialEq)]
 pub struct Display {
+    /// The same id as [`Monitor::id`]: the §8.6 `monitor` value.
+    pub id: String,
+    pub primary: bool,
     pub monitor: Rect,
     pub work_area: Rect,
     pub scale: f64,
-    pub taskbar: Option<Taskbar>,
 }
 
 pub trait Platform: Send + Sync {
-    /// The primary monitor's geometry.
-    fn primary_display(&self) -> std::io::Result<Display>;
+    /// Every connected display's geometry, the primary one first.
+    fn displays(&self) -> Vec<Display>;
+    /// The primary taskbar as the shell reports it (ABM_GETTASKBARPOS: its
+    /// shown position, even while auto-hidden; ADR 0002).
+    fn taskbar(&self) -> Option<Taskbar>;
+    /// Where the strip is now, in physical screen pixels.
+    fn strip_rect(&self) -> Option<Rect>;
+    /// Sets `changed` whenever the strip's window hears of a display, DPI,
+    /// work-area or taskbar change (FR-15). Call once, on the main thread.
+    fn watch_displays(&self, changed: Arc<AtomicBool>);
     /// Applies the strip's window styles (§9.1), click-through on, and moves
     /// it topmost to `rect` without activating it.
     fn place_strip(&self, rect: Rect) -> std::io::Result<()>;
@@ -73,7 +86,8 @@ pub trait Platform: Send + Sync {
     /// Every connected display, the primary one first.
     fn monitors(&self) -> Vec<Monitor>;
     /// §9.7: adds or removes Knock's launch-at-sign-in entry, the per-user
-    /// `HKCU\...\Run\Knock` value only (per-user install; never HKLM).
+    /// `HKCU\...\Run\Knock` value only (per-user install; never HKLM), as
+    /// [`sign_in_ops`] says.
     fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()>;
 }
 
@@ -83,6 +97,32 @@ pub fn run_value(exe: &std::path::Path) -> String {
     format!("\"{}\"", exe.display())
 }
 
+/// One change to the sign-in entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunOp {
+    /// Write `Run\Knock` with Knock's own value.
+    Write,
+    /// Delete `Run\Knock`.
+    Delete,
+    /// Delete `StartupApproved\Run\Knock`, so Task Manager doesn't keep
+    /// showing Knock as disabled. No value there means enabled.
+    ClearApproved,
+}
+
+/// What turning sign-in `on` or off does, given the current `Run\Knock`
+/// data and Knock's `own` value ([`run_value`]). On: always overwrite (the
+/// user asked) and clear a "disabled" mark. Off: delete only Knock's own
+/// value; a value someone else wrote under the same name stays.
+pub fn sign_in_ops(on: bool, current: Option<&str>, own: &str) -> &'static [RunOp] {
+    match on {
+        true => &[RunOp::Write, RunOp::ClearApproved],
+        false if current.is_some_and(|c| c.eq_ignore_ascii_case(own)) => {
+            &[RunOp::Delete, RunOp::ClearApproved]
+        }
+        false => &[],
+    }
+}
+
 /// Whether to change the real sign-in entry. A debug build does only with
 /// `KNOCK_AUTOSTART_TEST=1`, so a development run never leaves one behind.
 pub fn sign_in_allowed(debug: bool, test_var: Option<&std::ffi::OsStr>) -> bool {
@@ -90,8 +130,9 @@ pub fn sign_in_allowed(debug: bool, test_var: Option<&std::ffi::OsStr>) -> bool 
 }
 
 /// A recording stand-in for tests: every lookup returns `owner` (or the
-/// client port as the PID), every walk finds a Windows Terminal window, and
-/// the processes in `alive` are running.
+/// client port as the PID), every walk finds a Windows Terminal window, the
+/// processes in `alive` are running, and the sign-in entry lives in `run`
+/// and `approved` instead of the registry.
 #[cfg(test)]
 #[derive(Default)]
 pub struct FakePlatform {
@@ -104,13 +145,27 @@ pub struct FakePlatform {
     pub sign_in: std::sync::Mutex<Vec<bool>>,
     /// `set_launch_at_sign_in` fails while set.
     pub sign_in_fails: std::sync::Mutex<bool>,
+    /// The fake `Run\Knock` and `StartupApproved\Run\Knock` values.
+    pub run: std::sync::Mutex<Option<String>>,
+    pub approved: std::sync::Mutex<Option<Vec<u8>>>,
 }
+
+/// The fake's own `Run\Knock` value.
+#[cfg(test)]
+pub const FAKE_EXE: &str = r#""C:\Users\A B\AppData\Local\Knock\Knock.exe""#;
 
 #[cfg(test)]
 impl Platform for FakePlatform {
-    fn primary_display(&self) -> std::io::Result<Display> {
-        unimplemented!()
+    fn displays(&self) -> Vec<Display> {
+        Vec::new()
     }
+    fn taskbar(&self) -> Option<Taskbar> {
+        None
+    }
+    fn strip_rect(&self) -> Option<Rect> {
+        None
+    }
+    fn watch_displays(&self, _: Arc<AtomicBool>) {}
     fn place_strip(&self, _: Rect) -> std::io::Result<()> {
         unimplemented!()
     }
@@ -146,10 +201,18 @@ impl Platform for FakePlatform {
     }
     fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()> {
         self.sign_in.lock().unwrap().push(on);
-        match *self.sign_in_fails.lock().unwrap() {
-            true => Err(std::io::Error::other("refused")),
-            false => Ok(()),
+        if *self.sign_in_fails.lock().unwrap() {
+            return Err(std::io::Error::other("refused"));
         }
+        let mut run = self.run.lock().unwrap();
+        for op in sign_in_ops(on, run.as_deref(), FAKE_EXE) {
+            match op {
+                RunOp::Write => *run = Some(FAKE_EXE.into()),
+                RunOp::Delete => *run = None,
+                RunOp::ClearApproved => *self.approved.lock().unwrap() = None,
+            }
+        }
+        Ok(())
     }
 }
 
@@ -160,16 +223,61 @@ mod tests {
     #[test]
     fn the_run_value_is_the_quoted_exe_path() {
         let exe = std::path::Path::new(r"C:\Users\A B\AppData\Local\Knock\Knock.exe");
-        assert_eq!(
-            run_value(exe),
-            r#""C:\Users\A B\AppData\Local\Knock\Knock.exe""#
-        );
+        assert_eq!(run_value(exe), FAKE_EXE);
         // Through the trait, a fake records the call and touches nothing.
         let fake = FakePlatform::default();
         let p: &dyn Platform = &fake;
         p.set_launch_at_sign_in(true).unwrap();
         p.set_launch_at_sign_in(false).unwrap();
         assert_eq!(*fake.sign_in.lock().unwrap(), [true, false]);
+    }
+
+    /// StartupApproved's value after the user disabled Knock in Task
+    /// Manager: 03 00 00 00, then a FILETIME.
+    const DISABLED: [u8; 12] = [3, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8];
+
+    #[test]
+    fn enabling_overwrites_any_value_and_clears_a_disabled_mark() {
+        let fake = FakePlatform::default();
+        *fake.run.lock().unwrap() = Some(r#""C:\Other\Knock.exe" --x"#.into());
+        *fake.approved.lock().unwrap() = Some(DISABLED.to_vec());
+        fake.set_launch_at_sign_in(true).unwrap();
+        assert_eq!(fake.run.lock().unwrap().as_deref(), Some(FAKE_EXE));
+        assert_eq!(
+            *fake.approved.lock().unwrap(),
+            None,
+            "Task Manager: enabled"
+        );
+        // Already ours and enabled: the same result.
+        fake.set_launch_at_sign_in(true).unwrap();
+        assert_eq!(fake.run.lock().unwrap().as_deref(), Some(FAKE_EXE));
+        assert_eq!(*fake.approved.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn disabling_deletes_only_knocks_own_value() {
+        let fake = FakePlatform::default();
+        let other = r#""C:\Other\Knock.exe""#;
+        *fake.run.lock().unwrap() = Some(other.into());
+        *fake.approved.lock().unwrap() = Some(DISABLED.to_vec());
+        fake.set_launch_at_sign_in(false).unwrap();
+        assert_eq!(fake.run.lock().unwrap().as_deref(), Some(other), "not ours");
+        assert_eq!(
+            fake.approved.lock().unwrap().as_deref(),
+            Some(&DISABLED[..])
+        );
+        // Ours, in any letter case: both values go.
+        *fake.run.lock().unwrap() = Some(FAKE_EXE.to_uppercase());
+        fake.set_launch_at_sign_in(false).unwrap();
+        assert_eq!(*fake.run.lock().unwrap(), None);
+        assert_eq!(*fake.approved.lock().unwrap(), None);
+        // Nothing there: nothing to do.
+        fake.set_launch_at_sign_in(false).unwrap();
+        assert_eq!(*fake.run.lock().unwrap(), None);
+        assert_eq!(sign_in_ops(false, None, FAKE_EXE), []);
+        // The path without its quotes is not Knock's value.
+        let bare = FAKE_EXE.trim_matches('"');
+        assert_eq!(sign_in_ops(false, Some(bare), FAKE_EXE), []);
     }
 
     #[test]

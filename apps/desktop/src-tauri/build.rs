@@ -16,6 +16,7 @@ const COMMANDS: &[&str] = &[
     "setup_remove_hooks",
     "run_health_check",
     "play_test_knock",
+    "repair_server",
 ];
 
 fn main() {

@@ -18,6 +18,7 @@ use knock_core::HookSpec;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Number, Value, json};
+use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -49,6 +50,9 @@ pub enum Problem {
     NothingToRemove,
     /// The file has another hard link.
     Linked,
+    /// Debug build: the file is the user's real Claude Code settings file,
+    /// maybe through a link (ADR 0024).
+    RealFile,
 }
 
 impl Problem {
@@ -58,7 +62,7 @@ impl Problem {
                 "This is a development build of Knock, so it never changes your real Claude Code settings. Set KNOCK_CLAUDE_SETTINGS to a test file to try setup."
             }
             Self::NoServer => {
-                "Knock's local connection isn't running, so Claude Code can't reach it yet. Please restart Knock, then try again."
+                "Knock isn't listening for Claude Code right now, so it can't connect them yet. Choose Repair first, then try again."
             }
             Self::Unreadable => {
                 "Knock couldn't open your Claude Code settings file, so it didn't change anything. Please try again."
@@ -82,6 +86,9 @@ impl Problem {
             }
             Self::Linked => {
                 "Knock can't safely edit this settings file because it's linked from another place."
+            }
+            Self::RealFile => {
+                "This is a development build of Knock, so it never changes your real Claude Code settings, even through a link. Point KNOCK_CLAUDE_SETTINGS at a test file."
             }
         }
     }
@@ -513,20 +520,30 @@ fn commit(
 /// The file setup reads and writes for `path`: its final target if it or a
 /// folder above it is a link, else `path` itself (also when there is no
 /// file yet). A link to nothing is unreadable, so it is never replaced by a
-/// file; a file with another hard link is [`Problem::Linked`].
-pub fn target(path: &Path) -> Result<PathBuf, Problem> {
+/// file; a file with another hard link is [`Problem::Linked`]. A target
+/// that is one of the `guard` files is [`Problem::RealFile`], decided
+/// before the target is opened (ADR 0024).
+pub fn target(path: &Path, guard: &[PathBuf]) -> Result<PathBuf, Problem> {
     let unreadable = |e: io::Error| {
         tracing::warn!(kind = ?e.kind(), "claude settings unreadable");
         Problem::Unreadable
     };
     let t = match std::fs::canonicalize(path) {
-        Ok(t) => t,
+        Ok(t) => Some(t),
         Err(e)
             if e.kind() == io::ErrorKind::NotFound && std::fs::symlink_metadata(path).is_err() =>
         {
-            return Ok(path.to_owned());
+            None
         }
         Err(e) => return Err(unreadable(e)),
+    };
+    let named = resolved(t.as_deref().unwrap_or(path));
+    if guard.iter().any(|g| resolved(g) == named) {
+        tracing::info!("debug build: the real claude settings file; not edited");
+        return Err(Problem::RealFile);
+    }
+    let Some(t) = t else {
+        return Ok(path.to_owned());
     };
     let f = std::fs::File::open(&t).map_err(unreadable)?;
     match crate::platform::link_count(&f).map_err(unreadable)? {
@@ -536,6 +553,18 @@ pub fn target(path: &Path) -> Result<PathBuf, Problem> {
             Err(Problem::Linked)
         }
     }
+}
+
+/// `path` through every link, for comparing: canonical if it exists, else
+/// its folder canonical plus its name, else as given; without the `\\?\`
+/// prefix, lower-cased (Windows paths ignore case). Resolving opens no file
+/// for reading.
+fn resolved(path: &Path) -> String {
+    let canon = std::fs::canonicalize(path).ok().or_else(|| {
+        let dir = std::fs::canonicalize(path.parent()?).ok()?;
+        Some(dir.join(path.file_name()?))
+    });
+    shown(canon.as_deref().unwrap_or(path)).to_lowercase()
 }
 
 /// `path` as the user knows it: without the `\\?\` prefix `canonicalize` adds.
@@ -560,8 +589,11 @@ pub struct Setup {
     /// `None` in a debug build without `KNOCK_CLAUDE_SETTINGS`.
     pub path: Option<PathBuf>,
     pub backups: PathBuf,
-    /// The running server's port and token.
-    pub server: Option<(u16, String)>,
+    /// Debug builds: the real Claude Code settings files, never edited even
+    /// through a link (ADR 0024). Empty in release builds and tests.
+    pub guard: Vec<PathBuf>,
+    /// The running server's port and token; changed by Repair (ADR 0023).
+    server: Mutex<Option<(u16, String)>>,
     previewed: Mutex<Option<Previewed>>,
 }
 
@@ -569,6 +601,19 @@ pub struct Preview {
     pub path: String,
     pub before: String,
     pub after: String,
+}
+
+/// What the settings file holds of Knock's (FR-12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hooks {
+    /// Exactly the current hooks: this port and token.
+    Installed,
+    /// Knock's entries with another port or token: Claude Code still points
+    /// at an old connection, for example after a Repair the user didn't
+    /// confirm the Connect step for.
+    Stale,
+    /// No Knock entry, or some missing.
+    Missing,
 }
 
 impl Setup {
@@ -582,7 +627,8 @@ impl Setup {
             spec,
             path,
             backups,
-            server,
+            guard: Vec::new(),
+            server: Mutex::new(server),
             previewed: Mutex::new(None),
         }
     }
@@ -592,12 +638,25 @@ impl Setup {
     }
 
     fn path(&self) -> Result<PathBuf, Problem> {
-        target(self.path.as_deref().ok_or(Problem::NoPath)?)
+        target(self.path.as_deref().ok_or(Problem::NoPath)?, &self.guard)
     }
 
-    fn server(&self) -> Result<(u16, &str), Problem> {
-        let (port, token) = self.server.as_ref().ok_or(Problem::NoServer)?;
-        Ok((*port, token))
+    /// The running server's port and token, if it runs.
+    pub fn server(&self) -> Option<(u16, String)> {
+        self.server
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// After Repair: the new port (ADR 0023). A preview made before it no
+    /// longer matches, so apply asks for a new one.
+    pub fn set_server(&self, server: Option<(u16, String)>) {
+        *self.server.lock().unwrap_or_else(|e| e.into_inner()) = server;
+    }
+
+    fn running(&self) -> Result<(u16, String), Problem> {
+        self.server().ok_or(Problem::NoServer)
     }
 
     /// The whole file before and after, token masked; remembered so apply
@@ -606,9 +665,9 @@ impl Setup {
         let mut last = self.lock();
         *last = None;
         let path = self.path()?;
-        let (port, token) = self.server()?;
+        let (port, token) = self.running()?;
         let raw = read(&path)?;
-        let plan = plan_install(raw.as_deref(), &self.spec, port, token)?;
+        let plan = plan_install(raw.as_deref(), &self.spec, port, &token)?;
         let (before, after) = plan.masked();
         *last = Some(Previewed {
             raw,
@@ -627,13 +686,13 @@ impl Setup {
     pub fn apply(&self, now_ms: u64) -> Result<String, Problem> {
         let mut last = self.lock();
         let path = self.path()?;
-        let (port, token) = self.server()?;
+        let (port, token) = self.running()?;
         let shown = last.take().ok_or(Problem::NoPreview)?;
         let raw = read(&path)?;
         if raw != shown.raw {
             return Err(Problem::Stale);
         }
-        let plan = plan_install(raw.as_deref(), &self.spec, port, token)?;
+        let plan = plan_install(raw.as_deref(), &self.spec, port, &token)?;
         if plan.after != shown.after {
             return Err(Problem::Stale);
         }
@@ -658,30 +717,59 @@ impl Setup {
         Ok(saved)
     }
 
-    /// Whether the file holds exactly the current hooks. A file setup
-    /// couldn't change gives the same problem setup would.
-    pub fn installed(&self) -> Result<bool, Problem> {
+    /// Whether the file holds exactly the current hooks (this port and
+    /// token), Knock's entries for another connection, or neither. A file
+    /// setup couldn't change gives the same problem setup would.
+    pub fn status(&self) -> Result<Hooks, Problem> {
         let _last = self.lock();
-        let (port, token) = self.server()?;
+        let (port, token) = self.running()?;
         let v = parse(read(&self.path()?)?.as_deref())?;
-        install(&mut v.clone(), &self.spec, port, token)?;
-        Ok(installed(&v, &self.spec, port, token))
+        install(&mut v.clone(), &self.spec, port, &token)?;
+        if installed(&v, &self.spec, port, &token) {
+            return Ok(Hooks::Installed);
+        }
+        let current = serde_json::to_value(handler(&self.spec, port, &token)).ok();
+        let old = handlers(&v)
+            .filter(|h| is_knock(h, &self.spec))
+            .any(|h| serde_json::to_value(h).ok() != current);
+        Ok(if old { Hooks::Stale } else { Hooks::Missing })
+    }
+
+    /// [`Setup::status`] is [`Hooks::Installed`].
+    pub fn installed(&self) -> Result<bool, Problem> {
+        self.status().map(|s| s == Hooks::Installed)
     }
 }
 
-/// The settings file Knock edits (§8.2): `%USERPROFILE%\.claude\settings.json`,
-/// the folder Claude Code itself uses.
-#[cfg(not(debug_assertions))]
-pub fn claude_settings() -> Option<PathBuf> {
-    let home = std::env::var_os("USERPROFILE")?;
-    Some(PathBuf::from(home).join(".claude").join("settings.json"))
+/// The Claude Code settings files for `env`, the one Claude Code reads
+/// first (§8.2, ADR 0022): `<CLAUDE_CONFIG_DIR>\settings.json` if that
+/// variable is non-empty, then `%USERPROFILE%\.claude\settings.json`.
+fn claude_files(env: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    let config = env("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty());
+    let home = env("USERPROFILE").map(|h| PathBuf::from(h).join(".claude"));
+    (config.map(PathBuf::from).into_iter())
+        .chain(home)
+        .map(|d| d.join("settings.json"))
+        .collect()
 }
 
-/// Debug builds use only the file `KNOCK_CLAUDE_SETTINGS` names, so a
-/// development run can never touch the real settings file.
-#[cfg(debug_assertions)]
+/// The settings file Knock edits. Release builds: the one Claude Code
+/// reads (ADR 0022). Debug builds: only the file `KNOCK_CLAUDE_SETTINGS`
+/// names, so a development run can never touch the real settings file.
 pub fn claude_settings() -> Option<PathBuf> {
-    std::env::var_os("KNOCK_CLAUDE_SETTINGS").map(PathBuf::from)
+    let env = |k: &str| std::env::var_os(k);
+    match cfg!(debug_assertions) {
+        true => env("KNOCK_CLAUDE_SETTINGS").map(PathBuf::from),
+        false => claude_files(env).into_iter().next(),
+    }
+}
+
+/// [`Setup::guard`]: in a debug build, both real settings files.
+pub fn guarded() -> Vec<PathBuf> {
+    match cfg!(debug_assertions) {
+        true => claude_files(|k| std::env::var_os(k)),
+        false => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -1328,7 +1416,10 @@ mod tests {
         s.preview().unwrap();
         s.apply(T).unwrap();
         // A file that doesn't exist yet is written where it is named.
-        assert_eq!(target(&d.0.join("none.json")), Ok(d.0.join("none.json")));
+        assert_eq!(
+            target(&d.0.join("none.json"), &[]),
+            Ok(d.0.join("none.json"))
+        );
     }
 
     #[test]
@@ -1510,6 +1601,124 @@ mod tests {
     }
 
     #[test]
+    fn entries_for_an_old_port_or_token_are_stale_not_installed() {
+        let d = Dir::new();
+        d.write(REAL.as_bytes());
+        let s = d.setup();
+        // REAL has Knock entries for port 49999 with an old token.
+        assert_eq!(s.status(), Ok(Hooks::Stale));
+        s.preview().unwrap();
+        s.apply(T).unwrap();
+        assert_eq!(
+            (s.status(), s.installed()),
+            (Ok(Hooks::Installed), Ok(true))
+        );
+        // Repair moved the server; the user stopped before Confirm.
+        s.set_server(Some((PORT + 1, TOKEN.into())));
+        assert_eq!((s.status(), s.installed()), (Ok(Hooks::Stale), Ok(false)));
+        s.set_server(Some((PORT, "B".repeat(43))));
+        assert_eq!(s.status(), Ok(Hooks::Stale), "another token");
+        // A preview from before the repair can't be applied after it.
+        s.set_server(Some((PORT, TOKEN.into())));
+        s.preview().unwrap();
+        s.set_server(Some((PORT + 1, TOKEN.into())));
+        assert_eq!(s.apply(T + 1), Err(Problem::Stale));
+        // Setup again: installed for the new port.
+        s.preview().unwrap();
+        s.apply(T + 2).unwrap();
+        assert_eq!(s.status(), Ok(Hooks::Installed));
+        // No Knock entry at all is missing, not stale.
+        s.remove(T + 3).unwrap();
+        assert_eq!(s.status(), Ok(Hooks::Missing));
+        let e = Dir::new();
+        assert_eq!(e.setup().status(), Ok(Hooks::Missing), "no file");
+    }
+
+    #[test]
+    fn the_settings_file_follows_claude_config_dir_when_it_is_set() {
+        fn env<'a>(vars: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+            move |k| {
+                (vars.iter())
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| OsString::from(v))
+            }
+        }
+        let home = [("USERPROFILE", r"C:\Users\A")];
+        assert_eq!(
+            claude_files(env(&home)),
+            [PathBuf::from(r"C:\Users\A\.claude\settings.json")]
+        );
+        let both = [
+            ("USERPROFILE", r"C:\Users\A"),
+            ("CLAUDE_CONFIG_DIR", r"D:\cfg\claude"),
+        ];
+        assert_eq!(
+            claude_files(env(&both)),
+            [
+                PathBuf::from(r"D:\cfg\claude\settings.json"),
+                PathBuf::from(r"C:\Users\A\.claude\settings.json"),
+            ],
+            "Claude Code's own first; both are guarded"
+        );
+        let empty = [("USERPROFILE", r"C:\Users\A"), ("CLAUDE_CONFIG_DIR", "")];
+        assert_eq!(claude_files(env(&empty)), claude_files(env(&home)));
+        let only = [("CLAUDE_CONFIG_DIR", r"D:\cfg")];
+        assert_eq!(
+            claude_files(env(&only)),
+            [PathBuf::from(r"D:\cfg\settings.json")]
+        );
+        assert!(claude_files(env(&[])).is_empty());
+    }
+
+    #[test]
+    fn a_debug_guard_refuses_the_real_file_even_through_a_link() {
+        let d = Dir::new();
+        // A stand-in for the real file; its content must stay unread and unchanged.
+        let real = d.0.join("Fake Home").join(".claude").join("settings.json");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, REAL).unwrap();
+        let guarded = |path: PathBuf| {
+            let mut s = Setup::new(
+                spec(),
+                Some(path),
+                d.0.join("backups"),
+                Some((PORT, TOKEN.into())),
+            );
+            s.guard = vec![real.clone()];
+            s
+        };
+        let refused = |s: &Setup| {
+            assert_eq!(s.preview().err(), Some(Problem::RealFile));
+            assert_eq!(s.apply(T), Err(Problem::RealFile));
+            assert_eq!(s.remove(T), Err(Problem::RealFile));
+            assert_eq!(s.installed(), Err(Problem::RealFile));
+        };
+        // The same path, and the same path in other letter case.
+        refused(&guarded(real.clone()));
+        let upper = PathBuf::from(real.display().to_string().to_uppercase());
+        refused(&guarded(upper));
+        // Through a symbolic link (needs Developer Mode or admin rights).
+        let link = d.0.join("scratch-settings.json");
+        match std::os::windows::fs::symlink_file(&real, &link) {
+            Ok(()) => refused(&guarded(link)),
+            Err(e) => eprintln!("link case skipped: can't create a symlink ({:?})", e.kind()),
+        }
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), REAL);
+        assert!(d.backups().is_empty());
+        // A real file that doesn't exist yet is guarded by name too.
+        let absent = d.0.join("Other Home").join(".claude").join("settings.json");
+        let mut s = guarded(absent.clone());
+        s.guard = vec![absent.clone()];
+        refused(&s);
+        assert!(!absent.exists());
+        // Any other file is fine.
+        let s = guarded(d.file());
+        s.preview().unwrap();
+        s.apply(T).unwrap();
+        assert_eq!(s.status(), Ok(Hooks::Installed));
+    }
+
+    #[test]
     fn messages_hold_no_paths_or_tokens() {
         use Problem::*;
         for p in [
@@ -1524,6 +1733,7 @@ mod tests {
             Write,
             NothingToRemove,
             Linked,
+            RealFile,
         ] {
             let m = p.message();
             assert!(

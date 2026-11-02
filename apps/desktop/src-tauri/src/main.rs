@@ -18,17 +18,36 @@ use pipeline::{Msg, Out, SessionsChanged, Shared};
 use platform::{Monitor, Platform, WindowsPlatform};
 use serde_json::{Value, json};
 use settings::Settings;
+use std::net::TcpListener;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use strip::{Region, Strip};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_notification::NotificationExt;
 
-/// Width of the strip, in slots, until the UI asks for a size.
-const SLOTS: f64 = 3.0;
 /// About 30 cursor reads a second (§9.3).
 const POLL: Duration = Duration::from_millis(33);
+/// FR-15: the strip is re-placed this often even if no change was heard.
+const FALLBACK: Duration = Duration::from_secs(5);
+/// After a change was heard, placed again this much later, in case the
+/// shell was still settling (the taskbar sliding, a display waking).
+const RECHECK: Duration = Duration::from_millis(500);
+
+/// `setup_status.serverError` texts (ADR 0023).
+const CANT_START: &str = "Knock couldn't start listening for Claude Code. Another program may be using its connection. Choose Repair to give Knock a new one.";
+const STOPPED: &str = "Knock stopped listening for Claude Code. Choose Repair to start it again.";
+
+/// The local server: why it isn't running, and how to stop it.
+#[derive(Default)]
+struct Listening {
+    /// Plain text while the server isn't running (ADR 0023).
+    error: Option<&'static str>,
+    /// Dropping it stops the running server (Repair replaces it).
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+}
 
 /// What the commands share. Reads come from [`Shared`]; changes go to the
 /// pipeline's owner as messages, so no command waits on a lock it holds.
@@ -37,16 +56,22 @@ struct Knock {
     shared: Shared,
     platform: Arc<dyn Platform>,
     strip: Arc<Mutex<Strip>>,
+    /// Set to have the strip placed again at once (FR-15).
+    moved: Arc<AtomicBool>,
     /// Claude Code hook setup (§8.2).
     hooks: hooks::Setup,
+    server: Arc<Mutex<Listening>>,
+    /// One Repair at a time.
+    repairing: Mutex<()>,
+    /// `%APPDATA%\Knock`.
+    dir: PathBuf,
     /// No Knock `settings.json` existed when the app started.
     first_run: bool,
 }
 
-impl Knock {
-    fn strip(&self) -> std::sync::MutexGuard<'_, Strip> {
-        self.strip.lock().unwrap_or_else(|e| e.into_inner())
-    }
+/// Locks, ignoring poisoning: every value here stays usable.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// §8.5: the current `{ rev, sessions }`, as in `sessions-changed`.
@@ -106,30 +131,47 @@ fn dismiss(id: String, k: tauri::State<'_, Knock>) {
 /// click-through.
 #[tauri::command]
 fn set_hit_regions(regions: Vec<Region>, k: tauri::State<'_, Knock>) {
-    k.strip().regions = regions;
+    lock(&k.strip).regions = regions;
 }
 
-/// §8.5, §9.2: resizes the strip, keeping its bottom-right corner, at most 6
-/// slots wide. Width 0 (no sessions) leaves a zero-width strip. Never
-/// activates it (§9.1). Primary monitor only, for now.
+/// §8.5, §9.2: the size the UI needs, in logical px. The strip keeps its
+/// bottom-right corner and is at most 6 slots wide; width 0 (no sessions)
+/// leaves a zero-width strip. The placement thread moves it within one
+/// poll tick, on the chosen display, never activating it (§9.1).
 #[tauri::command]
 fn request_strip_size(width: f64, height: f64, k: tauri::State<'_, Knock>) -> Result<(), String> {
-    let slot = pipeline::read(&k.shared).settings.size.height();
-    let d = k.platform.primary_display().map_err(|e| {
-        tracing::warn!(kind = ?e.kind(), "display not found");
-        "Knock couldn't find the display.".to_string()
-    })?;
-    let max_height = f64::from(d.work_area.bottom - d.work_area.top) / d.scale;
-    let (w, h) = strip::clamp(width, height, slot, max_height)
-        .ok_or("width and height must be numbers of 0 or more")?;
-    let rect = strip::place(d.work_area, d.scale, w, h);
-    k.platform.place_strip(rect).map_err(|e| {
-        tracing::warn!(kind = ?e.kind(), "strip not placed");
-        "Knock couldn't place the strip.".to_string()
-    })?;
-    let mut s = k.strip();
-    (s.rect, s.scale) = (rect, d.scale);
+    strip::clamp(width, height, 1.0, 1.0).ok_or("width and height must be numbers of 0 or more")?;
+    lock(&k.strip).want = Some((width, height));
+    k.moved.store(true, Ordering::Relaxed);
     Ok(())
+}
+
+/// §9.2, FR-15: puts the strip where [`strip::layout`] says for the current
+/// settings and displays, if it isn't there already. Holds no lock while
+/// moving the window, so a command on the main thread can't deadlock it.
+fn reposition(p: &dyn Platform, strip: &Mutex<Strip>, shared: &Shared) {
+    let (monitor, slot) = {
+        let s = &pipeline::read(shared).settings;
+        (s.monitor.clone(), s.size.height())
+    };
+    let want = lock(strip).want;
+    let Some(l) = strip::layout(&monitor, &p.displays(), p.taskbar(), want, slot) else {
+        tracing::warn!("no display found; strip not placed");
+        return;
+    };
+    let was = std::mem::replace(&mut lock(strip).fell_back, l.fell_back);
+    if l.fell_back && !was {
+        tracing::warn!("chosen monitor not connected; strip on the primary");
+    }
+    if p.strip_rect() != Some(l.rect) {
+        if let Err(e) = p.place_strip(l.rect) {
+            tracing::warn!(kind = ?e.kind(), "strip not placed");
+            return;
+        }
+        tracing::info!(rect = ?l.rect, scale = l.scale, "strip placed");
+    }
+    let mut s = lock(strip);
+    (s.rect, s.scale) = (l.rect, l.scale);
 }
 
 /// §8.6.
@@ -170,7 +212,10 @@ fn reply<T>(r: Result<T, hooks::Problem>, ok: impl FnOnce(T) -> Value) -> Value 
 
 /// The real server check (FR-12), off the async workers: it blocks up to 1 s.
 async fn server_ok(k: &Knock) -> bool {
-    let Some((port, token)) = k.hooks.server.clone() else {
+    if lock(&k.server).error.is_some() {
+        return false;
+    }
+    let Some((port, token)) = k.hooks.server() else {
         return false;
     };
     let probe = move || server::probe(port, &token);
@@ -179,15 +224,78 @@ async fn server_ok(k: &Knock) -> bool {
         .unwrap_or(false)
 }
 
-/// §8.5, §10.4.
+/// §8.5, §10.4. `hooksInstalled` only for the current port and token.
 #[tauri::command]
 async fn setup_status(k: tauri::State<'_, Knock>) -> Result<Value, String> {
     Ok(json!({
         "firstRun": k.first_run,
         "hooksInstalled": k.hooks.installed().unwrap_or(false),
         "serverOk": server_ok(&k).await,
+        "serverError": lock(&k.server).error,
         "monitorCount": k.platform.monitors().len(),
     }))
+}
+
+/// §8.1, ADR 0023: a new free port, the same token, `server.json` saved,
+/// the server started there (and the old one, if any, stopped). Claude
+/// Code's hooks still name the old port, so the UI runs Connect next.
+#[tauri::command]
+async fn repair_server(app: AppHandle, k: tauri::State<'_, Knock>) -> Result<Value, String> {
+    let _one = lock(&k.repairing);
+    let r = server::relisten(&k.dir).and_then(|bound| start_server(&app, &k, bound));
+    Ok(match r {
+        Ok(()) => {
+            tracing::info!("server repaired");
+            json!({ "ok": true })
+        }
+        Err(e) => {
+            tracing::warn!(kind = ?e.kind(), "server not repaired");
+            json!({
+                "ok": false,
+                "message": "Knock couldn't find a free connection to listen on. Please restart your computer, then try Repair again.",
+            })
+        }
+    })
+}
+
+/// Serves on `bound`, replacing (and so stopping) any running server, and
+/// tells hook setup the port and token. Clears the server error.
+fn start_server(
+    app: &AppHandle,
+    k: &Knock,
+    (cfg, listener): (server::ServerConfig, TcpListener),
+) -> std::io::Result<()> {
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let h = app.clone();
+    let failed = move || {
+        if let Some(k) = h.try_state::<Knock>() {
+            k.hooks.set_server(None);
+            server_down(&h, &k, Some(STOPPED));
+        }
+    };
+    let (platform, tx, shared) = (Arc::clone(&k.platform), k.tx.clone(), k.shared.clone());
+    let current = (cfg.port, cfg.token.clone());
+    server::spawn(cfg, listener, platform, tx, shared, stopped, failed)?;
+    k.hooks.set_server(Some(current));
+    lock(&k.server).stop = Some(stop);
+    server_down(app, k, None);
+    Ok(())
+}
+
+/// Records why the server isn't running (`None`: it is), and shows it in
+/// the tray tooltip (ADR 0023).
+fn server_down(app: &AppHandle, k: &Knock, error: Option<&'static str>) {
+    lock(&k.server).error = error;
+    let n = (pipeline::read(&k.shared).sessions.sessions.iter())
+        .filter(|v| v.tier == knock_core::Tier::NeedsYou.as_str())
+        .count();
+    let tip = tray::tooltip(n, error.is_some());
+    let h = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(icon) = h.tray_by_id("knock") {
+            let _ = icon.set_tooltip(Some(tip));
+        }
+    });
 }
 
 /// §8.5: every display, primary first; `id` is the §8.6 `monitor` value.
@@ -231,9 +339,15 @@ struct Check {
 /// and no token.
 #[tauri::command]
 async fn run_health_check(k: tauri::State<'_, Knock>) -> Result<Vec<Check>, String> {
-    let hooks = match k.hooks.installed() {
-        Ok(true) => (true, "Knock is in your Claude Code settings (settings.json).".into()),
-        Ok(false) => (
+    let hooks = match k.hooks.status() {
+        Ok(hooks::Hooks::Installed) => {
+            (true, "Knock is in your Claude Code settings (settings.json).".into())
+        }
+        Ok(hooks::Hooks::Stale) => (
+            false,
+            "Claude Code still points at Knock's old connection. Run setup again.".into(),
+        ),
+        Ok(hooks::Hooks::Missing) => (
             false,
             "Knock isn't in your Claude Code settings (settings.json), or its entry is out of date. Run setup to connect it."
                 .into(),
@@ -247,7 +361,7 @@ async fn run_health_check(k: tauri::State<'_, Knock>) -> Result<Vec<Check>, Stri
         ),
         false => (
             false,
-            "Knock isn't answering Claude Code right now. Please restart Knock.".into(),
+            "Knock isn't listening for Claude Code. Choose Repair to fix it.".into(),
         ),
     };
     let last = pipeline::read(&k.shared).last_event_at;
@@ -296,18 +410,19 @@ fn play_test_knock(k: tauri::State<'_, Knock>) {
     let _ = k.tx.send(Msg::TestKnock);
 }
 
-/// Opens the settings window, or brings it back if it is open. `setup`:
-/// start the setup flow (§10.4). A normal, focusable window, unlike the
+/// Opens the settings window, or brings it back if it is open. `query`:
+/// `setup=1` starts the setup flow (§10.4), `repair=1` the Repair screen
+/// (ADR 0023), empty the settings. A normal, focusable window, unlike the
 /// strip. From an event handler, call it off the main thread: creating a
 /// window there deadlocks on Windows.
-fn open_settings(app: &AppHandle, setup: bool) {
+fn open_settings(app: &AppHandle, query: &str) {
     if let Some(w) = app.get_webview_window("settings") {
         let _ = (w.unminimize(), w.show(), w.set_focus());
         return;
     }
-    let url = match setup {
-        true => "/settings/index.html?setup=1",
-        false => "/settings/index.html",
+    let url = match query {
+        "" => "/settings/index.html".to_string(),
+        q => format!("/settings/index.html?{q}"),
     };
     let built = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App(url.into()))
         .title("Knock Settings")
@@ -323,7 +438,13 @@ fn open_settings(app: &AppHandle, setup: bool) {
 /// The effect runner's output side, on the owner thread. Tray and menu
 /// setters wait for the main thread, so they are posted to it rather than
 /// called here: a command on the main thread may be waiting on the owner.
-fn apply(app: &AppHandle, tray: &tray::Tray, out: Out) {
+fn apply(
+    app: &AppHandle,
+    tray: &tray::Tray,
+    out: Out,
+    server: &Mutex<Listening>,
+    moved: &AtomicBool,
+) {
     match out {
         Out::Toast {
             session,
@@ -340,6 +461,8 @@ fn apply(app: &AppHandle, tray: &tray::Tray, out: Out) {
             let _ = app.emit_to("strip", "sessions-changed", payload);
         }
         Out::Settings(settings) => {
+            // A new `monitor` or `size` moves the strip at once.
+            moved.store(true, Ordering::Relaxed);
             let (item, on) = (tray.pause.clone(), settings.pause_notifications);
             let _ = app.run_on_main_thread(move || {
                 let _ = item.set_checked(on);
@@ -351,9 +474,10 @@ fn apply(app: &AppHandle, tray: &tray::Tray, out: Out) {
         }
         Out::Tray(n) => {
             let icon = tray.icon.clone();
+            let down = lock(server).error.is_some();
             let _ = app.run_on_main_thread(move || {
                 let _ = icon.set_icon(tray::badge(n));
-                let _ = icon.set_tooltip(Some(tray::tooltip(n)));
+                let _ = icon.set_tooltip(Some(tray::tooltip(n, down)));
             });
         }
     }
@@ -391,10 +515,13 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     );
     let (tx, rx) = std::sync::mpsc::channel();
     let tray = tray::build(app.handle(), tx.clone(), shared.clone())?;
+    let listening = Arc::new(Mutex::new(Listening::default()));
+    let moved = Arc::new(AtomicBool::new(false));
     let handle = app.handle().clone();
+    let (l, m) = (Arc::clone(&listening), Arc::clone(&moved));
     std::thread::Builder::new()
         .name("knock-pipeline".into())
-        .spawn(move || pipeline::run(core, rx, |out| apply(&handle, &tray, out)))?;
+        .spawn(move || pipeline::run(core, rx, |out| apply(&handle, &tray, out, &l, &m)))?;
 
     // A click on the on-screen toast jumps to its session (ADR 0015). The
     // handler runs on the plugin's thread; the jump runs on the main one.
@@ -415,14 +542,6 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         });
     })?;
 
-    // The Repair flow for a port that can't bind is not built yet (§8.1).
-    let server = match server::start(&dir, Arc::clone(&platform), tx.clone(), shared.clone()) {
-        Ok(cfg) => Some((cfg.port, cfg.token)),
-        Err(e) => {
-            tracing::error!(kind = ?e.kind(), "server failed to start");
-            None
-        }
-    };
     let spec = knock_core::Adapter::hooks(&knock_core::ClaudeCode { users: vec![] });
     let claude = hooks::claude_settings();
     tracing::info!(
@@ -430,56 +549,101 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         test_file = cfg!(debug_assertions) && claude.is_some(),
         "claude settings file"
     );
-    let hooks = hooks::Setup::new(spec, claude, dir.join("backups"), server);
+    let mut hooks = hooks::Setup::new(spec, claude, dir.join("backups"), None);
+    hooks.guard = hooks::guarded();
 
-    let d = platform.primary_display()?;
-    tracing::info!(
-        monitor = ?d.monitor,
-        work_area = ?d.work_area,
-        scale = d.scale,
-        taskbar = ?d.taskbar.map(|t| t.rect),
-        edge = d.taskbar.map(|t| t.edge),
-        auto_hide = d.taskbar.map(|t| t.auto_hide),
-        "display"
-    );
-    let slot = pipeline::read(&shared).settings.size.height();
-    let rect = strip::place(d.work_area, d.scale, SLOTS * slot, slot);
-    platform.place_strip(rect)?;
-    platform.show_strip();
     let strip = Arc::new(Mutex::new(Strip {
-        rect,
-        scale: d.scale,
+        rect: strip::Rect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+        scale: 1.0,
         regions: Vec::new(),
+        want: None,
+        fell_back: false,
     }));
-
-    let (p, s) = (Arc::clone(&platform), Arc::clone(&strip));
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(POLL);
-            let inside = p.cursor_pos().is_some_and(|c| {
-                let s = s.lock().unwrap_or_else(|e| e.into_inner());
-                strip::hit(&s.regions, s.rect, s.scale, c)
-            });
-            // Every tick, so styles tao rewrites are repaired within one
-            // tick (ADR 0001). It writes only when they differ.
-            p.set_click_through(!inside);
-        }
-    });
-
-    // §10.4: setup opens by itself on first run, or while Knock isn't
-    // connected to Claude Code.
-    let installed = hooks.installed().unwrap_or(false);
-    tracing::info!(first_run, installed, "setup status");
-    app.manage(Knock {
+    let k = Knock {
         tx,
         shared,
         platform,
         strip,
+        moved,
         hooks,
+        server: listening,
+        repairing: Mutex::new(()),
+        dir,
         first_run,
-    });
-    if first_run || !installed {
-        open_settings(app.handle(), true);
+    };
+
+    // If the port can't be bound, Knock keeps running and offers Repair
+    // (§8.1, ADR 0023).
+    let started = server::listen(&k.dir).and_then(|bound| start_server(app.handle(), &k, bound));
+    if let Err(e) = &started {
+        tracing::error!(kind = ?e.kind(), "server failed to start");
+        server_down(app.handle(), &k, Some(CANT_START));
+    }
+
+    let (p, s, sh) = (&*k.platform, &*k.strip, &k.shared);
+    tracing::info!(displays = ?p.displays(), taskbar = ?p.taskbar(), "displays");
+    reposition(p, s, sh);
+    p.show_strip();
+    // Display, DPI, work-area and taskbar messages reach the strip's window
+    // on this (main) thread.
+    p.watch_displays(Arc::clone(&k.moved));
+
+    let (p, s, sh, moved) = (
+        Arc::clone(&k.platform),
+        Arc::clone(&k.strip),
+        k.shared.clone(),
+        Arc::clone(&k.moved),
+    );
+    std::thread::Builder::new()
+        .name("knock-strip".into())
+        .spawn(move || {
+            let (mut due, mut again) = (Instant::now() + FALLBACK, false);
+            loop {
+                std::thread::sleep(POLL);
+                // FR-15: within one tick of a change, again shortly after,
+                // and every 5 s anyway.
+                let now = Instant::now();
+                if moved.swap(false, Ordering::Relaxed) {
+                    (due, again) = (now, true);
+                }
+                if now >= due {
+                    reposition(&*p, &s, &sh);
+                    let wait = if std::mem::take(&mut again) {
+                        RECHECK
+                    } else {
+                        FALLBACK
+                    };
+                    due = now + wait;
+                }
+                let inside = p.cursor_pos().is_some_and(|c| {
+                    let s = lock(&s);
+                    strip::hit(&s.regions, s.rect, s.scale, c)
+                });
+                // Every tick, so styles tao rewrites are repaired within one
+                // tick (ADR 0001). It writes only when they differ.
+                p.set_click_through(!inside);
+            }
+        })?;
+
+    // §10.4: setup opens by itself on first run, or while Knock isn't
+    // connected to Claude Code; Repair first if the server isn't running.
+    let installed = k.hooks.installed().unwrap_or(false);
+    tracing::info!(
+        first_run,
+        installed,
+        server = started.is_ok(),
+        "setup status"
+    );
+    app.manage(k);
+    match (started.is_ok(), first_run || !installed) {
+        (false, _) => open_settings(app.handle(), "repair=1"),
+        (true, true) => open_settings(app.handle(), "setup=1"),
+        (true, false) => {}
     }
     Ok(())
 }
@@ -509,6 +673,7 @@ fn main() {
             setup_remove_hooks,
             run_health_check,
             play_test_knock,
+            repair_server,
         ])
         .setup(setup)
         .run(tauri::generate_context!())

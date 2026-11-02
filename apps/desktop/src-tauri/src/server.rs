@@ -54,7 +54,8 @@ impl ServerConfig {
 
 /// Loads `server.json` from `dir` and binds its port. On first run (no file)
 /// picks a free port and a new token, then saves them; after that the port is
-/// fixed. The Repair flow for a port that can't bind later is not built yet.
+/// fixed. A port that can't be bound later is an error; Repair
+/// ([`relisten`]) picks a new one (ADR 0023).
 pub fn listen(dir: &Path) -> io::Result<(ServerConfig, TcpListener)> {
     let path = dir.join("server.json");
     match std::fs::read(&path) {
@@ -64,18 +65,42 @@ pub fn listen(dir: &Path) -> io::Result<(ServerConfig, TcpListener)> {
             Ok((cfg, listener))
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            for _ in 0..10 {
-                let cfg = ServerConfig::generate()?;
-                if let Ok(listener) = bind(cfg.port) {
-                    let bytes = serde_json::to_vec_pretty(&cfg)?;
-                    crate::settings::write_atomic(&path, &bytes)?;
-                    return Ok((cfg, listener));
-                }
-            }
-            Err(io::Error::other("no free port found"))
+            pick(&path, ServerConfig::generate()?.token, None)
         }
         Err(e) => Err(e),
     }
+}
+
+/// Repair (§8.1, ADR 0023): a new free port in 49152-65535, never the saved
+/// one, with the saved token kept (a new token only if `server.json` is
+/// missing or invalid, since then there is none to keep). Saved atomically.
+pub fn relisten(dir: &Path) -> io::Result<(ServerConfig, TcpListener)> {
+    let path = dir.join("server.json");
+    let old = std::fs::read(&path)
+        .ok()
+        .and_then(|b| parse_config(&b).ok());
+    let token = match &old {
+        Some(c) => c.token.clone(),
+        None => ServerConfig::generate()?.token,
+    };
+    pick(&path, token, old.map(|c| c.port))
+}
+
+/// Binds a random port in the range other than `avoid`, then saves it with
+/// `token` to `path`. Gives up after 50 ports that can't be bound.
+fn pick(path: &Path, token: String, avoid: Option<u16>) -> io::Result<(ServerConfig, TcpListener)> {
+    for _ in 0..50 {
+        let port = ServerConfig::generate()?.port;
+        if Some(port) == avoid {
+            continue;
+        }
+        if let Ok(listener) = bind(port) {
+            let cfg = ServerConfig { port, token };
+            crate::settings::write_atomic(path, &serde_json::to_vec_pretty(&cfg)?)?;
+            return Ok((cfg, listener));
+        }
+    }
+    Err(io::Error::other("no free port found"))
 }
 
 /// Parses `server.json` and rejects anything `generate` could not have made:
@@ -100,28 +125,35 @@ fn bind(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind((Ipv4Addr::LOCALHOST, port))
 }
 
-/// Starts the server on Tauri's async runtime and returns its port and
-/// token. Called once by the app.
-pub fn start(
-    dir: &Path,
+/// Serves on `listener` (from [`listen`] or [`relisten`]) on Tauri's async
+/// runtime until `stop` fires or is dropped. `failed` runs if the server
+/// stops on its own, by an error.
+pub fn spawn(
+    cfg: ServerConfig,
+    listener: TcpListener,
     platform: Arc<dyn Platform>,
     tx: Sender<Msg>,
     published: Shared,
-) -> io::Result<ServerConfig> {
-    let (cfg, listener) = listen(dir)?;
-    let started = cfg.clone();
+    stop: tokio::sync::oneshot::Receiver<()>,
+    failed: impl FnOnce() + Send + 'static,
+) -> io::Result<()> {
     listener.set_nonblocking(true)?;
     tracing::info!(port = cfg.port, "server listening on 127.0.0.1");
     let opts = Options {
         platform: Some(platform),
+        stop: Some(stop),
         ..Options::from_env()
     };
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = serve(listener, cfg.token, opts, tx, published).await {
-            tracing::error!(kind = ?e.kind(), "server stopped");
+        match serve(listener, cfg.token, opts, tx, published).await {
+            Ok(()) => tracing::info!(port = cfg.port, "server stopped for a new port"),
+            Err(e) => {
+                tracing::error!(kind = ?e.kind(), "server stopped");
+                failed();
+            }
         }
     });
-    Ok(started)
+    Ok(())
 }
 
 /// The health check's "server listening" (FR-12): a real `GET /v1/health`
@@ -148,6 +180,9 @@ pub struct Options {
     pub platform: Option<Arc<dyn Platform>>,
     /// Debug builds: sleep this long before replying, to test a slow Knock (V-2).
     pub delay: Duration,
+    /// The server stops when this fires or its sender is dropped (Repair).
+    /// `None`: it runs until the process ends.
+    pub stop: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl Options {
@@ -195,6 +230,7 @@ pub async fn serve(
 ) -> io::Result<()> {
     let port = listener.local_addr()?.port();
     let listener = tokio::net::TcpListener::from_std(listener)?;
+    let stop = opts.stop;
     let server = Arc::new(Server {
         token,
         port,
@@ -219,6 +255,12 @@ pub async fn serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(async move {
+        match stop {
+            Some(rx) => drop(rx.await),
+            None => std::future::pending().await,
+        }
+    })
     .await
 }
 
@@ -823,6 +865,86 @@ mod tests {
         let (second, _l) = listen(&dir).unwrap();
         assert_eq!(second, first);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A port in the §8.1 range that this test now holds on 127.0.0.1.
+    fn hold_a_port() -> TcpListener {
+        (0..200)
+            .find_map(|_| bind(ServerConfig::generate().unwrap().port).ok())
+            .unwrap()
+    }
+
+    #[test]
+    fn repair_picks_a_new_free_port_and_keeps_the_token() {
+        let dir = temp_dir("repair");
+        let (first, listener) = listen(&dir).unwrap();
+        drop(listener);
+        // Another program takes Knock's port (a real bind conflict).
+        let blocker = hold_a_port();
+        let taken = blocker.local_addr().unwrap().port();
+        let cfg = ServerConfig {
+            port: taken,
+            token: first.token.clone(),
+        };
+        std::fs::write(dir.join("server.json"), serde_json::to_vec(&cfg).unwrap()).unwrap();
+        let e = listen(&dir).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::AddrInUse, "{e:?}");
+        // Repair: another port in range, same token, saved, bound, no temp file.
+        let (fixed, listener) = relisten(&dir).unwrap();
+        assert_ne!(fixed.port, taken);
+        assert!(PORTS.contains(&fixed.port));
+        assert_eq!(fixed.token, first.token);
+        let addr = listener.local_addr().unwrap();
+        assert_eq!(addr, SocketAddr::from((Ipv4Addr::LOCALHOST, fixed.port)));
+        let saved = parse_config(&std::fs::read(dir.join("server.json")).unwrap()).unwrap();
+        assert_eq!(saved, fixed);
+        assert!(!dir.join("server.json.tmp").exists());
+        // The new port is fixed from now on.
+        drop(listener);
+        assert_eq!(listen(&dir).unwrap().0, fixed);
+        drop(blocker);
+        // Never the saved port, even when it is free again.
+        for _ in 0..20 {
+            std::fs::write(dir.join("server.json"), serde_json::to_vec(&fixed).unwrap()).unwrap();
+            let (next, _l) = relisten(&dir).unwrap();
+            assert_ne!(next.port, fixed.port);
+            assert_eq!(next.token, first.token);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn repair_without_a_valid_server_json_makes_a_new_token() {
+        let dir = temp_dir("repair-invalid");
+        std::fs::write(dir.join("server.json"), b"{ not json").unwrap();
+        assert_eq!(listen(&dir).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        let (cfg, _l) = relisten(&dir).unwrap();
+        let saved = parse_config(&std::fs::read(dir.join("server.json")).unwrap()).unwrap();
+        assert_eq!(saved, cfg);
+        let dir2 = temp_dir("repair-none");
+        let (cfg2, _l2) = relisten(&dir2).unwrap();
+        assert_ne!(cfg2.token, cfg.token);
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&dir2).unwrap();
+    }
+
+    #[test]
+    fn a_server_stops_when_its_stop_sender_is_dropped() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let opts = Options {
+            stop: Some(rx),
+            ..Options::default()
+        };
+        let addr = spawn_server_with(opts, None).0;
+        assert!(probe(addr.port(), TOKEN));
+        drop(tx);
+        let stopped = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(10));
+            !probe(addr.port(), TOKEN)
+        });
+        assert!(stopped, "still answering");
+        // The port is free again.
+        drop(bind(addr.port()).unwrap());
     }
 
     #[test]

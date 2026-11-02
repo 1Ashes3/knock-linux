@@ -51,7 +51,7 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
     let line = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(app, &[&pause, &settings, &line, &quit])?;
     let mut icon = TrayIconBuilder::with_id("knock")
-        .tooltip(tooltip(0))
+        .tooltip(tooltip(0, false))
         .menu(&menu)
         .on_menu_event(move |app, e| match e.id().as_ref() {
             // The pipeline flips its in-effect value and sets the check
@@ -63,7 +63,7 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
                 // Off the main thread: creating a window in an event
                 // handler deadlocks on Windows.
                 let app = app.clone();
-                std::thread::spawn(move || crate::open_settings(&app, false));
+                std::thread::spawn(move || crate::open_settings(&app, ""));
             }
             "quit" => app.exit(0),
             _ => {}
@@ -77,8 +77,12 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
     })
 }
 
-/// The tooltip for `n` Needs-you sessions: the number 0-9, then 9+.
-pub fn tooltip(n: usize) -> String {
+/// The tooltip for `n` Needs-you sessions: the number 0-9, then 9+. While
+/// the server is down (`down`), the Repair hint instead (ADR 0023).
+pub fn tooltip(n: usize, down: bool) -> String {
+    if down {
+        return "Knock can't listen for Claude Code. Open Settings to repair.".into();
+    }
     match n {
         1 => "Knock: 1 session needs you".into(),
         0..=9 => format!("Knock: {n} sessions need you"),
@@ -103,10 +107,14 @@ mod tests {
 
     #[test]
     fn tooltip_counts_to_nine_then_nine_plus() {
-        assert_eq!(tooltip(0), "Knock: 0 sessions need you");
-        assert_eq!(tooltip(1), "Knock: 1 session needs you");
-        assert_eq!(tooltip(9), "Knock: 9 sessions need you");
-        assert_eq!(tooltip(10), "Knock: 9+ sessions need you");
-        assert_eq!(tooltip(250), "Knock: 9+ sessions need you");
+        assert_eq!(tooltip(0, false), "Knock: 0 sessions need you");
+        assert_eq!(tooltip(1, false), "Knock: 1 session needs you");
+        assert_eq!(tooltip(9, false), "Knock: 9 sessions need you");
+        assert_eq!(tooltip(10, false), "Knock: 9+ sessions need you");
+        assert_eq!(tooltip(250, false), "Knock: 9+ sessions need you");
+        assert_eq!(
+            tooltip(3, true),
+            "Knock can't listen for Claude Code. Open Settings to repair."
+        );
     }
 }
