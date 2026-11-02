@@ -4,8 +4,9 @@ use super::{Display, Monitor, Platform, RunOp, Taskbar, monitor_id};
 use crate::jump::{self, Proc, ProcessId, Target, TcpRow, Win};
 use crate::strip::Rect;
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, FILETIME,
-    HANDLE, HWND, LPARAM, LRESULT, NO_ERROR, POINT, RECT, STILL_ACTIVE, WPARAM,
+    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA,
+    ERROR_UNSUPPORTED_TYPE, FILETIME, HANDLE, HWND, LPARAM, LRESULT, NO_ERROR, POINT, RECT,
+    STILL_ACTIVE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     DISPLAY_DEVICEW, EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
@@ -93,7 +94,8 @@ const APPROVED: PCWSTR =
     w!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run");
 const RUN_NAME: PCWSTR = w!("Knock");
 
-/// `HKCU\...\Run\Knock`'s data, or `None` if there is no such value.
+/// `HKCU\...\Run\Knock`'s data, or `None` if there is no such value or it
+/// isn't a string (then it can't be Knock's).
 fn get_run_value() -> std::io::Result<Option<String>> {
     let mut buf = vec![0u16; 260];
     loop {
@@ -112,6 +114,10 @@ fn get_run_value() -> std::io::Result<Option<String>> {
         };
         match r {
             ERROR_FILE_NOT_FOUND => return Ok(None),
+            ERROR_UNSUPPORTED_TYPE => {
+                tracing::info!("sign-in entry is not a string");
+                return Ok(None);
+            }
             ERROR_MORE_DATA => buf.resize((size as usize).div_ceil(2) + 1, 0),
             _ => {
                 r.ok()?;
@@ -122,11 +128,12 @@ fn get_run_value() -> std::io::Result<Option<String>> {
 }
 
 /// Applies [`super::sign_in_ops`]: writes `Run\Knock` with the quoted exe
-/// path, deletes it only if it holds that path, and clears
-/// `StartupApproved\Run\Knock`. A value that isn't there is fine.
+/// path, deletes it only if it starts Knock, and clears
+/// `StartupApproved\Run\Knock`. A value that isn't there is fine. Turning
+/// on doesn't read the current value: it overwrites whatever is there.
 fn set_run_value(on: bool) -> std::io::Result<()> {
     let own = super::run_value(&std::env::current_exe()?);
-    let current = get_run_value()?;
+    let current = if on { None } else { get_run_value()? };
     let ops = super::sign_in_ops(on, current.as_deref(), &own);
     if !on && ops.is_empty() && current.is_some() {
         tracing::info!("sign-in entry is not Knock's own; left as it is");
@@ -612,6 +619,19 @@ mod tests {
         let run = r"Software\Microsoft\Windows\CurrentVersion\Run";
         let approved = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
         assert_eq!(reg_knock(run), None, "an entry was already there");
+        // Removes both values even if an assertion below fails.
+        struct Cleanup;
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for key in ["Run", r"Explorer\StartupApproved\Run"] {
+                    let key = format!(r"HKCU\Software\Microsoft\Windows\CurrentVersion\{key}");
+                    let _ = std::process::Command::new("reg.exe")
+                        .args(["delete", &key, "/v", "Knock", "/f"])
+                        .output();
+                }
+            }
+        }
+        let _cleanup = Cleanup;
         let p = WindowsPlatform { strip: 0 };
         p.set_launch_at_sign_in(true).unwrap();
         let exe = std::env::current_exe().unwrap();
@@ -639,8 +659,37 @@ mod tests {
         p.set_launch_at_sign_in(true).unwrap();
         assert!(reg_knock(run).unwrap().contains(&want));
         assert_eq!(reg_knock(approved), None, "Task Manager shows it enabled");
-        // A value under the same name that isn't Knock's own survives off.
-        let other = r#""C:\Other\Knock.exe""#;
+        // An older copy of Knock's value, in another folder: off removes it.
+        let old = r#""C:\Old\Knock.exe""#;
+        reg(&[
+            "add", &hk_run, "/v", "Knock", "/t", "REG_SZ", "/d", old, "/f",
+        ]);
+        reg(&[&disabled[..], &["/d", "030000000000000000000000", "/f"]].concat());
+        p.set_launch_at_sign_in(false).unwrap();
+        assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
+        // A value that isn't a string: off leaves it, on overwrites it.
+        let dword = [
+            "add",
+            &hk_run,
+            "/v",
+            "Knock",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            "1",
+            "/f",
+        ];
+        reg(&dword);
+        p.set_launch_at_sign_in(false).unwrap();
+        let kept = reg_knock(run);
+        p.set_launch_at_sign_in(true).unwrap();
+        let written = reg_knock(run);
+        p.set_launch_at_sign_in(false).unwrap();
+        assert!(kept.unwrap().contains("REG_DWORD"));
+        assert!(written.unwrap().contains(&want));
+        assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
+        // A value under the same name that starts another program survives off.
+        let other = r#""C:\Other\NotKnock.exe""#;
         reg(&[
             "add", &hk_run, "/v", "Knock", "/t", "REG_SZ", "/d", other, "/f",
         ]);

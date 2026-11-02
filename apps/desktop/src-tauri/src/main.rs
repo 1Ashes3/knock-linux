@@ -38,7 +38,6 @@ const RECHECK: Duration = Duration::from_millis(500);
 
 /// `setup_status.serverError` texts (ADR 0023).
 const CANT_START: &str = "Knock couldn't start listening for Claude Code. Another program may be using its connection. Choose Repair to give Knock a new one.";
-const STOPPED: &str = "Knock stopped listening for Claude Code. Choose Repair to start it again.";
 
 /// The local server: why it isn't running, and how to stop it.
 #[derive(Default)]
@@ -266,16 +265,10 @@ fn start_server(
     (cfg, listener): (server::ServerConfig, TcpListener),
 ) -> std::io::Result<()> {
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let h = app.clone();
-    let failed = move || {
-        if let Some(k) = h.try_state::<Knock>() {
-            k.hooks.set_server(None);
-            server_down(&h, &k, Some(STOPPED));
-        }
-    };
     let (platform, tx, shared) = (Arc::clone(&k.platform), k.tx.clone(), k.shared.clone());
     let current = (cfg.port, cfg.token.clone());
-    server::spawn(cfg, listener, platform, tx, shared, stopped, failed)?;
+    // Once started, the server can't stop on its own (`server::spawn`).
+    server::spawn(cfg, listener, platform, tx, shared, stopped)?;
     k.hooks.set_server(Some(current));
     lock(&k.server).stop = Some(stop);
     server_down(app, k, None);
@@ -286,14 +279,21 @@ fn start_server(
 /// the tray tooltip (ADR 0023).
 fn server_down(app: &AppHandle, k: &Knock, error: Option<&'static str>) {
     lock(&k.server).error = error;
-    let n = (pipeline::read(&k.shared).sessions.sessions.iter())
-        .filter(|v| v.tier == knock_core::Tier::NeedsYou.as_str())
-        .count();
-    let tip = tray::tooltip(n, error.is_some());
-    let h = app.clone();
+    post_tooltip(app, &k.server, &k.shared);
+}
+
+/// Sets the tray tooltip from the server error and Needs-you count as they
+/// are when the main thread runs it, so whichever post runs last shows the
+/// current state.
+fn post_tooltip(app: &AppHandle, server: &Arc<Mutex<Listening>>, shared: &Shared) {
+    let (h, server, shared) = (app.clone(), Arc::clone(server), shared.clone());
     let _ = app.run_on_main_thread(move || {
+        let down = lock(&server).error.is_some();
+        let n = (pipeline::read(&shared).sessions.sessions.iter())
+            .filter(|v| v.tier == knock_core::Tier::NeedsYou.as_str())
+            .count();
         if let Some(icon) = h.tray_by_id("knock") {
-            let _ = icon.set_tooltip(Some(tip));
+            let _ = icon.set_tooltip(Some(tray::tooltip(n, down)));
         }
     });
 }
@@ -442,7 +442,8 @@ fn apply(
     app: &AppHandle,
     tray: &tray::Tray,
     out: Out,
-    server: &Mutex<Listening>,
+    server: &Arc<Mutex<Listening>>,
+    shared: &Shared,
     moved: &AtomicBool,
 ) {
     match out {
@@ -474,11 +475,10 @@ fn apply(
         }
         Out::Tray(n) => {
             let icon = tray.icon.clone();
-            let down = lock(server).error.is_some();
             let _ = app.run_on_main_thread(move || {
                 let _ = icon.set_icon(tray::badge(n));
-                let _ = icon.set_tooltip(Some(tray::tooltip(n, down)));
             });
+            post_tooltip(app, server, shared);
         }
     }
 }
@@ -518,10 +518,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let listening = Arc::new(Mutex::new(Listening::default()));
     let moved = Arc::new(AtomicBool::new(false));
     let handle = app.handle().clone();
-    let (l, m) = (Arc::clone(&listening), Arc::clone(&moved));
+    let (l, sh, m) = (Arc::clone(&listening), shared.clone(), Arc::clone(&moved));
     std::thread::Builder::new()
         .name("knock-pipeline".into())
-        .spawn(move || pipeline::run(core, rx, |out| apply(&handle, &tray, out, &l, &m)))?;
+        .spawn(move || pipeline::run(core, rx, |out| apply(&handle, &tray, out, &l, &sh, &m)))?;
 
     // A click on the on-screen toast jumps to its session (ADR 0015). The
     // handler runs on the plugin's thread; the jump runs on the main one.

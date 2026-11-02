@@ -110,17 +110,38 @@ pub enum RunOp {
 }
 
 /// What turning sign-in `on` or off does, given the current `Run\Knock`
-/// data and Knock's `own` value ([`run_value`]). On: always overwrite (the
-/// user asked) and clear a "disabled" mark. Off: delete only Knock's own
-/// value; a value someone else wrote under the same name stays.
+/// string data (`None`: no value, or not a string) and Knock's `own` value
+/// ([`run_value`]). On: always overwrite (the user asked; `current` is not
+/// needed) and clear a "disabled" mark. Off: delete a value that starts
+/// Knock ([`starts_knock`]); one that starts another program stays.
 pub fn sign_in_ops(on: bool, current: Option<&str>, own: &str) -> &'static [RunOp] {
     match on {
         true => &[RunOp::Write, RunOp::ClearApproved],
-        false if current.is_some_and(|c| c.eq_ignore_ascii_case(own)) => {
+        false if current.is_some_and(|c| starts_knock(c, own)) => {
             &[RunOp::Delete, RunOp::ClearApproved]
         }
         false => &[],
     }
+}
+
+/// `Run\Knock` data is Knock's: its `own` value, or a command whose program
+/// is named `Knock.exe` (any letter case, any folder, quoted or not, with
+/// or without arguments), since an older copy of Knock may have written it.
+/// An unquoted program ends at the first `.exe` that ends a word.
+fn starts_knock(data: &str, own: &str) -> bool {
+    let d = data.trim_start();
+    let program = match d.strip_prefix('"') {
+        Some(rest) => rest.split('"').next().unwrap_or(""),
+        None => {
+            // ASCII lowercasing keeps every byte index.
+            let l = d.to_ascii_lowercase();
+            let end = (l.match_indices(".exe").map(|(i, _)| i + 4))
+                .find(|&e| l[e..].chars().next().is_none_or(char::is_whitespace));
+            end.map_or(d, |e| &d[..e])
+        }
+    };
+    let name = program.rsplit(['\\', '/']).next().unwrap_or("");
+    data.eq_ignore_ascii_case(own) || name.eq_ignore_ascii_case("Knock.exe")
 }
 
 /// Whether to change the real sign-in entry. A debug build does only with
@@ -255,9 +276,9 @@ mod tests {
     }
 
     #[test]
-    fn disabling_deletes_only_knocks_own_value() {
+    fn disabling_deletes_only_a_value_that_starts_knock() {
         let fake = FakePlatform::default();
-        let other = r#""C:\Other\Knock.exe""#;
+        let other = r#""C:\Other\NotKnock.exe""#;
         *fake.run.lock().unwrap() = Some(other.into());
         *fake.approved.lock().unwrap() = Some(DISABLED.to_vec());
         fake.set_launch_at_sign_in(false).unwrap();
@@ -275,9 +296,46 @@ mod tests {
         fake.set_launch_at_sign_in(false).unwrap();
         assert_eq!(*fake.run.lock().unwrap(), None);
         assert_eq!(sign_in_ops(false, None, FAKE_EXE), []);
-        // The path without its quotes is not Knock's value.
-        let bare = FAKE_EXE.trim_matches('"');
-        assert_eq!(sign_in_ops(false, Some(bare), FAKE_EXE), []);
+    }
+
+    #[test]
+    fn any_command_starting_a_knock_exe_is_knocks() {
+        let off = |data: &str| sign_in_ops(false, Some(data), FAKE_EXE);
+        let delete = [RunOp::Delete, RunOp::ClearApproved];
+        for ours in [
+            FAKE_EXE,
+            FAKE_EXE.trim_matches('"'),
+            r#""C:\Old\Knock.exe""#,
+            r"C:\Old\Knock.exe",
+            r#""C:\Program Files\Knock\Knock.exe" --minimized"#,
+            r"C:\Program Files\Knock\Knock.exe --minimized",
+            "C:\\Old\\Knock.exe\t-x",
+            r#"  "C:\OLD\KNOCK.EXE""#,
+            "c:/old/knock.Exe",
+            "Knock.exe",
+            r#""C:\Old\Knock.exe"#,
+        ] {
+            assert_eq!(off(ours), delete, "{ours}");
+        }
+        for theirs in [
+            "",
+            "   ",
+            r#""C:\Old\NotKnock.exe""#,
+            r"C:\Old\NotKnock.exe --knock",
+            r"C:\Old\Knock.exe.bak",
+            r#""C:\Old\Knock.exe.bak""#,
+            r#""C:\Old\Other.exe" C:\Old\Knock.exe"#,
+            r"C:\Tools\Other.exe C:\Old\Knock.exe",
+            r"C:\Knock.exe\Other.exe",
+            r"C:\Old\Knock",
+        ] {
+            assert_eq!(off(theirs), [], "{theirs}");
+        }
+        // Turning on never looks at the value.
+        for current in [None, Some(""), Some("anything")] {
+            let on = sign_in_ops(true, current, FAKE_EXE);
+            assert_eq!(on, [RunOp::Write, RunOp::ClearApproved]);
+        }
     }
 
     #[test]

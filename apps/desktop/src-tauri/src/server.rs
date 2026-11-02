@@ -126,8 +126,10 @@ fn bind(port: u16) -> io::Result<TcpListener> {
 }
 
 /// Serves on `listener` (from [`listen`] or [`relisten`]) on Tauri's async
-/// runtime until `stop` fires or is dropped. `failed` runs if the server
-/// stops on its own, by an error.
+/// runtime until `stop` fires or is dropped. Every step that can fail runs
+/// here, before the task starts, so a listener that can't be used is an
+/// `Err` (ADR 0023). Once started it can't fail: axum 0.8's `serve` retries
+/// accept errors itself and returns only after `stop`.
 pub fn spawn(
     cfg: ServerConfig,
     listener: TcpListener,
@@ -135,25 +137,32 @@ pub fn spawn(
     tx: Sender<Msg>,
     published: Shared,
     stop: tokio::sync::oneshot::Receiver<()>,
-    failed: impl FnOnce() + Send + 'static,
 ) -> io::Result<()> {
-    listener.set_nonblocking(true)?;
-    tracing::info!(port = cfg.port, "server listening on 127.0.0.1");
+    let rt = tauri::async_runtime::handle();
+    let (port, listener) = {
+        // Inside the runtime, so the listener can join its reactor.
+        let _in = rt.inner().enter();
+        ready(listener)?
+    };
+    tracing::info!(port, "server listening on 127.0.0.1");
     let opts = Options {
         platform: Some(platform),
         stop: Some(stop),
         ..Options::from_env()
     };
-    tauri::async_runtime::spawn(async move {
-        match serve(listener, cfg.token, opts, tx, published).await {
-            Ok(()) => tracing::info!(port = cfg.port, "server stopped for a new port"),
-            Err(e) => {
-                tracing::error!(kind = ?e.kind(), "server stopped");
-                failed();
-            }
-        }
+    rt.spawn(async move {
+        serve(port, listener, cfg.token, opts, tx, published).await;
+        tracing::info!(port, "server stopped for a new port");
     });
     Ok(())
+}
+
+/// The fallible setup of serving: nonblocking, its port, and onto the
+/// current tokio runtime (call inside one).
+fn ready(listener: TcpListener) -> io::Result<(u16, tokio::net::TcpListener)> {
+    listener.set_nonblocking(true)?;
+    let port = listener.local_addr()?.port();
+    Ok((port, tokio::net::TcpListener::from_std(listener)?))
 }
 
 /// The health check's "server listening" (FR-12): a real `GET /v1/health`
@@ -221,15 +230,15 @@ struct Server {
     tx: Mutex<(u64, Sender<Msg>)>,
 }
 
+/// Serves on `listener` (from [`ready`], on `port`) until `opts.stop`.
 pub async fn serve(
-    listener: TcpListener,
+    port: u16,
+    listener: tokio::net::TcpListener,
     token: String,
     opts: Options,
     tx: Sender<Msg>,
     published: Shared,
-) -> io::Result<()> {
-    let port = listener.local_addr()?.port();
-    let listener = tokio::net::TcpListener::from_std(listener)?;
+) {
     let stop = opts.stop;
     let server = Arc::new(Server {
         token,
@@ -262,6 +271,8 @@ pub async fn serve(
         }
     })
     .await
+    // axum 0.8: "will never error"; it returns only after the signal.
+    .ok();
 }
 
 fn authorized(token: &str, headers: &HeaderMap) -> bool {
@@ -418,7 +429,6 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || pipeline::run(core, rx, |_| {}));
         let listener = bind(0).unwrap();
-        listener.set_nonblocking(true).unwrap();
         let addr = listener.local_addr().unwrap();
         let p = published.clone();
         std::thread::spawn(move || {
@@ -427,7 +437,10 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(serve(listener, TOKEN.into(), opts, tx, p))
+                .block_on(async move {
+                    let (port, listener) = ready(listener).unwrap();
+                    serve(port, listener, TOKEN.into(), opts, tx, p).await
+                })
         });
         (addr, published)
     }
@@ -467,6 +480,45 @@ mod tests {
         let status = out[9..12].parse().unwrap();
         let body = out.split_once("\r\n\r\n").unwrap().1.to_owned();
         (status, body)
+    }
+
+    /// ADR 0023: a listener that can't be served on is an `Err` from
+    /// `spawn` itself, so startup shows Repair and Repair says it failed.
+    #[test]
+    fn spawn_fails_at_once_for_a_listener_it_cannot_use() {
+        // A TCP socket never bound: it has no port.
+        let unbound = tokio::net::TcpSocket::new_v4().unwrap();
+        let socket = std::os::windows::io::AsSocket::as_socket(&unbound);
+        let listener = TcpListener::from(socket.try_clone_to_owned().unwrap());
+        let cfg = ServerConfig {
+            port: 49152,
+            token: TOKEN.into(),
+        };
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let (_stop, stopped) = tokio::sync::oneshot::channel();
+        let platform = Arc::new(FakePlatform::default());
+        let r = spawn(cfg, listener, platform, tx, Shared::default(), stopped);
+        assert!(r.is_err());
+        // A usable one starts, and serves until stopped.
+        let (cfg, listener) = (
+            ServerConfig {
+                port: 0,
+                token: TOKEN.into(),
+            },
+            bind(0).unwrap(),
+        );
+        let port = listener.local_addr().unwrap().port();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let platform = Arc::new(FakePlatform::default());
+        spawn(cfg, listener, platform, tx, Shared::default(), stopped).unwrap();
+        assert!(probe(port, TOKEN));
+        drop(stop);
+        let t = Instant::now();
+        while probe(port, TOKEN) {
+            assert!(t.elapsed() < Duration::from_secs(5), "still serving");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]
