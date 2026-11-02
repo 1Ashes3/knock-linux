@@ -542,7 +542,7 @@ Windows limits which apps may bring another window to the front.
 | Tray              | Notification-area icon showing the count of Needs-you sessions (0-9, then 9+). Menu: Pause notifications, Settings, Quit                                                                                         |
 | Single instance   | Only one Knock runs at a time                                                                                                                                                                                    |
 | Launch at sign-in | Only if the user agreed in setup or Settings. Turning it on clears a Task Manager "disabled" mark; turning it off removes any `Run\Knock` value that starts Knock's app, from any folder, and leaves others alone (ADR 0025). While it is on, Knock rewrites its entry at start if the entry is missing or stale (ADR 0027) |
-| Install           | Per-user NSIS installer; never requires administrator rights                                                                                                                                                     |
+| Install           | Per-user NSIS installer; never requires administrator rights. Uninstall removes `Run\Knock` and leaves the Task Manager mark (ADR 0028)                                                                          |
 | Firewall          | Must not trigger a firewall prompt (**VERIFY V-11**)                                                                                                                                                             |
 
 ## 10. Experience requirements
