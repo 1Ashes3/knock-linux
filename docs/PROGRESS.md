@@ -16,6 +16,31 @@ Open questions for the user:
 
 ---
 
+## 2026-11-02: Phase 2 (plain overlay), on branch `phase-2/plain-overlay`
+Done:
+- 2.1: engine wired into the app, plain strip, tray and app icons (d7a661a). Review fixes (be83e04): tray pause follows the in-effect value; the strip stays hidden until it is placed.
+- 2.2: hook setup (§8.2), setup commands, settings window, sign-in entry (421599a, 35a5824). Review fixes (acf7763): HKCU-only sign-in, link handling, the file's own indentation is kept, a race before the rename.
+- ADRs approved: 0022 (CLAUDE_CONFIG_DIR), 0023 (Repair), 0024 (linked settings files). SPEC.md §8.2 and §8.5 were updated to match.
+- 2.3: Repair, stale-hook check, placement on the chosen display with auto-hide and FR-15 re-placement, and sign-in ownership (948fa53, 9556fc2). Settings got a "Which taskbar" choice (user request, e061464). Fresh-review fixes are in 4b9fda9.
+- User manual tests passed: setup preview, Repair screen preview, strip placement at 100/150/200% scaling, auto-hide on and off, and the Settings taskbar line.
+Next:
+- 2.4 installer plus the fresh-review fixes for 4b9fda9 (`core-windows`, running).
+- After that: the user's real first-time setup with the installed build, then v0.1 (the user approves and publishes it) and the G1 week.
+- Second-monitor checks (placement steps 8-9) wait until the user has a second display.
+Dependencies added:
+- UI: react 19.3.1, react-dom 19.3.1, zustand 5.0.16 (§13.2). Dev only: @playwright/test 1.64.1 and @types/react.
+- Rust: tauri-plugin-single-instance 2.5.5 (§13.2), the tauri `tray-icon` and `image-png` features (these bring in the `image` crate), and extra `windows` crate features.
+- tauri-plugin-autostart was added, then removed: its HKLM risk led to a direct HKCU Run value.
+- All approved by the lead.
+Clarifications (lead):
+- The debug snapshot uses views.
+- Free functions in `platform/` are fine alongside the trait.
+- `sessions.json` leaves out simulated sessions.
+- The §10.2 notify texts use the singular "1 minute" (user approved).
+- The server can't stop on its own once started (axum 0.8), so there is no runtime "stopped" text.
+Open questions for the user:
+- ADR 0025 (sign-in entry), proposed.
+
 ## 2026-10-29: Phase 1 (core engine)
 Done:
 - `core-windows` built the `knock-core` engine and `knock replay` (b66c13f):
