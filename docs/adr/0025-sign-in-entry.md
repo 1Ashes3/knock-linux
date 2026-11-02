@@ -1,6 +1,6 @@
 # 0025: Which sign-in entry Knock adds and removes
 
-- **Status:** Proposed
+- **Status:** Approved by user on 2026-11-02
 - **Date:** 2026-11-02
 - **Spec sections:** §9.7 (Launch at sign-in)
 - **VERIFY item:** none

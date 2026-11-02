@@ -39,7 +39,7 @@ Clarifications (lead):
 - The §10.2 notify texts use the singular "1 minute" (user approved).
 - The server can't stop on its own once started (axum 0.8), so there is no runtime "stopped" text.
 Open questions for the user:
-- ADR 0025 (sign-in entry), proposed.
+- none (ADR 0025 approved on 2026-11-02, and SPEC.md §9.7 updated to match)
 
 ## 2026-10-29: Phase 1 (core engine)
 Done:
