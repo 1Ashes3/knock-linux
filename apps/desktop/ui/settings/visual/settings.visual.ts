@@ -74,6 +74,7 @@ const TO_SIGNIN = ["Start", "Next", "Confirm and connect", "Next"];
 const TO_TEST = [...TO_SIGNIN, "Yes, start with Windows"];
 const SCREENS: [string, string, string[]][] = [
 	["welcome", "", []],
+	["welcome-server-error", "server=fail", []],
 	["taskbar", "", ["Start"]],
 	["connect", "", ["Start", "Next"]],
 	["connect-already", "installed=1", ["Start", "Next"]],
@@ -154,6 +155,18 @@ for (const theme of THEMES) {
 		await expect(page.locator(".checks li")).toHaveCount(3);
 		await shot(page, `settings-${theme}`);
 	});
+
+	// The "Which taskbar" choice: two displays, one display, and a saved display that's gone.
+	for (const [name, query] of [
+		["two-displays", "monitors=2"],
+		["one-display", "monitors=1"],
+		["display-missing", "monitor=monitor-GONE-9"],
+	] as const)
+		test(`settings: taskbar, ${name}, ${theme}`, async ({ page }) => {
+			await open(page, `installed=1&${query}`, theme);
+			await expect(page.locator(".checks li")).toHaveCount(3);
+			await shot(page, `settings-taskbar-${name}-${theme}`);
+		});
 
 	test(`settings: remove, confirm and done, ${theme}`, async ({ page }) => {
 		await open(page, "installed=1", theme);
@@ -488,4 +501,75 @@ test("Settings: no banner and no Repair while Knock is listening", async ({
 	await open(page, "installed=1");
 	await expect(page.locator(".checks li")).toHaveCount(3);
 	await expect(page.getByRole("button", { name: "Repair" })).toHaveCount(0);
+});
+
+const taskbar = (page: Page) =>
+	page.getByRole("group", { name: "Which taskbar" });
+const MISSING =
+	"The display you chose isn't connected, so Knock is using the main display for now. Pick one to fix this.";
+
+test("Settings: choosing a taskbar saves it right away", async ({ page }) => {
+	await open(page, "");
+	await expect(
+		taskbar(page).getByLabel("DELL U2720Q (main display), 2560 × 1440"),
+	).toBeChecked();
+	await expect(page.getByText(MISSING)).toHaveCount(0);
+	await taskbar(page)
+		.getByLabel("Display 2: Generic PnP Monitor, 1920 × 1080")
+		.check();
+	expect(await calls(page)).toContainEqual([
+		"update_settings",
+		{ patch: { monitor: "monitor-GSM5B7F-2" } },
+	]);
+	await expect(
+		taskbar(page).getByLabel("Display 2: Generic PnP Monitor, 1920 × 1080"),
+	).toBeChecked();
+	await taskbar(page)
+		.getByLabel("DELL U2720Q (main display), 2560 × 1440")
+		.check();
+	expect(await calls(page)).toContainEqual([
+		"update_settings",
+		{ patch: { monitor: "primary" } },
+	]);
+});
+
+test("Settings: one display, no choice, one plain line", async ({ page }) => {
+	await open(page, "monitors=1");
+	await expect(
+		page.getByText("Only one display is connected, so Knock uses its taskbar."),
+	).toBeVisible();
+	await expect(taskbar(page)).toHaveCount(0);
+});
+
+test("Settings: a chosen display that isn't connected; picking one fixes it", async ({
+	page,
+}) => {
+	await open(page, "monitor=monitor-GONE-9");
+	await expect(taskbar(page).getByRole("radio")).toHaveCount(3);
+	for (const r of await taskbar(page).getByRole("radio").all())
+		await expect(r).not.toBeChecked();
+	await expect(taskbar(page)).toHaveAccessibleDescription(new RegExp(MISSING));
+	await taskbar(page)
+		.getByLabel("Display 3: Generic PnP Monitor, 1920 × 1080")
+		.check();
+	expect(await calls(page)).toContainEqual([
+		"update_settings",
+		{ patch: { monitor: "monitor-GSM5B7F-3" } },
+	]);
+	await expect(page.getByText(MISSING)).toHaveCount(0);
+});
+
+test("Settings: the display list is read again when the window comes back", async ({
+	page,
+}) => {
+	await open(page, "monitors=1");
+	await expect(page.getByText("Only one display is connected")).toBeVisible();
+	await page.evaluate(() => {
+		(globalThis as unknown as { __setMonitors(n: number): void }).__setMonitors(
+			2,
+		);
+		window.dispatchEvent(new Event("focus"));
+	});
+	await expect(taskbar(page).getByRole("radio")).toHaveCount(2);
+	await expect(page.getByText("Only one display is connected")).toHaveCount(0);
 });

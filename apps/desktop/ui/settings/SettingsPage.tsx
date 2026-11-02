@@ -38,11 +38,17 @@ export function SettingsPage({
 	onRunSetup,
 	onRepair,
 }: Props) {
-	const [monitors, setMonitors] = useState<Monitor[]>([]);
+	// null until the core answers. Read again whenever the window comes back, so a display
+	// plugged in meanwhile shows up without reopening Settings.
+	const [monitors, setMonitors] = useState<Monitor[] | null>(null);
 	useEffect(() => {
-		void invoke<Monitor[]>("setup_list_monitors").then(setMonitors, () => {});
+		const load = () =>
+			void invoke<Monitor[]>("setup_list_monitors").then(setMonitors, () => {});
+		load();
+		window.addEventListener("focus", load);
+		return () => window.removeEventListener("focus", load);
 	}, []);
-	const chosen = selectedMonitor(s.monitor, monitors);
+	const chosen = monitors && selectedMonitor(s.monitor, monitors);
 
 	return (
 		<main className="settings">
@@ -67,10 +73,15 @@ export function SettingsPage({
 
 			<section aria-labelledby="look">
 				<h2 id="look">On the taskbar</h2>
-				{monitors.length > 1 && (
+				{monitors && monitors.length > 1 ? (
 					<Choice
-						legend="Taskbar"
-						help="Which display's taskbar Knock rests on."
+						legend="Which taskbar"
+						help="Knock rests on one display's taskbar, near the clock. It moves as soon as you pick."
+						note={
+							chosen
+								? undefined
+								: "The display you chose isn't connected, so Knock is using the main display for now. Pick one to fix this."
+						}
 						options={monitors.map((m, i) => ({
 							value: monitorValue(m),
 							label: monitorLabel(m, i, monitors),
@@ -78,6 +89,12 @@ export function SettingsPage({
 						value={chosen ? monitorValue(chosen) : ""}
 						onChange={(monitor) => update({ monitor })}
 					/>
+				) : (
+					monitors?.length === 1 && (
+						<p className="field">
+							Only one display is connected, so Knock uses its taskbar.
+						</p>
+					)
 				)}
 				<Choice
 					legend="Show sessions as"
@@ -204,12 +221,15 @@ function FieldError({ id, error }: { id: string; error: string | null }) {
 function Choice({
 	legend,
 	help,
+	note,
 	options,
 	value,
 	onChange,
 }: {
 	legend: string;
 	help: string;
+	/** A second line, for something the user should know about the current choice. */
+	note?: string | undefined;
 	options: { value: string; label: string }[];
 	value: string;
 	onChange(value: string): Promise<string | null>;
@@ -217,9 +237,10 @@ function Choice({
 	const id = useId();
 	const [error, run] = useCommit();
 	return (
-		<fieldset className="field" aria-describedby={`${id}h ${id}e`}>
+		<fieldset className="field" aria-describedby={`${id}h ${id}n ${id}e`}>
 			<legend>{legend}</legend>
 			<Help id={`${id}h`} text={help} />
+			{note && <p id={`${id}n`}>{note}</p>}
 			<div className="options">
 				{options.map((o) => (
 					<label key={o.value} className="option">

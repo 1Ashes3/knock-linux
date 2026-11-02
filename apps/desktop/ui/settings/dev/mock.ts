@@ -7,7 +7,9 @@
 //                           without server=fail it shows the fallback explanation
 //   server=fail             the server can't start: setup_status has a serverError
 //   fix=fail                repair_server fails
-//   monitors=1|2|3          displays connected; default 3
+//   monitors=1|2|3          displays connected; default 3. `window.__setMonitors(n)` changes
+//                           it later, as plugging a display in or out would
+//   monitor=<id>            the saved taskbar choice; default "primary"
 //   installed=1             Knock's hooks are already in the Claude Code settings file
 //   preview=invalid         the settings file isn't valid JSON
 //   apply=fail              writing the file fails
@@ -24,7 +26,7 @@ const calls: [string, unknown][] = [];
 
 let settings: Settings = {
 	version: 1,
-	monitor: "primary",
+	monitor: q.get("monitor") ?? "primary",
 	mode: "plain",
 	size: "medium",
 	sounds: false,
@@ -45,7 +47,7 @@ let serverError: string | null =
 let hookPort = 47615;
 let port = 47615;
 
-const monitors: Monitor[] = [
+const ALL_MONITORS: Monitor[] = [
 	{
 		id: "monitor-DEL41A8-1",
 		name: "DELL U2720Q",
@@ -68,7 +70,13 @@ const monitors: Monitor[] = [
 		width: 1920,
 		height: 1080,
 	},
-].slice(0, Number(q.get("monitors") ?? 3));
+];
+let monitors = ALL_MONITORS.slice(0, Number(q.get("monitors") ?? 3));
+(globalThis as unknown as { __setMonitors(n: number): void }).__setMonitors = (
+	n,
+) => {
+	monitors = ALL_MONITORS.slice(0, n);
+};
 
 const PATH = String.raw`C:\Users\Sam\.claude\settings.json`;
 const userFile = {

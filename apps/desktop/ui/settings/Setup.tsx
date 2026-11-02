@@ -215,8 +215,7 @@ export function Setup({
 					{!status.serverOk && (
 						<p className="error" role="alert">
 							Knock couldn't start the connection that Claude Code talks to.
-							Setup can still finish, but sessions won't show up until you quit
-							Knock and open it again.
+							Choose Not now, then Repair in Settings, then run setup again.
 						</p>
 					)}
 				</Screen>
