@@ -109,7 +109,7 @@ Owner: **CW** = `core-windows` agent, **UI** = `ui` agent.
 | Latency        | Hook received to frame drawn: p95 under 500 ms                                                                                                                 |
 | Agent impact   | Hook request answered in under 100 ms; if Knock is not running the hook fails fast and silently; if Knock is hung, each hook waits at most the 1 s timeout (ADR 0006); no console window ever appears                                |
 | CPU            | Under 1% when nothing animates (render loop stopped); under 5% while 5 characters animate at 30 fps                                                            |
-| Memory         | Under 150 MB total, including WebView2                                                                                                                         |
+| Memory         | Under 150 MB total, including WebView2, as Task Manager's Memory column shows it. A goal, not a test (ADR 0026)                                               |
 | Installer size | Under 25 MB                                                                                                                                                    |
 | Focus          | The strip never takes keyboard focus; never appears in Alt-Tab or on the taskbar                                                                               |
 | Displays       | Correct at 100%, 150% and 200% scaling and with multiple monitors                                                                                              |
