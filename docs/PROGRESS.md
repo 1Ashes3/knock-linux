@@ -16,17 +16,26 @@ Open questions for the user:
 
 ---
 
-## 2026-11-02: Phase 2 (plain overlay), on branch `phase-2/plain-overlay`
+## 2026-11-02: Phase 2 (plain overlay), v0.1
 Done:
 - 2.1: engine wired into the app, plain strip, tray and app icons (d7a661a). Review fixes (be83e04): tray pause follows the in-effect value; the strip stays hidden until it is placed.
 - 2.2: hook setup (§8.2), setup commands, settings window, sign-in entry (421599a, 35a5824). Review fixes (acf7763): HKCU-only sign-in, link handling, the file's own indentation is kept, a race before the rename.
 - ADRs approved: 0022 (CLAUDE_CONFIG_DIR), 0023 (Repair), 0024 (linked settings files). SPEC.md §8.2 and §8.5 were updated to match.
 - 2.3: Repair, stale-hook check, placement on the chosen display with auto-hide and FR-15 re-placement, and sign-in ownership (948fa53, 9556fc2). Settings got a "Which taskbar" choice (user request, e061464). Fresh-review fixes are in 4b9fda9.
 - User manual tests passed: setup preview, Repair screen preview, strip placement at 100/150/200% scaling, auto-hide on and off, and the Settings taskbar line.
+- 2.4: per-user NSIS installer, 2.65 MB, unsigned, version 0.1.0 (8d1f1aa). Fresh-review fixes are in ab4550f and 3c2d25b. ADRs approved: 0025 (sign-in entry), 0026 (memory budget is a goal, not a test), 0027 (sign-in entry restored at start) and 0028 (uninstall uses Tauri's default).
+- The user installed the release build and ran the real setup. All steps passed:
+  - no administrator prompt; the desktop shortcut box was unticked
+  - the real Claude Code settings were changed only after Confirm
+  - toasts showed "Knock" with the fox icon
+  - a real permission request showed "Allow?", and clicking it jumped to the session
+  - the health check was all green
+  - the Task Manager "disabled" mark was cleared by turning the setting on in Knock
+- The user approved **v0.1** on 2026-11-02 (local only, user only, §13.5). Merged into `main` and tagged `v0.1.0` locally. Not pushed.
 Next:
-- 2.4 installer plus the fresh-review fixes for 4b9fda9 (`core-windows`, running).
-- After that: the user's real first-time setup with the installed build, then v0.1 (the user approves and publishes it) and the G1 week.
+- **Gate G1** started on 2026-11-02: the user runs v0.1 for at least one week of real work. The user asked for no Phase 3 planning until after it.
 - Second-monitor checks (placement steps 8-9) wait until the user has a second display.
+- Not tested yet: uninstall and a manual upgrade (ADRs 0027 and 0028). Test them at the v0.2 upgrade.
 Dependencies added:
 - UI: react 19.3.1, react-dom 19.3.1, zustand 5.0.16 (§13.2). Dev only: @playwright/test 1.64.1 and @types/react.
 - Rust: tauri-plugin-single-instance 2.5.5 (§13.2), the tauri `tray-icon` and `image-png` features (these bring in the `image` crate), and extra `windows` crate features.
@@ -39,7 +48,7 @@ Clarifications (lead):
 - The §10.2 notify texts use the singular "1 minute" (user approved).
 - The server can't stop on its own once started (axum 0.8), so there is no runtime "stopped" text.
 Open questions for the user:
-- none (ADR 0025 approved on 2026-11-02, and SPEC.md §9.7 updated to match)
+- At the end of the G1 week: does G1 pass?
 
 ## 2026-10-29: Phase 1 (core engine)
 Done:
