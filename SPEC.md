@@ -809,7 +809,13 @@ Agents MUST NOT change a §8 contract, touch another agent's paths, add runtime 
 1. The lead reads the actual diff, not just the agent's summary.
 2. The lead runs `pnpm check` and the relevant tests.
 3. The lead checks the change against this spec and the definition of done (§12.4).
-4. **High-risk changes** — Phase 0 spikes, anything in §8.1-8.2, anything in §11 — additionally get a review in a fresh Claude Code session started by the user.
+4. **High-risk changes** (Phase 0 spikes, anything in §8.1-8.2, anything in §11) also get a fresh review. The lead runs it with a new agent that has none of the session's context (ADR 0029).
+
+**Branches** (ADR 0029):
+
+- Feature branches start from `develop`. After review, the lead merges them into `develop`.
+- The lead never touches `main`.
+- The user pushes `develop`, opens a pull request into `main`, reviews the code and merges it.
 
 **Records:**
 

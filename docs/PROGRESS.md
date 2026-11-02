@@ -32,6 +32,11 @@ Done:
   - the health check was all green
   - the Task Manager "disabled" mark was cleared by turning the setting on in Knock
 - The user approved **v0.1** on 2026-11-02 (local only, user only, §13.5). Merged into `main` and tagged `v0.1.0` locally. Not pushed.
+- Process change (ADR 0029, user decision):
+  - From now on, reviewed branches merge into `develop`, and the lead never touches `main`.
+  - The user pushes `develop` and merges into `main` through a reviewed pull request.
+  - The lead runs fresh reviews itself, with a new agent that has no session context.
+  - `develop` was created from v0.1.0. SPEC.md §16 and `CLAUDE.md` were updated to match.
 Next:
 - **Gate G1** started on 2026-11-02: the user runs v0.1 for at least one week of real work. The user asked for no Phase 3 planning until after it.
 - Second-monitor checks (placement steps 8-9) wait until the user has a second display.
