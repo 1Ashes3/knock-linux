@@ -1,6 +1,6 @@
 # 0024: Linked Claude Code settings files
 
-- **Status:** Proposed
+- **Status:** Approved by user on 2026-11-02
 - **Date:** 2026-11-02
 - **Spec sections:** §8.2
 - **VERIFY item:** none
@@ -18,7 +18,7 @@ The fresh review of 421599a found that the atomic write replaced a symbolic link
 ## Consequences
 
 - SPEC.md §8.2 step 1 gains: "A file with more than one hard link is refused the same way. A symbolic link is followed, and its target is edited and shown in the preview (ADR 0024)."
-- The debug-build guard is part of the next `core-windows` brief.
+- The debug-build guard was built in 948fa53. It finds where the real file is through links without opening its contents.
 
 ## Evidence
 

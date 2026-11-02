@@ -190,7 +190,7 @@ Owner: **CW** = `core-windows` agent, **UI** = `ui` agent.
 
 **Setup MUST:**
 
-1. Read the file, ignoring a leading UTF-8 BOM (ADR 0010). If it is not valid JSON, stop and explain in plain language; write nothing.
+1. Read the file, ignoring a leading UTF-8 BOM (ADR 0010). If it is not valid JSON, stop and explain in plain language; write nothing. A file with more than one hard link is refused the same way. A symbolic link is followed, and its target is edited and shown in the preview (ADR 0024).
 2. Show the user a preview of exactly what will be added or changed.
 3. Write only after the user confirms.
 4. Back up the original to `%APPDATA%\Knock\backups\settings.<timestamp>.json` before every write.
