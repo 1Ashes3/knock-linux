@@ -5,6 +5,10 @@
 //   show=permission,ready,...  sample sessions (dev/samples.ts), first nearest the clock; default all
 //   size=small|medium|large    strip size; default medium
 //   taskbar=light|dark         background; default dark
+//   mode=plain|animals         settings.mode; default plain
+//   animal=<id>                every sample's animal; default fox
+//
+// Tests drive changes through `window.__knockMock` (see the end of this file).
 import type { SessionsChanged, SessionView, Settings } from "../bridge";
 import { SAMPLE_KEYS, SAMPLES, type SampleKey } from "./samples";
 
@@ -17,7 +21,7 @@ document.body.className = params.get("taskbar") === "light" ? "light" : "dark";
 const settings: Settings = {
 	version: 1,
 	monitor: "primary",
-	mode: "plain",
+	mode: params.get("mode") === "animals" ? "animals" : "plain",
 	size: (params.get("size") as Settings["size"] | null) ?? "medium",
 	sounds: false,
 	stallMinutes: 10,
@@ -30,7 +34,11 @@ const settings: Settings = {
 };
 
 let rev = 1;
-let sessions: SessionView[] = keys.map((k) => structuredClone(SAMPLES[k]));
+const animal = params.get("animal");
+let sessions: SessionView[] = keys.map((k) => ({
+	...structuredClone(SAMPLES[k]),
+	...(animal ? { animal } : {}),
+}));
 const handlers = new Map<string, ((e: { payload: unknown }) => void)[]>();
 
 function emit(event: string, payload: unknown): void {
@@ -90,5 +98,23 @@ globalThis.__TAURI__ = {
 		},
 	},
 };
+
+/** For tests: change what the fake core sends, as the real one would. */
+const mock = {
+	/** Replaces fields of one session, or adds a sample session. */
+	set(id: string, patch: Partial<SessionView>): void {
+		if (!sessions.some((s) => s.id === id) && id in SAMPLES)
+			sessions = [...sessions, structuredClone(SAMPLES[id as SampleKey])];
+		update(id, (s) => ({ ...s, ...patch }));
+	},
+	remove(id: string): void {
+		update(id, () => null);
+	},
+	settings(patch: Partial<Settings>): void {
+		Object.assign(settings, patch);
+		emit("settings-changed", { settings: { ...settings } });
+	},
+};
+(globalThis as { __knockMock?: typeof mock }).__knockMock = mock;
 
 await import("../main");
