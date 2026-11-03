@@ -1,0 +1,107 @@
+/* Animals mode (SPEC.md §10.1, §10.3, §10.5). Chips and tooltips are dark text on a light
+   fill with a dark outline, like the plain pills: the outline reads on a light taskbar,
+   the fill on a dark one, and the text contrast is tested in pill.test.ts. */
+.animals {
+	position: fixed;
+	right: var(--strip-right, 0);
+	bottom: var(--strip-bottom, 0);
+	font-family: "Segoe UI", system-ui, sans-serif;
+	user-select: none;
+	pointer-events: none;
+}
+
+.animals > * {
+	position: absolute;
+}
+
+.stage {
+	left: 0;
+}
+
+.stage canvas {
+	display: block;
+}
+
+.leaders {
+	left: 0;
+	top: 0;
+	overflow: visible;
+}
+
+.chip,
+.tooltip {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	color: #1a1a1a;
+	white-space: nowrap;
+}
+
+.chip {
+	padding: 2px 6px;
+	border: 1.5px solid #1a1a1a;
+	border-radius: 6px;
+	background: var(--fill);
+	font-weight: 600;
+}
+
+.tooltip {
+	z-index: 2;
+	align-items: flex-start;
+	padding: 5px 8px;
+	border: 1px solid #1a1a1a;
+	border-radius: 4px;
+	background: #ffffff;
+	box-shadow: 0 1px 4px #0006;
+}
+
+.chip span,
+.tooltip span {
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.tooltip .project {
+	font-weight: 700;
+}
+
+/* The character's button: Narrator's name and the hit region. Invisible itself. */
+.character {
+	pointer-events: auto;
+	cursor: pointer;
+}
+
+.animals .dismiss {
+	right: auto;
+	pointer-events: auto;
+	z-index: 1;
+}
+
+.zzz {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	overflow: visible;
+}
+
+/* The shared red failure marker, and the badges shown with "Animation effects" off. */
+.marker,
+.badge {
+	position: absolute;
+	left: 1px;
+	top: 1px;
+}
+
+.marker .glyph,
+.badge .glyph {
+	position: static;
+	display: block;
+	width: 100%;
+	height: 100%;
+	border-radius: 50%;
+	box-shadow: 0 0 0 1px #ffffff;
+}

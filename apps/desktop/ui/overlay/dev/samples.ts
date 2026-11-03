@@ -82,6 +82,8 @@ export const SAMPLES = {
 	},
 	ended: {
 		...base,
+		// Recent: in animals mode an ended session fades 60 s after `since` (§10.1).
+		since: new Date(Date.now() - 20_000).toISOString(),
 		id: "ended",
 		project: "infra",
 		tier: "resting",

@@ -98,7 +98,7 @@ export function SettingsPage({
 				)}
 				<Choice
 					legend="Show sessions as"
-					help="Animals arrive in a later version. Until then, Knock shows plain labels either way."
+					help="An animal that knocks when the session needs you, or a colored label with words."
 					options={[
 						{ value: "animals", label: "Animals" },
 						{ value: "plain", label: "Plain labels" },
