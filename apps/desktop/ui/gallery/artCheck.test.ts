@@ -86,8 +86,11 @@ test("a track on an unknown part fails", () => {
 			c.tracks.whiskers = [{ t: 0, x: 1 }];
 		}),
 	);
-	expect(errors).toContain(
-		"clips/work.json: track whiskers: unknown part (not in fox)",
+	// The "not in" list names every animal, in folder-read order.
+	expect(errors).toContainEqual(
+		expect.stringMatching(
+			/^clips\/work\.json: track whiskers: unknown part \(not in .*fox/,
+		),
 	);
 });
 
@@ -126,8 +129,10 @@ test("a swap that names an unknown part fails", () => {
 			c.swaps[0].to = "eyes_shut";
 		}),
 	);
-	expect(errors).toContain(
-		"clips/sleep.json: swap names unknown part eyes_shut (not in fox)",
+	expect(errors).toContainEqual(
+		expect.stringMatching(
+			/^clips\/sleep\.json: swap names unknown part eyes_shut \(not in .*fox/,
+		),
 	);
 });
 
