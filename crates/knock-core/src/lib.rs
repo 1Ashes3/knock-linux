@@ -9,5 +9,7 @@ mod event;
 pub use adapter::{
     Adapter, Capability, ClaudeCode, HookSpec, ParseError, project_key, project_with,
 };
-pub use engine::{Effect, Engine, Input, Needs, NeedsKind, Reason, Session, Settings, State, Tier};
+pub use engine::{
+    ANIMALS, Effect, Engine, Input, Needs, NeedsKind, Reason, Session, Settings, State, Tier,
+};
 pub use event::{Category, Context, Detail, Event, Kind, Source, iso8601};
