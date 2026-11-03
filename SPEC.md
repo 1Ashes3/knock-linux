@@ -456,7 +456,7 @@ Stored in `%APPDATA%\Knock\settings.json`:
 - Must read on light and dark taskbars.
 - No resemblance to known characters or brand mascots, including any AI company's mascot.
 
-**v1 animals:** four, chosen during Phase 3.
+**v1 animals:** fox, rabbit, cat and owl, assigned in that order (ADR 0030).
 
 **Shared UI elements:** the "z", the red failure marker, text chips and badges are drawn by the UI, not by each animal.
 
@@ -562,6 +562,7 @@ Windows limits which apps may bring another window to the front.
 | `ended_unexpectedly`       | Neutral pose, fades after 60 s | "Session ended"            | Never                              |
 
 - Nothing moves except on a state change, or while in a looping Needs-you clip.
+- A calm animal (Working, Ready, Resting) plays one cycle of its clip on a state change, then holds still. Only Needs-you clips keep looping (ADR 0031).
 - With Windows "Animation effects" off: no stepping or pacing. Characters switch poses in place and show badges.
 
 ### 10.2 Notification text
