@@ -29,6 +29,9 @@ const DEDUP_MS: u64 = 10_000;
 const FADE_MS: u64 = 60_000;
 const REMOVE_MS: u64 = 6 * 3_600_000;
 
+/// The v1 animal ids, in assignment order (§8.7, ADR 0030).
+pub const ANIMALS: [&str; 4] = ["fox", "rabbit", "cat", "owl"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     /// §8.6 `stallMinutes`, in ms.
@@ -36,7 +39,7 @@ pub struct Settings {
     /// §8.6 `escalationMinutes`, in ms.
     pub escalation_ms: u64,
     pub notify_on_stall: bool,
-    /// Animal ids in assignment order (the v1 animals come in Phase 3).
+    /// Animal ids in assignment order; [`ANIMALS`] by default.
     pub animals: Vec<String>,
     /// §8.6 `animalOverrides`: [`project_key`] → animal id.
     pub animal_overrides: HashMap<String, String>,
@@ -48,7 +51,7 @@ impl Default for Settings {
             stall_ms: 10 * 60_000,
             escalation_ms: 5 * 60_000,
             notify_on_stall: false,
-            animals: vec!["fox".into()],
+            animals: ANIMALS.map(String::from).to_vec(),
             animal_overrides: HashMap::new(),
         }
     }

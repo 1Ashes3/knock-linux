@@ -2,8 +2,8 @@
 //! rule (ADR 0010, 0016, 0018, 0019, 0021).
 
 use knock_core::{
-    Category, Context, Detail, Effect, Engine, Event, Input, Kind, NeedsKind, Reason, Settings,
-    State, project_key,
+    ANIMALS, Category, Context, Detail, Effect, Engine, Event, Input, Kind, NeedsKind, Reason,
+    Settings, State, project_key,
 };
 
 const MIN: u64 = 60_000;
@@ -648,6 +648,91 @@ fn animals_come_from_the_list_in_order_and_overrides_win() {
         [("s2", "owl"), ("s3", "fox"), ("s4", "heron"), ("s5", "owl")]
     );
     assert_eq!(H::into(State::Idle, 0).s1().animal, "fox", "default list");
+}
+
+/// Starts session `sid` in its own project folder.
+fn start(h: &mut H, sid: &str, ts: u64) {
+    let mut e = ev(Kind::SessionStarted, sid, ts);
+    e.context.cwd = format!(r"C:\code\{sid}");
+    h.send(e);
+}
+
+fn animals(h: &H) -> Vec<(&str, &str)> {
+    let s = h.0.sessions().iter();
+    s.map(|s| (s.id.as_str(), s.animal.as_str())).collect()
+}
+
+// §8.7, ADR 0030: the default list is the v1 animals in order.
+#[test]
+fn the_v1_animals_are_assigned_fox_rabbit_cat_owl() {
+    assert_eq!(ANIMALS, ["fox", "rabbit", "cat", "owl"]);
+    assert_eq!(Settings::default().animals, ANIMALS);
+    let mut h = H::new();
+    for (i, sid) in ["s1", "s2", "s3", "s4"].into_iter().enumerate() {
+        start(&mut h, sid, i as u64);
+    }
+    assert_eq!(
+        animals(&h),
+        [
+            ("s1", "fox"),
+            ("s2", "rabbit"),
+            ("s3", "cat"),
+            ("s4", "owl")
+        ]
+    );
+}
+
+#[test]
+fn a_fifth_session_wraps_around_to_the_fox() {
+    let mut h = H::new();
+    for (i, sid) in ["s1", "s2", "s3", "s4", "s5"].into_iter().enumerate() {
+        start(&mut h, sid, i as u64);
+    }
+    assert_eq!(animals(&h)[4], ("s5", "fox"));
+}
+
+#[test]
+fn a_freed_animal_is_reused_first() {
+    let mut h = H::new();
+    for (i, sid) in ["s1", "s2", "s3", "s4"].into_iter().enumerate() {
+        start(&mut h, sid, i as u64);
+    }
+    h.send(ev(Kind::SessionEnded, "s2", 10));
+    start(&mut h, "s5", 11);
+    assert_eq!(
+        animals(&h),
+        [
+            ("s1", "fox"),
+            ("s3", "cat"),
+            ("s4", "owl"),
+            ("s5", "rabbit")
+        ]
+    );
+    // A dismissed failed session frees its animal too.
+    h.send(ev(Kind::AgentFailed, "s3", 12));
+    h.send(ev(Kind::UserDismiss, "s3", 13));
+    start(&mut h, "s6", 14);
+    assert_eq!(animals(&h)[3], ("s6", "cat"));
+}
+
+#[test]
+fn an_override_wins_over_the_order() {
+    let mut s = Settings::default();
+    s.animal_overrides
+        .insert(project_key(r"C:\code\s1"), "owl".into());
+    let mut h = H::with(s);
+    for (i, sid) in ["s1", "s2", "s3", "s4"].into_iter().enumerate() {
+        start(&mut h, sid, i as u64);
+    }
+    assert_eq!(
+        animals(&h),
+        [
+            ("s1", "owl"),
+            ("s2", "fox"),
+            ("s3", "rabbit"),
+            ("s4", "cat")
+        ]
+    );
 }
 
 #[test]
