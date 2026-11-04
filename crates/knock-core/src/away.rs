@@ -16,6 +16,10 @@
 //!   to another. One that left again, one that was removed, and one that was
 //!   there before `since` and never left are not listed. The outcome is the
 //!   state at return. Simulated sessions count like real ones.
+//! - **Exception** (ADR 0034): a `needs_input` session whose current episode
+//!   opened at or after `since` ([`crate::Needs::opened`]) is listed even if
+//!   it was already in `needs_input` (seen, ADR 0016) before. A new request
+//!   that only joins an episode opened earlier doesn't count.
 //! - No items: no summary.
 
 use crate::engine::{Session, State};
@@ -116,7 +120,12 @@ impl Away {
 pub fn summary(since: u64, sessions: &[Session]) -> Option<AwaySummary> {
     let items: Vec<_> = sessions
         .iter()
-        .filter(|s| s.since >= since)
+        .filter(|s| {
+            // The ADR 0034 exception: a new episode replacing a seen one
+            // keeps `needs_input` (and `since`), but has its own `opened`.
+            let reopened = s.needs.as_ref().is_some_and(|n| n.opened >= since);
+            s.since >= since || reopened
+        })
         .filter_map(|s| {
             Some(AwayItem {
                 id: s.id.clone(),
