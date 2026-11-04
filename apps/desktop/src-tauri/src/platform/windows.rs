@@ -24,11 +24,12 @@ use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_SZ, RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
     RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
-use windows::Win32::System::SystemInformation::GetLocalTime;
+use windows::Win32::System::SystemInformation::{GetLocalTime, GetTickCount64};
 use windows::Win32::System::Threading::{
     GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::UI::Shell::{
     ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA, DefSubclassProc, SHAppBarMessage,
     SetWindowSubclass,
@@ -249,6 +250,23 @@ fn process_start(pid: u32) -> Option<u64> {
         let _ = CloseHandle(h);
         ok.then(|| (u64::from(c.dwHighDateTime) << 32) | u64::from(c.dwLowDateTime))
     }
+}
+
+/// §9.7 idle time: the system's last-input time (this Windows session, any
+/// app), read first, then the tick count, so `now` is never before it.
+/// Reads only; nothing here sends or simulates input (§9.6).
+fn idle_ms() -> Option<u64> {
+    let mut info = LASTINPUTINFO {
+        cbSize: size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    // SAFETY: valid, initialized out-param with its size set.
+    if !unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+        return None;
+    }
+    // SAFETY: no arguments.
+    let now = unsafe { GetTickCount64() };
+    Some(super::idle_from_ticks(now, info.dwTime))
 }
 
 /// Every process: PID, parent, start time and exe file name.
@@ -608,6 +626,10 @@ impl Platform for WindowsPlatform {
     fn restore_launch_at_sign_in(&self, setting: Option<bool>) -> std::io::Result<bool> {
         restore_sign_in(setting)
     }
+
+    fn idle_ms(&self) -> Option<u64> {
+        idle_ms()
+    }
 }
 
 #[cfg(test)]
@@ -783,6 +805,17 @@ mod tests {
         }
         p.set_launch_at_sign_in(false).unwrap();
         assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
+    }
+
+    // Real OS calls (§9.7 idle time): readable, and never longer than the
+    // time since boot. (Not compared across reads: the user may move the
+    // mouse in between.)
+    #[test]
+    fn idle_time_of_this_machine() {
+        let idle = idle_ms().unwrap();
+        // SAFETY: no arguments.
+        let up = unsafe { GetTickCount64() };
+        assert!(idle <= up, "{idle} > {up}");
     }
 
     // Real OS calls (V-7 mechanics): this test process owns the client end of
