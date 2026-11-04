@@ -16,6 +16,23 @@ Open questions for the user:
 
 ---
 
+## 2026-11-04 (later): Phase 3 done, Gate G1 passed
+Done:
+- **Gate G1 passed** (user decision, 2026-11-04).
+- Version bumped to 0.2.0 (2f01cf2). The user built the installer on their v0.1 machine and passed every v0.2 checklist step (1-16):
+  - Upgrade over v0.1, uninstall and reinstall.
+  - Hover box goes away, and clicks pass through.
+  - Second-monitor placement is also tested now.
+  - No issues found.
+- **Phase 3 exit criteria are met.**
+- ADR 0033 (approved by the user): latency and CPU are goals, not tests. It supersedes 0032. SPEC.md §6 and §14 were updated.
+Next:
+- Plan Phase 4 (interaction and scale, v0.3 beta, Gate G2).
+Dependencies added: none
+Clarifications: none
+Open questions for the user:
+- none
+
 ## 2026-11-04: Phase 3 (animals)
 Done:
 - The user asked to start Phase 3 while the Gate G1 week is still running. G1 still ends with the user's pass/fail. If it fails, §14 says to fix detection or the plain strip before more animal work.
