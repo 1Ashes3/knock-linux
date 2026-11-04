@@ -9,7 +9,7 @@ export const SLOT_PX: Record<Size, number> = {
 	large: 80,
 };
 
-/** §9.2: 6 slots at most, so 5 sessions plus the "+N" pill (the den is Phase 4). */
+/** §9.2: 6 slots at most, so 5 sessions plus the den. */
 export const MAX_VISIBLE = 5;
 
 export const INK = "#1a1a1a";
@@ -23,7 +23,8 @@ export const TIER_FILL: Record<Tier, string> = {
 	resting: "#d3d7dd",
 };
 
-export const OVERFLOW_FILL = "#ffffff";
+/** The den's fill in plain mode. */
+export const DEN_FILL = "#ffffff";
 
 /** The full state label (§10.1 chip text, or a plain name where §10.1 has none). */
 export function stateLabel(
@@ -131,16 +132,15 @@ export function knocks(s: SessionView): boolean {
 	return s.state === "needs_input" && s.needs?.seen === false;
 }
 
-const TIER_RANK: Record<Tier, number> = {
-	needs_you: 0,
-	ready: 1,
-	working: 2,
-	resting: 3,
-};
-
 /**
- * Up to 5 sessions get a pill, in the core's order; the rest go into "+N".
- * When some must be hidden, the more urgent tiers keep their pill.
+ * §10.3, FR-10: up to 5 sessions get a slot; above 5 the rest go into the den.
+ * Needs-you sessions get a slot first, then everyone else in the core's order (the order
+ * sessions first appeared), and the slots keep the core's order.
+ *
+ * Only Needs-you ranks ahead, so only Needs-you sessions step out of the den: a den
+ * session that enters Needs you takes the slot of the last calm session, which goes into
+ * the den, and they swap back once it leaves Needs you. A session that becomes Ready,
+ * Working or Resting never moves between a slot and the den.
  */
 export function layout(sessions: SessionView[]): {
 	visible: SessionView[];
@@ -150,7 +150,7 @@ export function layout(sessions: SessionView[]): {
 	const keep = new Set(
 		sessions
 			.map((s, i) => ({ s, i }))
-			.sort((a, b) => TIER_RANK[a.s.tier] - TIER_RANK[b.s.tier] || a.i - b.i)
+			.sort((a, b) => calm(a.s) - calm(b.s) || a.i - b.i)
 			.slice(0, MAX_VISIBLE)
 			.map(({ s }) => s),
 	);
@@ -160,11 +160,44 @@ export function layout(sessions: SessionView[]): {
 	};
 }
 
-/** Narrator name of the "+N" pill. */
-export function overflowName(hidden: SessionView[]): string {
-	const needYou = hidden.filter((s) => s.tier === "needs_you").length;
-	const more = `${hidden.length} more ${hidden.length === 1 ? "session" : "sessions"}`;
-	return needYou
-		? `${more}, ${needYou} ${needYou === 1 ? "needs" : "need"} you`
-		: more;
+const calm = (s: SessionView) => (s.tier === "needs_you" ? 0 : 1);
+
+/** The tiers, most urgent first (§1): the order the den lists them in. */
+export const TIERS: readonly Tier[] = [
+	"needs_you",
+	"ready",
+	"working",
+	"resting",
+];
+
+/** The glyph for a whole tier, as on the pills. */
+export const tierGlyph = (t: Tier): Glyph => TIER_GLYPH[t];
+
+export interface DenCount {
+	tier: Tier;
+	count: number;
+}
+
+/** FR-10: the den's per-tier counts. Non-zero tiers only, most urgent first. */
+export function denCounts(hidden: SessionView[]): DenCount[] {
+	return TIERS.map((tier) => ({
+		tier,
+		count: hidden.filter((s) => s.tier === tier).length,
+	})).filter((c) => c.count > 0);
+}
+
+const TIER_WORDS: Record<Tier, [one: string, many: string]> = {
+	needs_you: ["needs you", "need you"],
+	ready: ["ready", "ready"],
+	working: ["working", "working"],
+	resting: ["resting", "resting"],
+};
+
+/** §10.5: what Narrator reads for the den, e.g. "3 more sessions: 1 needs you, 2 working". */
+export function denName(hidden: SessionView[]): string {
+	const n = hidden.length;
+	const counts = denCounts(hidden).map(
+		({ tier, count }) => `${count} ${TIER_WORDS[tier][count === 1 ? 0 : 1]}`,
+	);
+	return `${n} more ${n === 1 ? "session" : "sessions"}: ${counts.join(", ")}`;
 }

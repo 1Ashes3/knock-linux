@@ -24,9 +24,9 @@ export interface Character {
 
 export interface Model {
 	characters: Character[];
-	/** Sessions in the "+N" slot (Phase 2 overflow; the den is Phase 4). */
+	/** Sessions in the den (FR-10). */
 	hidden: SessionView[];
-	/** Slots in use, including "+N". */
+	/** Slots in use, including the den. */
 	slots: number;
 	/** The next time something changes without a new event; Infinity if nothing will. */
 	wakeAt: number;
@@ -82,24 +82,23 @@ export function step(
 			});
 		});
 
+	// Den sessions keep a plan too, so one that comes out of the den (or goes back in)
+	// without a state change of its own appears settled: only a state change moves an
+	// animal (§10.1). One that steps out because it entered Needs you has a new plan,
+	// so it steps up and knocks.
 	const plans = new Map<string, Plan>();
-	const order: Character[] = visible.map((session) => {
-		const plan = nextPlan(
-			memory.plans.get(session.id),
-			session,
-			still,
-			now,
-			clips,
+	for (const session of live)
+		plans.set(
+			session.id,
+			nextPlan(memory.plans.get(session.id), session, still, now, clips),
 		);
-		plans.set(session.id, plan);
-		return {
-			session,
-			slot: 0,
-			plan,
-			fadeFrom: endedFadeStart(session),
-			leaving: false,
-		};
-	});
+	const order: Character[] = visible.map((session) => ({
+		session,
+		slot: 0,
+		plan: plans.get(session.id) as Plan,
+		fadeFrom: endedFadeStart(session),
+		leaving: false,
+	}));
 	// Ghosts keep their old slot while they fade, if there is room for them.
 	const byOldSlot = [...ghosts.values()].sort(
 		(a, b) => a.character.slot - b.character.slot,

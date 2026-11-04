@@ -1,18 +1,21 @@
 import { expect, test } from "vitest";
 import type { SessionView } from "./bridge";
-import { SAMPLES } from "./dev/samples";
+import { EIGHT_DEN, SAMPLES } from "./dev/samples";
 import {
 	accessibleName,
+	DEN_FILL,
+	denCounts,
+	denName,
 	dismissible,
 	glyph,
 	INK,
 	knocks,
 	layout,
-	OVERFLOW_FILL,
-	overflowName,
 	RED,
 	shortWord,
 	TIER_FILL,
+	TIERS,
+	tierGlyph,
 } from "./pill";
 
 const NOW = Date.parse("2026-11-01T12:00:00Z");
@@ -109,36 +112,132 @@ test("up to 5 sessions all get a pill, in the core's order", () => {
 	expect(layout(sessions)).toEqual({ visible: sessions, hidden: [] });
 });
 
-test("above 5: 5 pills plus +N, urgent tiers keep their pill, core order kept", () => {
+const ids = (list: SessionView[]) => list.map((s) => s.id);
+const needs = (s: SessionView): SessionView => ({
+	...s,
+	tier: "needs_you",
+	state: "needs_input",
+	needs: { kind: "permission", label: "Bash", seen: false },
+});
+
+test("above 5: Needs you first, then the core's order; slots keep the core's order", () => {
 	const idle = many(3, SAMPLES.idle);
 	const working = many(2);
-	const urgent = [SAMPLES.permission, SAMPLES.ready];
 	const sessions = [
 		idle[0],
 		working[0],
-		urgent[0],
+		SAMPLES.ready,
 		idle[1],
 		working[1],
-		urgent[1],
+		SAMPLES.permission,
 		idle[2],
 	] as SessionView[];
 	const { visible, hidden } = layout(sessions);
-	expect(visible).toEqual([
-		idle[0],
-		working[0],
-		urgent[0],
-		working[1],
-		urgent[1],
+	expect(ids(visible)).toEqual([
+		"idle0",
+		"working0",
+		"ready",
+		"idle1",
+		"permission",
 	]);
-	expect(hidden).toEqual([idle[1], idle[2]]);
-	expect(overflowName(hidden)).toBe("2 more sessions");
+	expect(ids(hidden)).toEqual(["working1", "idle2"]);
+	expect(denName(hidden)).toBe("2 more sessions: 1 working, 1 resting");
 });
 
-test("+N names hidden Needs-you sessions", () => {
-	const { hidden } = layout(many(7, SAMPLES.permission));
-	expect(hidden).toHaveLength(2);
-	expect(overflowName(hidden)).toBe("2 more sessions, 2 need you");
-	expect(overflowName(hidden.slice(1))).toBe("1 more session, 1 needs you");
+test("only Needs-you steps out of the den, and steps back in when it calms down", () => {
+	const six = many(6);
+	expect(ids(layout(six).hidden)).toEqual(["working5"]);
+	// Ready, Working and Resting never move a den session into a slot.
+	for (const calm of [SAMPLES.ready, SAMPLES.idle, SAMPLES.ended]) {
+		const list = six.map((s, i) =>
+			i === 5 ? { ...s, tier: calm.tier, state: calm.state } : s,
+		);
+		expect(ids(layout(list).hidden)).toEqual(["working5"]);
+	}
+	// Needs you: it takes the last calm slot, and that session goes into the den.
+	const knocking = six.map((s, i) => (i === 5 ? needs(s) : s));
+	const out = layout(knocking);
+	expect(ids(out.visible)).toEqual([
+		"working0",
+		"working1",
+		"working2",
+		"working3",
+		"working5",
+	]);
+	expect(ids(out.hidden)).toEqual(["working4"]);
+	// Every Needs-you kind steps out, seen or not (ADR 0016).
+	for (const s of [SAMPLES.failed, SAMPLES.stalled, SAMPLES.seen]) {
+		const list = six.map((x, i) =>
+			i === 5 ? { ...x, tier: s.tier, state: s.state, needs: s.needs } : x,
+		);
+		expect(ids(layout(list).hidden)).toEqual(["working4"]);
+	}
+	// The swap back: once it leaves Needs you (here, Ready), they swap back.
+	const back = six.map((s, i) =>
+		i === 5 ? { ...s, tier: "ready" as const, state: "ready" as const } : s,
+	);
+	expect(ids(layout(back).hidden)).toEqual(["working5"]);
+});
+
+test("a calm session in a slot that changes tier keeps its slot", () => {
+	const six = many(6);
+	const list = six.map((s, i) =>
+		i === 0 ? { ...s, tier: "resting" as const, state: "idle" as const } : s,
+	);
+	expect(ids(layout(list).hidden)).toEqual(["working5"]);
+});
+
+test("more than 5 Needs-you: the first 5 in the core's order get a slot", () => {
+	const knock = many(7, SAMPLES.permission);
+	const { visible, hidden } = layout([SAMPLES.working, ...knock]);
+	expect(ids(visible)).toEqual(ids(knock.slice(0, 5)));
+	expect(ids(hidden)).toEqual(["working", "permission5", "permission6"]);
+	expect(denCounts(hidden)).toEqual([
+		{ tier: "needs_you", count: 2 },
+		{ tier: "working", count: 1 },
+	]);
+	expect(denName(hidden)).toBe("3 more sessions: 2 need you, 1 working");
+	expect(denName(hidden.slice(1, 2))).toBe("1 more session: 1 needs you");
+});
+
+test("den counts: one per non-zero tier, most urgent first", () => {
+	const hidden = [
+		SAMPLES.idle,
+		SAMPLES.working,
+		SAMPLES.ended,
+		SAMPLES.ready,
+		SAMPLES.stalled,
+		SAMPLES.idle,
+	];
+	expect(denCounts(hidden)).toEqual([
+		{ tier: "needs_you", count: 1 },
+		{ tier: "ready", count: 1 },
+		{ tier: "working", count: 1 },
+		{ tier: "resting", count: 3 },
+	]);
+	expect(denName(hidden)).toBe(
+		"6 more sessions: 1 needs you, 1 ready, 1 working, 3 resting",
+	);
+	expect(denCounts([])).toEqual([]);
+	// Each tier has its own glyph, so a count never relies on color (§6).
+	expect(new Set(TIERS.map(tierGlyph)).size).toBe(4);
+});
+
+test("eight-den: 3 Needs you and 2 Ready get slots; the den holds 1 ready, 2 working", () => {
+	const { visible, hidden } = layout(EIGHT_DEN);
+	expect(visible.map((s) => s.project)).toEqual([
+		"web-shop",
+		"api-gateway",
+		"data-jobs",
+		"mobile-app",
+		"billing",
+	]);
+	expect(hidden.map((s) => s.project)).toEqual([
+		"docs-site",
+		"infra",
+		"search",
+	]);
+	expect(denName(hidden)).toBe("3 more sessions: 1 ready, 2 working");
 });
 
 // WCAG 2.x relative luminance and contrast ratio (§10.5).
@@ -160,7 +259,7 @@ const contrast = (a: string, b: string) => {
 test("text on every pill meets WCAG AA; pills stand out on light and dark taskbars", () => {
 	const LIGHT_TASKBAR = "#f3f3f3";
 	const DARK_TASKBAR = "#202020";
-	for (const fill of [...Object.values(TIER_FILL), OVERFLOW_FILL]) {
+	for (const fill of [...Object.values(TIER_FILL), DEN_FILL]) {
 		expect(contrast(INK, fill)).toBeGreaterThanOrEqual(4.5);
 		// Non-text contrast (3:1): the dark outline on light, the fill on dark.
 		expect(contrast(fill, DARK_TASKBAR)).toBeGreaterThanOrEqual(3);

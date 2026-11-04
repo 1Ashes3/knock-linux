@@ -1,24 +1,22 @@
 import {
 	type CSSProperties,
-	type ReactNode,
 	useEffect,
 	useLayoutEffect,
 	useRef,
 	useState,
 } from "react";
 import { useStore } from "zustand";
+import { AwayAnnouncer, AwayCard, cardLayout } from "./AwayCard";
+import { cardOffset, withCard } from "./away";
 import { call, type HitRegion, type SessionView } from "./bridge";
+import { Den } from "./Den";
+import { CloseIcon, GlyphIcon } from "./Glyph";
 import {
 	accessibleName,
 	dismissible,
-	type Glyph,
 	glyph,
-	INK,
 	knocks,
 	layout,
-	OVERFLOW_FILL,
-	overflowName,
-	RED,
 	SLOT_PX,
 	shortWord,
 	TIER_FILL,
@@ -50,13 +48,21 @@ export function useMinuteClock(on: boolean): number {
 	return now;
 }
 
-export function Strip({ store }: { store: StripStore }) {
+export function Strip({
+	store,
+	onDismissAway,
+}: {
+	store: StripStore;
+	/** A click on the away card (FR-9). */
+	onDismissAway: () => void;
+}) {
 	const sessions = useStore(store, (s) => s.sessions);
 	const size = useStore(store, (s) => s.settings?.size ?? "medium");
 	const stallMinutes = useStore(
 		store,
 		(s) => s.settings?.stallMinutes ?? STALL_DEFAULT,
 	);
+	const away = useStore(store, (s) => s.away);
 	const now = useMinuteClock(sessions.some((s) => s.state === "stalled"));
 	const ref = useRef<HTMLDivElement>(null);
 	const sendSize = useSend("request_strip_size");
@@ -65,8 +71,11 @@ export function Strip({ store }: { store: StripStore }) {
 	const h = SLOT_PX[size];
 	const { visible, hidden } = layout(sessions);
 	const width = (visible.length + (hidden.length ? 1 : 0)) * h;
+	const card = cardLayout(away, size);
 
-	useEffect(() => sendSize({ width, height: h }));
+	useEffect(() => sendSize(withCard({ width, height: h }, card, h)));
+	// FR-9: the card stacks above the pills, right edges level (§9.2: never wider).
+	const cardAt = card && cardOffset({ width, height: h }, card);
 
 	useLayoutEffect(() => {
 		const report = () => {
@@ -83,17 +92,33 @@ export function Strip({ store }: { store: StripStore }) {
 	});
 
 	return (
-		<div
-			ref={ref}
-			className="strip"
-			role="group"
-			aria-label="Claude Code sessions"
-			style={{ "--s": `${h}px`, width, height: h } as CSSProperties}
-		>
-			{visible.map((s) => (
-				<Pill key={s.id} s={s} name={accessibleName(s, now, stallMinutes)} />
-			))}
-			{hidden.length > 0 && <Overflow hidden={hidden} />}
+		<div ref={ref}>
+			<div
+				className="strip"
+				role="group"
+				aria-label="Claude Code sessions"
+				style={{ "--s": `${h}px`, width, height: h } as CSSProperties}
+			>
+				{visible.map((s) => (
+					<Pill key={s.id} s={s} name={accessibleName(s, now, stallMinutes)} />
+				))}
+				{hidden.length > 0 && (
+					<div className="slot">
+						<Den hidden={hidden} look="pill" />
+					</div>
+				)}
+			</div>
+			{card && cardAt && (
+				<AwayCard
+					card={card}
+					onDismiss={onDismissAway}
+					style={{
+						right: "var(--strip-right, 0px)",
+						bottom: `calc(var(--strip-bottom, 0px) + ${h - cardAt.y - card.height}px)`,
+					}}
+				/>
+			)}
+			<AwayAnnouncer card={card} />
 		</div>
 	);
 }
@@ -122,81 +147,9 @@ function Pill({ s, name }: { s: SessionView; name: string }) {
 					data-hit=""
 					onClick={() => void call("dismiss", { id: s.id })}
 				>
-					<svg viewBox="0 0 12 12" aria-hidden="true">
-						<circle cx="6" cy="6" r="5.4" fill={INK} stroke="#fff" />
-						<path
-							d="M4 4L8 8M8 4L4 8"
-							stroke="#fff"
-							strokeWidth="1.5"
-							strokeLinecap="round"
-						/>
-					</svg>
+					<CloseIcon />
 				</div>
 			)}
 		</div>
-	);
-}
-
-/** "+N": sessions beyond the 5 pills. Not clickable yet (the den is Phase 4), so no hit region. */
-export function Overflow({ hidden }: { hidden: SessionView[] }) {
-	const urgent = hidden.some((s) => s.tier === "needs_you");
-	return (
-		<div className="slot">
-			<div
-				className="pill overflow"
-				role="img"
-				aria-label={overflowName(hidden)}
-				style={
-					{
-						"--fill": urgent ? TIER_FILL.needs_you : OVERFLOW_FILL,
-					} as CSSProperties
-				}
-			>
-				{urgent && <GlyphIcon g="ask" />}
-				<span className="word">+{hidden.length}</span>
-				<span className="project">more</span>
-			</div>
-		</div>
-	);
-}
-
-const MARKS: Record<Glyph, ReactNode> = {
-	ask: (
-		<>
-			<path d="M4.3 4.6C4.3 3.5 5.1 2.8 6.1 2.8C7.1 2.8 7.8 3.5 7.8 4.4C7.8 5.6 6.1 5.8 6.1 7" />
-			<circle cx="6.1" cy="9.2" r="0.5" fill="#fff" />
-		</>
-	),
-	failed: (
-		<>
-			<path d="M6 3V6.6" />
-			<circle cx="6" cy="9" r="0.6" fill="#fff" />
-		</>
-	),
-	check: <path d="M3.4 6.3L5.2 8.1L8.7 4.3" />,
-	dots: (
-		<>
-			<circle cx="3.4" cy="6" r="0.4" fill="#fff" />
-			<circle cx="6" cy="6" r="0.4" fill="#fff" />
-			<circle cx="8.6" cy="6" r="0.4" fill="#fff" />
-		</>
-	),
-	z: <path d="M4 4H8L4 8H8" />,
-};
-
-export function GlyphIcon({ g }: { g: Glyph }) {
-	return (
-		<svg className="glyph" viewBox="0 0 12 12" aria-hidden="true">
-			<circle cx="6" cy="6" r="6" fill={g === "failed" ? RED : INK} />
-			<g
-				fill="none"
-				stroke="#fff"
-				strokeWidth="1.6"
-				strokeLinecap="round"
-				strokeLinejoin="round"
-			>
-				{MARKS[g]}
-			</g>
-		</svg>
 	);
 }

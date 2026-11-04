@@ -2,7 +2,14 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useStore } from "zustand";
 import { AnimalStrip } from "./animals/AnimalStrip";
-import { call, listen, type SessionsChanged, type Settings } from "./bridge";
+import { createAwayCard } from "./away";
+import {
+	type AwaySummary,
+	call,
+	listen,
+	type SessionsChanged,
+	type Settings,
+} from "./bridge";
 import { Strip } from "./Strip";
 import { createStripStore, type StripStore } from "./store";
 import "./strip.css";
@@ -13,7 +20,9 @@ const {
 	applyInitialSessions,
 	applySettings,
 	applyInitialSettings,
+	applyAway,
 } = store.getState();
+const away = createAwayCard(store);
 
 /**
  * FR-3: `settings.mode` picks animals or the plain strip, and a change applies at once.
@@ -24,9 +33,13 @@ function Overlay({ store }: { store: StripStore }) {
 	const [unavailable, setUnavailable] = useState(false);
 	if (mode === "animals" && !unavailable)
 		return (
-			<AnimalStrip store={store} onUnavailable={() => setUnavailable(true)} />
+			<AnimalStrip
+				store={store}
+				onUnavailable={() => setUnavailable(true)}
+				onDismissAway={away.dismiss}
+			/>
 		);
-	return <Strip store={store} />;
+	return <Strip store={store} onDismissAway={away.dismiss} />;
 }
 
 createRoot(document.getElementById("root") as HTMLElement).render(
@@ -39,6 +52,7 @@ await Promise.all([
 	listen<{ settings: Settings }>("settings-changed", (p) =>
 		applySettings(p.settings),
 	),
+	listen<AwaySummary>("away-summary", (p) => applyAway(p)),
 ]);
 const [sessions, settings] = await Promise.all([
 	call("get_sessions"),

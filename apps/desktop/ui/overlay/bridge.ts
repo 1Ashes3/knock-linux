@@ -46,6 +46,20 @@ export interface SessionsChanged {
 	sessions: SessionView[];
 }
 
+/** §8.5 `away-summary`: what changed while the user was away (FR-9, ADR 0034). */
+export interface AwaySummary {
+	/** ISO 8601: when the idle period started. */
+	since: string;
+	items: AwayItem[];
+}
+
+export interface AwayItem {
+	id: string;
+	project: string;
+	/** The session's status when the user came back. */
+	outcome: "ready" | "failed" | "needs_you";
+}
+
 export type Size = "small" | "medium" | "large";
 
 export interface Settings {
