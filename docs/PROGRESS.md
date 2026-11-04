@@ -16,6 +16,31 @@ Open questions for the user:
 
 ---
 
+## 2026-11-04 (evening): Phase 4 (interaction and scale)
+Done:
+- Survey: FR-5 escalation, FR-6 jump (with the flash fallback and the toast click), FR-11 stall, suppression, multiple monitors and FR-15 were already built and tested (checked by `core-windows`). The quiet-hours and pause controls were in Settings and the tray since Phase 2.
+- ADR 0034, approved by the user: the away card lists sessions that entered Ready, Failed or Needs you while the user was away and are still there on return. A seen session that asks again while the user is away is listed too (user, same day).
+- 4.1 (`core-windows`): idle time in the platform layer, and a pure `Away` tracker in knock-core. `away-summary` is sent on return, and `dismiss_away_summary()` clears it (8472163, e1eba3e).
+  - A debug-only `KNOCK_AWAY_SECONDS` shortens the 10 minutes for manual tests.
+- 4.2 (`ui`): the den in both modes (1ff0a25). It shows per-tier counts, and only Needs-you sessions step out.
+  - Slot rule: Needs-you first, then the core's order. The lead accepted this because it matches FR-10.
+- 4.2 (`ui`): the away card, above the strip.
+  - Lead review caught the card placed beside the strip, past the core's 6-slot width cap. It was moved, and the dev mock now applies the cap.
+- Lead review: `pnpm check` passes, 216/216 screenshot tests, `art:check` passes, 17/17 replays.
+- Merged into `develop`: phase-4/away-core, phase-4/away-reask, phase-4/den-away-ui.
+- Version set to 0.3.0-beta.1.
+Next:
+- The user's manual test of the den, eight-den and the away card.
+- Then G2: build the beta, the lead writes tester instructions (unsigned installer, Smart App Control, §13.5), and the user publishes the GitHub pre-release by hand.
+Dependencies added: none
+Clarifications (lead):
+- A PC that sleeps before 10 idle minutes produces no away summary. Accepted for v1.
+- The den is not clickable.
+- The away card shows at most 5 items, then "and N more".
+Open questions for the user:
+- The Phase 4 manual test.
+- The G2 tester list.
+
 ## 2026-11-04 (later): Phase 3 done, Gate G1 passed
 Done:
 - **Gate G1 passed** (user decision, 2026-11-04).

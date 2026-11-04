@@ -2,7 +2,7 @@
 name = "knock-desktop"
 # The app's one version: tauri.conf.json has none, so the installer, the
 # exe's file version and /v1/health all use this.
-version = "0.2.0"
+version = "0.3.0-beta.1"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
