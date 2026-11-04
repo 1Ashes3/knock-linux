@@ -580,6 +580,7 @@ Windows limits which apps may bring another window to the front.
 - **Tooltips** show project, state label, time in state and the decision type when Needs you. Never agent text.
 - **Den:** above 5 active sessions, extra sessions go into the den, which shows per-tier counts. Only Needs-you sessions step out of it.
 - **Plain-strip mode** uses the same layout with colored pills plus text labels.
+- **Away card** lists sessions that entered Ready, Failed or Needs you while the user was away and are still there on return, with their status at return (ADR 0034).
 
 ### 10.4 Setup flow
 
