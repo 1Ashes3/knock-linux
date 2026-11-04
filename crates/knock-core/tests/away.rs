@@ -211,6 +211,49 @@ fn adr_0034_inclusions_and_exclusions() {
     );
 }
 
+/// ADR 0034 exception: seen before the user left, then a new request
+/// during the idle period opens a new episode (ADR 0016, 0018 item 1). The
+/// state never left `needs_input`, but the session is listed.
+#[test]
+fn a_seen_needs_input_that_asks_again_while_away_is_listed() {
+    let mut h = H::new();
+    h.ask("reasked", 0);
+    h.send(Kind::UserAck, "reasked", 500);
+    h.touch(1000);
+    h.ask("reasked", 5 * MIN);
+    let s = &h.engine.sessions()[0];
+    let n = s.needs.as_ref().unwrap();
+    assert_eq!((s.since, n.seen, n.opened), (T0, false, T0 + 5 * MIN));
+    h.touch(15 * MIN).until(15 * MIN + 1000);
+    assert_eq!(h.got[0].1.since, T0 + 1000);
+    assert_eq!(h.items(), pairs(&[("reasked", "needs_you")]));
+}
+
+/// Still excluded: a seen episode from before with no new request, and an
+/// episode from before that a prompt or another requester only joined.
+#[test]
+fn a_needs_input_episode_opened_before_the_idle_period_is_not_listed() {
+    let mut h = H::new();
+    h.ask("seen", 0);
+    h.send(Kind::UserAck, "seen", 500);
+    h.ask("prompt-joins", 0);
+    h.send(Kind::UserAck, "prompt-joins", 500);
+    h.ask("sub-joins", 0);
+    h.touch(1000);
+    // The `permission_prompt` Notification (no tool) after the dedup window.
+    h.send(Kind::NeedsPermission, "prompt-joins", 5 * MIN);
+    // A sub-agent asks while the main agent's episode is still unseen.
+    let mut sub = permission("sub-joins", T0 + 5 * MIN);
+    sub.context.agent_id = Some("agent-1".into());
+    h.event(sub, false);
+    let opened: Vec<_> = (h.engine.sessions().iter())
+        .map(|s| s.needs.as_ref().unwrap().opened)
+        .collect();
+    assert_eq!(opened, [T0, T0, T0], "no new episode");
+    h.touch(15 * MIN).until(15 * MIN + 1000);
+    assert!(h.got.is_empty(), "{:?}", h.got);
+}
+
 #[test]
 fn simulated_sessions_count_like_real_ones() {
     let mut h = H::new();
