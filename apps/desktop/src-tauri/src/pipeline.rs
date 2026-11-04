@@ -11,17 +11,20 @@
 //! Out: the effect runner turns `Notify` and `Escalate` into toasts (§10.2),
 //! batches `ReadyBatchAdd` without showing anything (FR-8), writes the
 //! snapshot on `Persist`, and publishes `sessions-changed` (§8.5) and the
-//! tray count. [`Published`] is what the server and the commands read.
+//! tray count. Each tick it also reads the idle time and sends
+//! `away-summary` when the user returns (FR-9, ADR 0034).
+//! [`Published`] is what the server and the commands read.
 
 use crate::jump::{Precision, ProcessId};
 use crate::platform::{self, Platform};
 use crate::settings::{self, Settings};
 use knock_core::{
-    Adapter, Category, ClaudeCode, Effect, Engine, Event, Input, Kind, NeedsKind, Reason, Tier,
-    iso8601,
+    AWAY_MS, Adapter, Away, AwaySummary, Category, ClaudeCode, Effect, Engine, Event, Input, Kind,
+    NeedsKind, Reason, Tier, iso8601,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -32,6 +35,23 @@ const SNAPSHOT: &str = "sessions.json";
 /// The test knock's project name and how long it stays.
 const TEST_PROJECT: &str = "Knock test";
 const TEST_MS: u64 = 10_000;
+
+/// Testing aid, debug builds only: `KNOCK_AWAY_SECONDS=<n>` (a whole number,
+/// 1 or more) makes the user count as away after `n` idle seconds instead
+/// of 10 minutes, so FR-9 can be tried by hand without waiting. In
+/// PowerShell, before `pnpm dev`: `$env:KNOCK_AWAY_SECONDS = "30"`.
+/// Release builds never read it ([`away_threshold`]).
+pub const AWAY_VAR: &str = "KNOCK_AWAY_SECONDS";
+
+/// §9.7: 10 minutes, or [`AWAY_VAR`]'s seconds in a debug build. Anything
+/// else (unset, empty, 0, not a number, or any release build) is 10 minutes.
+pub fn away_threshold(debug: bool, var: Option<&OsStr>) -> u64 {
+    let secs = var
+        .filter(|_| debug)
+        .and_then(|v| v.to_str()?.trim().parse::<u64>().ok());
+    secs.filter(|s| *s > 0)
+        .map_or(AWAY_MS, |s| s.saturating_mul(1000))
+}
 
 pub enum Msg {
     /// A hook request (§8.1), received at `ts` (ms since the Unix epoch).
@@ -55,6 +75,8 @@ pub enum Msg {
         patch: serde_json::Value,
         reply: Option<oneshot::Sender<Result<Settings, String>>>,
     },
+    /// `dismiss_away_summary()` (§8.5): the card folded away.
+    DismissAway,
 }
 
 /// What the effect runner shows or sends.
@@ -69,6 +91,8 @@ pub enum Out {
     Settings(Settings),
     /// The Needs-you count, for the tray (§9.7).
     Tray(usize),
+    /// `away-summary` (§8.5).
+    Away(AwaySummaryView),
 }
 
 /// The `sessions-changed` payload (§8.5); also `GET /v1/debug/snapshot`.
@@ -94,6 +118,39 @@ pub struct SessionView {
     pub simulated: bool,
 }
 
+/// The `away-summary` payload (§8.5, ADR 0034).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AwaySummaryView {
+    /// When the idle period began (the last input).
+    pub since: String,
+    pub items: Vec<AwayItemView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AwayItemView {
+    pub id: String,
+    pub project: String,
+    /// "ready", "failed" or "needs_you".
+    pub outcome: &'static str,
+}
+
+impl From<AwaySummary> for AwaySummaryView {
+    fn from(s: AwaySummary) -> Self {
+        AwaySummaryView {
+            since: iso8601(s.since),
+            items: (s.items.into_iter())
+                .map(|i| AwayItemView {
+                    id: i.id,
+                    project: i.project,
+                    outcome: i.outcome.as_str(),
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct NeedsView {
     pub kind: &'static str,
@@ -109,6 +166,8 @@ pub struct Published {
     pub jump: HashMap<String, (ProcessId, String)>,
     pub settings: Settings,
     pub last_event_at: Option<u64>,
+    /// An `away-summary` was sent and not yet dismissed.
+    pub away_pending: bool,
 }
 
 pub type Shared = Arc<Mutex<Published>>;
@@ -142,9 +201,15 @@ pub struct Core {
     unowned: HashSet<String>,
     /// A `Persist` not yet written; [`Core::flush`] writes it.
     dirty: Option<u64>,
-    /// FR-8: sessions that became Ready, never shown. For Phase 4 (FR-9).
+    /// FR-8: sessions that became Ready, never shown. FR-9 doesn't read it:
+    /// the away summary uses each session's state at return (ADR 0034).
     #[cfg_attr(not(test), allow(dead_code))]
     ready: Vec<String>,
+    /// FR-9 idle tracking.
+    away: Away,
+    /// The last `away-summary` sent, held until `dismiss_away_summary()`;
+    /// a new one replaces it.
+    away_pending: Option<AwaySummaryView>,
     /// Test-knock sessions and when they end.
     tests: Vec<(String, u64)>,
     view: SessionsChanged,
@@ -169,6 +234,15 @@ impl Core {
         let mut engine = Engine::new(settings.engine());
         let suppressed = settings.suppressed(local_minute);
         engine.step(Input::SetSuppressed(suppressed));
+        let debug = cfg!(debug_assertions);
+        let var = debug.then(|| std::env::var_os(AWAY_VAR)).flatten();
+        let threshold = away_threshold(debug, var.as_deref());
+        if threshold != AWAY_MS {
+            tracing::info!(
+                seconds = threshold / 1000,
+                "away threshold shortened (debug build)"
+            );
+        }
         let core = Core {
             engine,
             adapter: ClaudeCode { users: users() },
@@ -178,6 +252,8 @@ impl Core {
             unowned: HashSet::new(),
             dirty: None,
             ready: Vec::new(),
+            away: Away::new(threshold),
+            away_pending: None,
             tests: Vec::new(),
             view: SessionsChanged::default(),
             needs_you: 0,
@@ -225,6 +301,11 @@ impl Core {
                     let _ = tx.send(r);
                 }
             }
+            Msg::DismissAway => {
+                if self.away_pending.take().is_some() {
+                    tracing::info!("away summary dismissed");
+                }
+            }
         }
         self.finish(run, now)
     }
@@ -253,7 +334,33 @@ impl Core {
             self.test_hook(now, &id, "SessionEnd", &mut run);
         }
         self.step(Input::Tick { now }, &mut run);
+        self.away(now, &mut run);
         self.finish(run, now)
+    }
+
+    /// FR-9, after the engine's tick so the states are those at return. An
+    /// unreadable idle time skips the tick: away stays as it was.
+    fn away(&mut self, now: u64, run: &mut Run) {
+        let Some(idle) = self.platform.as_ref().and_then(|p| p.idle_ms()) else {
+            return;
+        };
+        let was = self.away.since();
+        let summary = self.away.tick(now, idle, self.engine.sessions());
+        if was.is_some() && self.away.since() != was {
+            // Item count only (§11.5).
+            let items = summary.as_ref().map_or(0, |s| s.items.len());
+            tracing::info!(items, "back from away");
+        }
+        if let Some(s) = summary {
+            let view = AwaySummaryView::from(s);
+            if self.away_pending.replace(view.clone()).is_some() {
+                tracing::info!("away summary replaced");
+            }
+            run.outs.push(Out::Away(view));
+        }
+        if self.away.since().is_some_and(|s| was != Some(s)) {
+            tracing::info!("away");
+        }
     }
 
     fn hook(&mut self, ts: u64, body: &[u8], sim: bool, owner: Option<ProcessId>, run: &mut Run) {
@@ -584,6 +691,7 @@ impl Core {
             .collect();
         p.settings = self.settings.clone();
         p.last_event_at = self.last_event_at;
+        p.away_pending = self.away_pending.is_some();
     }
 }
 
@@ -919,6 +1027,145 @@ mod tests {
             (json["activity"].clone(), json["needs"].clone()),
             (Value::Null, Value::Null)
         );
+    }
+
+    #[test]
+    fn away_summary_uses_the_exact_spec_shape() {
+        let s = knock_core::AwaySummary {
+            since: T0,
+            items: vec![
+                knock_core::AwayItem {
+                    id: "s1".into(),
+                    project: "web-shop".into(),
+                    outcome: knock_core::Outcome::Ready,
+                },
+                knock_core::AwayItem {
+                    id: "s2".into(),
+                    project: "api".into(),
+                    outcome: knock_core::Outcome::Failed,
+                },
+                knock_core::AwayItem {
+                    id: "s3".into(),
+                    project: "jobs".into(),
+                    outcome: knock_core::Outcome::NeedsYou,
+                },
+            ],
+        };
+        assert_eq!(
+            serde_json::to_string(&AwaySummaryView::from(s)).unwrap(),
+            concat!(
+                r#"{"since":"2026-10-16T16:00:00.000Z","items":["#,
+                r#"{"id":"s1","project":"web-shop","outcome":"ready"},"#,
+                r#"{"id":"s2","project":"api","outcome":"failed"},"#,
+                r#"{"id":"s3","project":"jobs","outcome":"needs_you"}]}"#
+            )
+        );
+    }
+
+    #[test]
+    fn the_away_threshold_is_shortened_only_in_a_debug_build() {
+        let os = |s: &'static str| Some(OsStr::new(s));
+        assert_eq!(away_threshold(true, None), 10 * MIN);
+        assert_eq!(away_threshold(true, os("30")), 30_000);
+        assert_eq!(away_threshold(true, os(" 5 ")), 5_000);
+        for bad in ["", "0", "-5", "1.5", "abc", "30s"] {
+            assert_eq!(away_threshold(true, os(bad)), 10 * MIN, "{bad:?}");
+        }
+        for any in [None, os("30"), os("1")] {
+            assert_eq!(away_threshold(false, any), 10 * MIN, "release: {any:?}");
+        }
+    }
+
+    fn aways(outs: &[Out]) -> Vec<AwaySummaryView> {
+        outs.iter()
+            .filter_map(|o| match o {
+                Out::Away(a) => Some(a.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    impl T {
+        /// One tick at `t` with the user idle since `input`.
+        fn idle_tick(&mut self, t: u64, input: u64) -> Vec<Out> {
+            *self.fake.idle.lock().unwrap() = Some(t - input);
+            self.core.tick(T0 + t, self.minute)
+        }
+    }
+
+    /// FR-9 end to end through the pipeline: the idle time comes from the
+    /// platform, a summary on return, held until dismissed, replaced by the
+    /// next one, and nothing when the idle time can't be read.
+    #[test]
+    fn away_summary_on_return_held_until_dismissed_and_replaced() {
+        let mut t = core("away");
+        t.hook(0, "a", "UserPromptSubmit", "", None);
+        t.sim(0, "b", "UserPromptSubmit", "");
+        // Last input at 1 s; away at 10 min 1 s.
+        t.hook(5 * MIN, "a", "Stop", "", None);
+        t.sim(6 * MIN, "b", "PermissionRequest", ASK_WRITE);
+        assert!(aways(&t.idle_tick(10 * MIN, 1000)).is_empty());
+        assert_eq!(t.core.away.since(), None, "9:59");
+        assert!(aways(&t.idle_tick(1000 + 10 * MIN, 1000)).is_empty());
+        assert_eq!(t.core.away.since(), Some(T0 + 1000));
+        assert!(aways(&t.idle_tick(12 * MIN, 1000)).is_empty());
+        // Unreadable idle time: no change.
+        *t.fake.idle.lock().unwrap() = None;
+        assert!(aways(&t.core.tick(T0 + 13 * MIN, NOON)).is_empty());
+        let outs = t.idle_tick(14 * MIN, 14 * MIN - 200);
+        let got = aways(&outs);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].since, iso8601(T0 + 1000));
+        let items: Vec<_> = (got[0].items.iter())
+            .map(|i| (i.id.as_str(), i.project.as_str(), i.outcome))
+            .collect();
+        assert_eq!(
+            items,
+            [("a", "repo-a", "ready"), ("b", "repo-b", "needs_you")]
+        );
+        assert!(read(&t.shared).away_pending);
+        assert_eq!(t.core.away_pending.as_ref(), Some(&got[0]));
+        // No new summary while the user is back.
+        assert!(aways(&t.idle_tick(15 * MIN, 14 * MIN)).is_empty());
+
+        // A second idle period: its summary replaces the first.
+        t.hook(16 * MIN, "a", "UserPromptSubmit", "", None);
+        t.hook(
+            17 * MIN,
+            "a",
+            "StopFailure",
+            r#","error":"rate_limit""#,
+            None,
+        );
+        t.idle_tick(15 * MIN + 10 * MIN, 15 * MIN);
+        let got2 = aways(&t.idle_tick(26 * MIN, 26 * MIN));
+        assert_eq!(got2.len(), 1);
+        assert_eq!(got2[0].since, iso8601(T0 + 15 * MIN));
+        assert_eq!(got2[0].items.len(), 1);
+        assert_eq!(got2[0].items[0].outcome, "failed");
+        assert_eq!(t.core.away_pending.as_ref(), Some(&got2[0]));
+
+        // dismiss_away_summary() clears it and sends nothing.
+        let outs = t.core.handle(Msg::DismissAway, T0 + 26 * MIN, NOON);
+        assert!(outs.is_empty(), "{outs:?}");
+        assert_eq!(t.core.away_pending, None);
+        assert!(!read(&t.shared).away_pending);
+        // Dismissing again is harmless.
+        assert!(
+            t.core
+                .handle(Msg::DismissAway, T0 + 26 * MIN, NOON)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn no_away_summary_when_nothing_happened_while_away() {
+        let mut t = core("away-empty");
+        t.hook(0, "a", "Stop", "", None);
+        t.idle_tick(1000 + 10 * MIN, 1000);
+        assert!(aways(&t.idle_tick(20 * MIN, 20 * MIN)).is_empty());
+        assert_eq!(t.core.away_pending, None);
+        assert!(!read(&t.shared).away_pending);
     }
 
     #[test]

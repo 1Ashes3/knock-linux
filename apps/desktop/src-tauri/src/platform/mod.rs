@@ -92,6 +92,17 @@ pub trait Platform: Send + Sync {
     /// ADR 0027, at app start: rewrites the entry as [`start_ops`] says for
     /// the `launchAtSignIn` `setting`. Returns whether it wrote.
     fn restore_launch_at_sign_in(&self, setting: Option<bool>) -> std::io::Result<bool>;
+    /// §9.7 idle time: ms since the user last used the mouse, keyboard or
+    /// touch anywhere in this Windows session, or `None` if it can't be read.
+    fn idle_ms(&self) -> Option<u64>;
+}
+
+/// §9.7 idle time from the system tick count now (`GetTickCount64`) and the
+/// last input's tick (`GetLastInputInfo`), which is only 32 bits and wraps
+/// every 49.7 days. The low 32 bits of `now` minus `last_input`, wrapping,
+/// is exact while the idle time is under 49.7 days.
+pub fn idle_from_ticks(now: u64, last_input: u32) -> u64 {
+    u64::from((now as u32).wrapping_sub(last_input))
 }
 
 /// The `Run\Knock` value: the exe's path, quoted, so a path with spaces
@@ -193,6 +204,8 @@ pub struct FakePlatform {
     /// The fake `Run\Knock` and `StartupApproved\Run\Knock` values.
     pub run: std::sync::Mutex<Option<String>>,
     pub approved: std::sync::Mutex<Option<Vec<u8>>>,
+    /// What `idle_ms` returns.
+    pub idle: std::sync::Mutex<Option<u64>>,
 }
 
 /// The fake's own `Run\Knock` value: the installed app (`mainBinaryName`
@@ -270,6 +283,9 @@ impl Platform for FakePlatform {
             *run = Some(FAKE_EXE.into());
         }
         Ok(write)
+    }
+    fn idle_ms(&self) -> Option<u64> {
+        *self.idle.lock().unwrap()
     }
 }
 
@@ -430,6 +446,27 @@ mod tests {
         assert!(!sign_in_allowed(true, None));
         assert!(!sign_in_allowed(true, Some("true".as_ref())));
         assert!(sign_in_allowed(true, one));
+    }
+
+    /// Values as `GetTickCount64` and `LASTINPUTINFO.dwTime` give them.
+    #[test]
+    fn idle_time_survives_the_32_bit_tick_wrap() {
+        let min = 60_000u64;
+        // 3 days after boot, last input 10 minutes ago: no wrap yet.
+        let now = 3 * 86_400_000;
+        assert_eq!(idle_from_ticks(now, (now - 10 * min) as u32), 10 * min);
+        assert_eq!(idle_from_ticks(now, now as u32), 0);
+        // 60 days after boot: dwTime has wrapped once, `now` (64-bit) not.
+        let now = 60 * 86_400_000u64;
+        assert_eq!(idle_from_ticks(now, (now - 15 * min) as u32), 15 * min);
+        // The wrap falls between the last input and now.
+        let wrap = 1u64 << 32;
+        assert_eq!(idle_from_ticks(wrap + 256, u32::MAX - 255), 512);
+        assert_eq!(idle_from_ticks(wrap, u32::MAX), 1);
+        assert_eq!(
+            idle_from_ticks(2 * wrap + 10 * min, (wrap - min) as u32),
+            11 * min
+        );
     }
 
     #[test]

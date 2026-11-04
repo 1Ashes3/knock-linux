@@ -5,6 +5,7 @@ const COMMANDS: &[&str] = &[
     "jump_to_session",
     "acknowledge",
     "dismiss",
+    "dismiss_away_summary",
     "set_hit_regions",
     "request_strip_size",
     "get_settings",

@@ -73,10 +73,16 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// §8.5: the current `{ rev, sessions }`, as in `sessions-changed`.
+/// §8.5: the current `{ rev, sessions }`, as in `sessions-changed`. The
+/// overlay calls it when it loads. An `away-summary` sent before that is
+/// not sent again (§8.5 has no command for it); it is only logged.
 #[tauri::command]
 fn get_sessions(k: tauri::State<'_, Knock>) -> SessionsChanged {
-    pipeline::read(&k.shared).sessions.clone()
+    let p = pipeline::read(&k.shared);
+    if p.away_pending {
+        tracing::info!("overlay loaded with an away summary pending; not sent again");
+    }
+    p.sessions.clone()
 }
 
 /// §8.5, §9.5, §9.6: focuses the session's window, then acknowledges it
@@ -124,6 +130,12 @@ fn acknowledge(id: String, k: tauri::State<'_, Knock>) {
 #[tauri::command]
 fn dismiss(id: String, k: tauri::State<'_, Knock>) {
     let _ = k.tx.send(Msg::Dismiss(id));
+}
+
+/// §8.5, FR-9, ADR 0034: the away card folded away (a click or 60 s).
+#[tauri::command]
+fn dismiss_away_summary(k: tauri::State<'_, Knock>) {
+    let _ = k.tx.send(Msg::DismissAway);
 }
 
 /// §8.5, ADR 0003: replaces the strip's hit regions; empty means fully
@@ -469,6 +481,9 @@ fn apply(
         Out::Sessions(payload) => {
             let _ = app.emit_to("strip", "sessions-changed", payload);
         }
+        Out::Away(payload) => {
+            let _ = app.emit_to("strip", "away-summary", payload);
+        }
         Out::Settings(settings) => {
             // A new `monitor` or `size` moves the strip at once.
             moved.store(true, Ordering::Relaxed);
@@ -674,6 +689,7 @@ fn main() {
             jump_to_session,
             acknowledge,
             dismiss,
+            dismiss_away_summary,
             set_hit_regions,
             request_strip_size,
             get_settings,
