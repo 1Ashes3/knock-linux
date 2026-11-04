@@ -16,6 +16,7 @@ The user chose "show current status" on 2026-11-04:
 - A session is listed if, during the idle period, it entered `ready`, `failed`, `needs_input` or `stalled`, and when the user returns it is still in one of those states.
 - `outcome` comes from its state at return: `ready` → "ready", `failed` → "failed", `needs_input` or `stalled` → "needs_you".
 - A session that was already in one of those states before the user left, and never left it, is not listed.
+- Exception (user, 2026-11-04): a `needs_input` session whose current episode opened during the idle period is listed, even if it was already in `needs_input` (seen, ADR 0016) before the user left.
 - `since` is when the idle period started. No event is sent when no session qualifies.
 - The card folds away on a click or after 60 s. Either way the UI calls `dismiss_away_summary()`. A new `away-summary` replaces any card still showing.
 
