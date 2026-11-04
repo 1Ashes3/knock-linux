@@ -10,15 +10,13 @@ import {
 } from "react";
 import { useStore } from "zustand";
 import { ZZZ_LETTERS } from "../../gallery/zzz.ts";
+import { AwayAnnouncer, AwayCard, cardLayout } from "../AwayCard";
+import { cardOffset, withCard } from "../away";
 import { call, type HitRegion } from "../bridge";
+import { Den } from "../Den";
+import { CloseIcon, GlyphIcon } from "../Glyph";
 import { accessibleName, dismissible, glyph, INK, TIER_FILL } from "../pill";
-import {
-	GlyphIcon,
-	Overflow,
-	STALL_DEFAULT,
-	useMinuteClock,
-	useSend,
-} from "../Strip";
+import { STALL_DEFAULT, useMinuteClock, useSend } from "../Strip";
 import type { StripStore } from "../store";
 import { CLIPS } from "./art";
 import { endsRaised, frameAt } from "./controller";
@@ -83,12 +81,16 @@ function useDevicePixelRatio(): number {
 export function AnimalStrip({
 	store,
 	onUnavailable,
+	onDismissAway,
 }: {
 	store: StripStore;
 	/** The renderer could not start: the overlay shows the plain strip instead. */
 	onUnavailable: () => void;
+	/** A click on the away card (FR-9). */
+	onDismissAway: () => void;
 }) {
 	const sessions = useStore(store, (s) => s.sessions);
+	const away = useStore(store, (s) => s.away);
 	const size = useStore(store, (s) => s.settings?.size ?? "medium");
 	const stallMinutes = useStore(
 		store,
@@ -135,11 +137,22 @@ export function AnimalStrip({
 	const height = model.slots ? chipArea + m.headroom + m.s : m.s;
 	const raised = (c: Character) => !still && endsRaised(c.plan);
 
+	// FR-9: the away card stacks above everything (chips, the tooltip's room, the
+	// characters), right edges level, so it covers nothing and the window only grows up.
+	// Relative to the strip's top-left.
+	const card = cardLayout(away, size);
+	const cardRect: HitRegion | null = card && {
+		...cardOffset({ width, height }, card),
+		width: card.width,
+		height: card.height,
+	};
+
 	// §9.2: the core places the window; it grows up and left from the corner.
 	const sendSize = useSend("request_strip_size");
-	useEffect(() => sendSize({ width, height }));
+	useEffect(() => sendSize(withCard({ width, height }, card, m.s)));
 
-	// §9.3: only characters and buttons catch the mouse. Sent only when they change.
+	// §9.3: only characters, buttons and the away card catch the mouse. Sent only when
+	// they change.
 	const ref = useRef<HTMLDivElement>(null);
 	const sendRegions = useSend("set_hit_regions");
 	const local = hitRegions(
@@ -151,6 +164,7 @@ export function AnimalStrip({
 		chipArea,
 		m,
 	);
+	if (cardRect) local.push(cardRect);
 	useLayoutEffect(() => {
 		const report = () => {
 			const box = ref.current?.getBoundingClientRect();
@@ -293,26 +307,31 @@ export function AnimalStrip({
 							style={{ left: r.x, top: r.y, width: r.width, height: r.height }}
 							onClick={() => void call("dismiss", { id: c.session.id })}
 						>
-							<svg viewBox="0 0 12 12" aria-hidden="true">
-								<circle cx="6" cy="6" r="5.4" fill={INK} stroke="#fff" />
-								<path
-									d="M4 4L8 8M8 4L4 8"
-									stroke="#fff"
-									strokeWidth="1.5"
-									strokeLinecap="round"
-								/>
-							</svg>
+							<CloseIcon />
 						</div>
 					);
 				})}
 			{model.hidden.length > 0 && (
 				<div
-					className="overflow-slot"
-					style={{ left: slotX(model.slots - 1, m), top: slotTop(chipArea, m) }}
+					className="den-slot"
+					style={{
+						left: slotX(model.slots - 1, m),
+						top: slotTop(chipArea, m),
+						width: m.s,
+						height: m.s,
+					}}
 				>
-					<Overflow hidden={model.hidden} />
+					<Den hidden={model.hidden} look="mound" />
 				</div>
 			)}
+			{card && cardRect && (
+				<AwayCard
+					card={card}
+					onDismiss={onDismissAway}
+					style={{ left: cardRect.x, top: cardRect.y }}
+				/>
+			)}
+			<AwayAnnouncer card={card} />
 			{hovered && (
 				<Tooltip
 					c={hovered}

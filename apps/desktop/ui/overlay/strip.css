@@ -48,14 +48,6 @@ body {
 	box-shadow: 0 0 0 2px #ffffff;
 }
 
-.overflow {
-	cursor: default;
-}
-
-.overflow:hover {
-	box-shadow: none;
-}
-
 .word,
 .project {
 	max-width: 100%;
@@ -123,4 +115,172 @@ body {
 	.knock .glyph {
 		animation: none;
 	}
+}
+
+/* The den (FR-10): one count per tier, each with the tier's glyph and fill. Sized from the
+   slot so two columns of single-digit counts fit the small (48 px) slot. */
+.den {
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: #1a1a1a;
+	font-family: "Segoe UI", system-ui, sans-serif;
+	cursor: default;
+}
+
+.den-pill {
+	position: absolute;
+	inset: calc(var(--s) * 0.06);
+	border: max(1.5px, calc(var(--s) * 0.03)) solid #1a1a1a;
+	border-radius: calc(var(--s) * 0.2);
+	background: #ffffff;
+}
+
+.den-counts {
+	position: relative;
+	display: grid;
+	grid-template-columns: repeat(var(--cols), auto);
+	gap: calc(var(--s) * 0.04);
+	justify-items: stretch;
+}
+
+.den-count {
+	display: flex;
+	align-items: center;
+	gap: calc(var(--s) * 0.025);
+	padding: calc(var(--s) * 0.015) calc(var(--s) * 0.035) calc(var(--s) * 0.015)
+		calc(var(--s) * 0.02);
+	border-radius: calc(var(--s) * 0.12);
+	background: var(--fill);
+	font-size: calc(var(--s) * 0.21);
+	line-height: 1;
+}
+
+.den-count b {
+	font-weight: 700;
+}
+
+.den .glyph {
+	position: static;
+	flex: none;
+	width: var(--glyph, calc(var(--s) * 0.19));
+	height: var(--glyph, calc(var(--s) * 0.19));
+}
+
+/* One column (1 or 2 tiers): larger counts. */
+.den[data-cols="1"] {
+	--glyph: calc(var(--s) * 0.23);
+}
+
+.den[data-cols="1"] .den-count {
+	font-size: calc(var(--s) * 0.25);
+}
+
+/* The "While you were away" card (FR-9). Dark text on white with a dark outline, like the
+   tooltip: the outline reads on a light taskbar, the fill on a dark one. */
+.away {
+	position: fixed;
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	padding: 6px 8px;
+	border: 1.5px solid #1a1a1a;
+	border-radius: 8px;
+	background: #ffffff;
+	color: #1a1a1a;
+	font-family: "Segoe UI", system-ui, sans-serif;
+	box-shadow: 0 1px 4px #0006;
+	cursor: pointer;
+	pointer-events: auto;
+	user-select: none;
+}
+
+.away-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	height: var(--line);
+	flex: none;
+	font-weight: 700;
+	white-space: nowrap;
+}
+
+.away-head svg {
+	flex: none;
+	width: 1em;
+	height: 1em;
+}
+
+.away ul {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin: 4px 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.away li {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: var(--row);
+}
+
+.away .glyph {
+	position: static;
+	flex: none;
+	width: 1em;
+	height: 1em;
+}
+
+.away-project {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-weight: 600;
+}
+
+.away-outcome {
+	flex: none;
+	padding: 0 6px;
+	border: 1px solid #1a1a1a;
+	border-radius: 4px;
+	background: var(--fill);
+	white-space: nowrap;
+}
+
+.away-more {
+	flex: none;
+	height: var(--line);
+	margin-top: 2px;
+	white-space: nowrap;
+}
+
+/* With Animation effects on, the card rises in; with them off it just appears. */
+@media (prefers-reduced-motion: no-preference) {
+	.away {
+		animation: away-in 0.18s ease-out;
+	}
+}
+
+@keyframes away-in {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+}
+
+/* Read by Narrator, never seen. */
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
 }

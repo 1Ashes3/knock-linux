@@ -26,6 +26,11 @@
 				--taskbar: #202020;
 				color: #ffffff;
 			}
+			/* The overlay's window: mock.ts clips it to the size the core would give it. */
+			#root {
+				position: fixed;
+				inset: 0;
+			}
 			.taskbar {
 				position: fixed;
 				left: 0;

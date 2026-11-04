@@ -105,3 +105,35 @@
 	border-radius: 50%;
 	box-shadow: 0 0 0 1px #ffffff;
 }
+
+/* The den (FR-10) in animals mode: a burrow mound drawn by the UI, like the "z", with the
+   tier counts on it. Each count gets the chips' dark outline so it reads on the earth. */
+.den-mound {
+	position: absolute;
+	inset: 0;
+}
+
+.den-art {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	overflow: visible;
+}
+
+.den-mound .den-counts {
+	position: absolute;
+	left: 50%;
+	top: 47%;
+	transform: translate(-50%, -50%);
+}
+
+.den-mound .den-count {
+	border: 1px solid #1a1a1a;
+}
+
+/* The away card sits in the strip's own coordinates here. */
+.animals > .away {
+	position: absolute;
+	bottom: auto;
+}
