@@ -16,6 +16,38 @@ Open questions for the user:
 
 ---
 
+## 2026-11-04: Phase 3 (animals)
+Done:
+- The user asked to start Phase 3 while the Gate G1 week is still running. G1 still ends with the user's pass/fail. If it fails, §14 says to fix detection or the plain strip before more animal work.
+- ADRs approved by the user:
+  - 0030: the v1 animals are fox, rabbit, cat and owl, in that order.
+  - 0031: calm animals play one cycle of their clip, then hold still. Only Needs-you clips loop.
+  - SPEC.md §8.7 and §10.1 were updated to match.
+- 3.2 (`ui`): rabbit, cat and owl art (899ee72). The user approved the art from the review images.
+  - The lead fixed two artCheck tests that assumed the fox was the only animal.
+- 3.3 (`core-windows`): the engine assigns fox, rabbit, cat, owl from one `knock_core::ANIMALS` list (bd86d06).
+  - 4 new engine tests. 17/17 replays still match.
+- 3.1 (`ui`): animals mode with a PixiJS renderer (83855ed):
+  - The controller picks clips from `state` and `needs.seen` only.
+  - Chips show the §10.1 texts, with leader lines.
+  - Tooltips, the red marker, and badges when Animation effects are off.
+  - Narrator names, hit regions, and a live animals/plain switch (FR-3, FR-4 UI side, FR-7).
+  - Lead review: `pnpm check` passes, `pnpm test:visual` 188/188, `art:check` passes.
+  - Two plain-strip baselines were refreshed. The only differences were anti-aliasing specks after an Edge update (lead, integration fix).
+- Merged into `develop`: phase-3/animals, phase-3/core-animals, phase-3/renderer. `main` was not touched.
+- 3.4 latency and CPU measurement: started, then stopped at the user's request. The unfinished work was discarded and `phase-3/perf` deleted (ADR 0032). It never launched a test build.
+Next:
+- Build a v0.2 test installer from `develop` and give the user one checklist: animals in every state, hover and tooltip going away (needs real Windows), mode switch, sizes, Animation effects off, upgrade from v0.1, uninstall (ADRs 0027 and 0028).
+- At the end of the G1 week: ask whether G1 passes.
+Dependencies added: pixi.js 8.22.0 (UI runtime, named in §13.2, approved by the lead).
+Clarifications (lead):
+- An animal id with no art falls back to the fox.
+- A seen `needs_input` and `ended_unexpectedly` hold the rig pose.
+- The unused `waiting_agent` and `communicating` states use `wait`, settled.
+Open questions for the user:
+- The v0.2 manual test (checklist to follow).
+- Later, before Phase 5 or G3: run the deferred performance measurement? (ADR 0032)
+
 ## 2026-11-02: Phase 2 (plain overlay), v0.1
 Done:
 - 2.1: engine wired into the app, plain strip, tray and app icons (d7a661a). Review fixes (be83e04): tray pause follows the in-effect value; the strip stays hidden until it is placed.

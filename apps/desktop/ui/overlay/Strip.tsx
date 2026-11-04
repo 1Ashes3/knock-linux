@@ -25,10 +25,10 @@ import {
 } from "./pill";
 import type { StripStore } from "./store";
 
-const STALL_DEFAULT = 10; // §8.6 default, until settings arrive.
+export const STALL_DEFAULT = 10; // §8.6 default, until settings arrive.
 
 /** Calls `cmd` only when its args differ from the previous call. */
-function useSend(cmd: string) {
+export function useSend(cmd: string) {
 	const last = useRef("");
 	return (args: Record<string, unknown>) => {
 		const key = JSON.stringify(args);
@@ -39,7 +39,7 @@ function useSend(cmd: string) {
 }
 
 /** Re-renders once a minute while `on`, so "No progress for <n> min" stays current. */
-function useMinuteClock(on: boolean): number {
+export function useMinuteClock(on: boolean): number {
 	const [now, setNow] = useState(Date.now);
 	useEffect(() => {
 		if (!on) return;
@@ -138,7 +138,7 @@ function Pill({ s, name }: { s: SessionView; name: string }) {
 }
 
 /** "+N": sessions beyond the 5 pills. Not clickable yet (the den is Phase 4), so no hit region. */
-function Overflow({ hidden }: { hidden: SessionView[] }) {
+export function Overflow({ hidden }: { hidden: SessionView[] }) {
 	const urgent = hidden.some((s) => s.tier === "needs_you");
 	return (
 		<div className="slot">
@@ -184,7 +184,7 @@ const MARKS: Record<Glyph, ReactNode> = {
 	z: <path d="M4 4H8L4 8H8" />,
 };
 
-function GlyphIcon({ g }: { g: Glyph }) {
+export function GlyphIcon({ g }: { g: Glyph }) {
 	return (
 		<svg className="glyph" viewBox="0 0 12 12" aria-hidden="true">
 			<circle cx="6" cy="6" r="6" fill={g === "failed" ? RED : INK} />

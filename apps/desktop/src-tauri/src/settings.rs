@@ -92,13 +92,13 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// What the engine needs (§8.4). The v1 animals come in Phase 3.
+    /// What the engine needs (§8.4), with the v1 animals (§8.7, ADR 0030).
     pub fn engine(&self) -> knock_core::Settings {
         knock_core::Settings {
             stall_ms: u64::from(self.stall_minutes) * 60_000,
             escalation_ms: u64::from(self.escalation_minutes) * 60_000,
             notify_on_stall: self.notify_on_stall,
-            animals: vec!["fox".into()],
+            animals: knock_core::ANIMALS.map(String::from).to_vec(),
             animal_overrides: self.animal_overrides.clone().into_iter().collect(),
         }
     }
@@ -431,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_settings_in_ms_with_the_fox() {
+    fn engine_settings_in_ms_with_the_v1_animals() {
         let mut s = Settings {
             notify_on_stall: true,
             ..Settings::default()
@@ -441,7 +441,7 @@ mod tests {
         let e = s.engine();
         assert_eq!((e.stall_ms, e.escalation_ms), (600_000, 300_000));
         assert!(e.notify_on_stall);
-        assert_eq!(e.animals, ["fox"]);
+        assert_eq!(e.animals, ["fox", "rabbit", "cat", "owl"]);
         assert_eq!(e.animal_overrides["0123456789abcdef"], "owl");
     }
 
