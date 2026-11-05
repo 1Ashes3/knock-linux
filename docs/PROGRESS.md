@@ -16,6 +16,30 @@ Open questions for the user:
 
 ---
 
+## 2026-11-06: Phase 4, public beta preparation
+Done:
+- ADR 0035 (approved by the user): v0.3 is a **public** beta via a GitHub pre-release, and the user judges G2 from setup reports. SPEC.md §13.5 and §14 were updated.
+- README written for the public, with screenshots in docs/images (lead).
+- `core-windows`: GitHub issue forms, "Setup report" and "Bug report" (313eca8). Neither asks for agent content (§11).
+- Fresh pre-release review of §8.1, §8.2, §9.7 and §11 (ADR 0029 process, user request). No serious findings. Six minor ones were verified by the lead. The user chose:
+  - Fixed now (72939db):
+    - (1) An undone sign-in turn-off no longer clears the Task Manager mark. The mark is now cleared only after the save.
+    - (3) A second launch opens Settings.
+    - (6) CI runs `cargo fetch --locked`.
+  - (2) A manual upgrade with "Run Knock" unticked leaves sign-in off until Knock is started once. This is now a README note.
+  - **Deferred to Phase 5:**
+    - (4) Setup reopens at every start after the hooks are removed while sign-in is on.
+    - (5) Misleading messages: the server error text for an invalid server.json; "development build" text when USERPROFILE is unset; the health check says "Choose Repair" while no Repair button is shown.
+- History scan before going public: no secrets or personal paths, only test placeholder tokens. `pnpm audit` is clean. cargo-deny runs in CI.
+Next:
+- The user makes the repo public, creates the `setup-report` label, merges develop → main, builds, tags `v0.3.0-beta.1` on main and publishes the pre-release.
+- Gate G2: the user judges it from setup reports.
+Dependencies added: none
+Clarifications: none
+Open questions for the user:
+- G2 verdict, once setup reports come in.
+- Later: should the app show its version (Settings or diagnostics)? Testers currently read it from the installer name.
+
 ## 2026-11-04 (evening): Phase 4 (interaction and scale)
 Done:
 - Survey: FR-5 escalation, FR-6 jump (with the flash fallback and the toast click), FR-11 stall, suppression, multiple monitors and FR-15 were already built and tested (checked by `core-windows`). The quiet-hours and pause controls were in Settings and the tray since Phase 2.
