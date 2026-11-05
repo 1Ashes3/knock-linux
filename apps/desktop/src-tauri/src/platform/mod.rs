@@ -86,9 +86,13 @@ pub trait Platform: Send + Sync {
     /// Every connected display, the primary one first.
     fn monitors(&self) -> Vec<Monitor>;
     /// §9.7: adds or removes Knock's launch-at-sign-in entry, the per-user
-    /// `HKCU\...\Run\Knock` value only (per-user install; never HKLM), as
-    /// [`sign_in_ops`] says.
-    fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()>;
+    /// `HKCU\...\Run\Knock` value only (per-user install; never HKLM): the
+    /// `now` part of [`sign_in_change`]. Returns the whole change, so the
+    /// caller applies its `saved` part once the setting is saved, or its
+    /// `undo` part if that fails ([`Platform::apply_sign_in_ops`]).
+    fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<SignInChange>;
+    /// Applies `ops` from a [`SignInChange`] to the sign-in entry.
+    fn apply_sign_in_ops(&self, ops: &[RunOp]) -> std::io::Result<()>;
     /// ADR 0027, at app start: rewrites the entry as [`start_ops`] says for
     /// the `launchAtSignIn` `setting`. Returns whether it wrote.
     fn restore_launch_at_sign_in(&self, setting: Option<bool>) -> std::io::Result<bool>;
@@ -123,24 +127,43 @@ pub enum RunOp {
     ClearApproved,
 }
 
+/// One change of the `launchAtSignIn` setting to the sign-in entry, in the
+/// order the setting is saved: `now` before the save, `saved` after it
+/// succeeds, `undo` if it fails and the setting was different.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SignInChange {
+    pub now: &'static [RunOp],
+    pub saved: &'static [RunOp],
+    pub undo: &'static [RunOp],
+}
+
 /// What turning sign-in `on` or off does, given the current `Run\Knock`
 /// string data (`None`: no value, or not a string; an expandable string
 /// unexpanded) and Knock's `own` value ([`run_value`] of the running exe).
 /// On: always overwrite (the user asked; `current` is not needed) and clear
-/// a "disabled" mark. Off: delete a value that starts Knock's app
-/// ([`starts_knock`]); one that starts another program stays (ADR 0025).
-pub fn sign_in_ops(on: bool, current: Option<&str>, own: &str) -> &'static [RunOp] {
+/// a "disabled" mark; undone by deleting the value again. Off: delete a
+/// value that starts Knock's app ([`starts_knock`]) and clear the mark; one
+/// that starts another program stays (ADR 0025). The mark is cleared only
+/// once the setting is saved, so an undone turn-off writes the value back
+/// (as at start, ADR 0027) and the user's Task Manager mark is as it was.
+pub fn sign_in_change(on: bool, current: Option<&str>, own: &str) -> SignInChange {
     match on {
-        true => &[RunOp::Write, RunOp::ClearApproved],
-        false if current.is_some_and(|c| starts_knock(c, own)) => {
-            &[RunOp::Delete, RunOp::ClearApproved]
-        }
-        false => &[],
+        true => SignInChange {
+            now: &[RunOp::Write, RunOp::ClearApproved],
+            saved: &[],
+            undo: &[RunOp::Delete, RunOp::ClearApproved],
+        },
+        false if current.is_some_and(|c| starts_knock(c, own)) => SignInChange {
+            now: &[RunOp::Delete],
+            saved: &[RunOp::ClearApproved],
+            undo: &[RunOp::Write],
+        },
+        false => SignInChange::default(),
     }
 }
 
 /// ADR 0027: what Knock does at start, given the `launchAtSignIn` setting,
-/// the current `Run\Knock` data (as for [`sign_in_ops`]) and Knock's `own`
+/// the current `Run\Knock` data (as for [`sign_in_change`]) and Knock's `own`
 /// value. On: anything but Knock's own value (missing, an old path, another
 /// program's) is rewritten; letter case doesn't count, as paths ignore it.
 /// The Task Manager mark stays: only turning the setting on clears it.
@@ -199,7 +222,8 @@ pub struct FakePlatform {
     pub alive: std::sync::Mutex<Vec<ProcessId>>,
     /// Every `set_launch_at_sign_in` call.
     pub sign_in: std::sync::Mutex<Vec<bool>>,
-    /// `set_launch_at_sign_in` fails while set.
+    /// `set_launch_at_sign_in`, `apply_sign_in_ops` and
+    /// `restore_launch_at_sign_in` fail while set.
     pub sign_in_fails: std::sync::Mutex<bool>,
     /// The fake `Run\Knock` and `StartupApproved\Run\Knock` values.
     pub run: std::sync::Mutex<Option<String>>,
@@ -258,13 +282,18 @@ impl Platform for FakePlatform {
     fn monitors(&self) -> Vec<Monitor> {
         Vec::new()
     }
-    fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()> {
+    fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<SignInChange> {
         self.sign_in.lock().unwrap().push(on);
+        let change = sign_in_change(on, self.run.lock().unwrap().as_deref(), FAKE_EXE);
+        self.apply_sign_in_ops(change.now)?;
+        Ok(change)
+    }
+    fn apply_sign_in_ops(&self, ops: &[RunOp]) -> std::io::Result<()> {
         if *self.sign_in_fails.lock().unwrap() {
             return Err(std::io::Error::other("refused"));
         }
         let mut run = self.run.lock().unwrap();
-        for op in sign_in_ops(on, run.as_deref(), FAKE_EXE) {
+        for op in ops {
             match op {
                 RunOp::Write => *run = Some(FAKE_EXE.into()),
                 RunOp::Delete => *run = None,
@@ -330,10 +359,16 @@ mod tests {
     #[test]
     fn disabling_deletes_only_a_value_that_starts_knock() {
         let fake = FakePlatform::default();
+        // As the pipeline does when the save succeeds.
+        let off = |fake: &FakePlatform| {
+            let change = fake.set_launch_at_sign_in(false).unwrap();
+            fake.apply_sign_in_ops(change.saved).unwrap();
+            change
+        };
         let other = r#""C:\Other\NotKnock.exe""#;
         *fake.run.lock().unwrap() = Some(other.into());
         *fake.approved.lock().unwrap() = Some(DISABLED.to_vec());
-        fake.set_launch_at_sign_in(false).unwrap();
+        assert_eq!(off(&fake), SignInChange::default(), "nothing to undo");
         assert_eq!(fake.run.lock().unwrap().as_deref(), Some(other), "not ours");
         assert_eq!(
             fake.approved.lock().unwrap().as_deref(),
@@ -341,13 +376,51 @@ mod tests {
         );
         // Ours, in any letter case: both values go.
         *fake.run.lock().unwrap() = Some(FAKE_EXE.to_uppercase());
-        fake.set_launch_at_sign_in(false).unwrap();
+        off(&fake);
         assert_eq!(*fake.run.lock().unwrap(), None);
         assert_eq!(*fake.approved.lock().unwrap(), None);
         // Nothing there: nothing to do.
-        fake.set_launch_at_sign_in(false).unwrap();
+        off(&fake);
         assert_eq!(*fake.run.lock().unwrap(), None);
-        assert_eq!(sign_in_ops(false, None, FAKE_EXE), []);
+        assert_eq!(
+            sign_in_change(false, None, FAKE_EXE),
+            SignInChange::default()
+        );
+    }
+
+    /// The failure case of the pre-release review: on, disabled in Task
+    /// Manager, turned off in Knock, and the save fails.
+    #[test]
+    fn an_undone_turn_off_writes_the_value_back_and_keeps_the_disabled_mark() {
+        let fake = FakePlatform::default();
+        let old = r#""C:\Old\Knock\knock-desktop.exe" --x"#;
+        for current in [FAKE_EXE, old] {
+            *fake.run.lock().unwrap() = Some(current.into());
+            *fake.approved.lock().unwrap() = Some(DISABLED.to_vec());
+            let change = fake.set_launch_at_sign_in(false).unwrap();
+            assert_eq!(change.undo, [RunOp::Write], "{current}");
+            assert!(!change.undo.contains(&RunOp::ClearApproved));
+            // Before the save: the value is gone, the mark is not touched.
+            assert_eq!(*fake.run.lock().unwrap(), None);
+            let approved = fake.approved.lock().unwrap().clone();
+            assert_eq!(approved.as_deref(), Some(&DISABLED[..]));
+            // The save failed: Knock's own value is back (as ADR 0027 writes
+            // it at start), and Task Manager still shows Knock disabled, so
+            // Knock doesn't start at sign-in.
+            fake.apply_sign_in_ops(change.undo).unwrap();
+            assert_eq!(fake.run.lock().unwrap().as_deref(), Some(FAKE_EXE));
+            let approved = fake.approved.lock().unwrap().clone();
+            assert_eq!(approved.as_deref(), Some(&DISABLED[..]), "{current}");
+        }
+        // An undone turn-on deletes the value again, as before.
+        *fake.run.lock().unwrap() = None;
+        *fake.approved.lock().unwrap() = Some(DISABLED.to_vec());
+        let change = fake.set_launch_at_sign_in(true).unwrap();
+        assert_eq!(change.saved, []);
+        assert_eq!(change.undo, [RunOp::Delete, RunOp::ClearApproved]);
+        fake.apply_sign_in_ops(change.undo).unwrap();
+        assert_eq!(*fake.run.lock().unwrap(), None);
+        assert_eq!(*fake.approved.lock().unwrap(), None);
     }
 
     #[test]
@@ -358,7 +431,11 @@ mod tests {
             (FAKE_EXE, "knock-desktop.exe"),
             (r#""D:\Apps\Knock\Knock.exe""#, "Knock.exe"),
         ] {
-            let off = |data: &str| sign_in_ops(false, Some(data), own);
+            // The whole turn-off, before and after the save.
+            let off = |data: &str| {
+                let c = sign_in_change(false, Some(data), own);
+                [c.now, c.saved].concat()
+            };
             let (upper, stem) = (name.to_uppercase(), name.trim_end_matches(".exe"));
             for ours in [
                 own.to_string(),
@@ -389,7 +466,7 @@ mod tests {
                 format!(r"C:\{name}\Other.exe"),
                 format!(r"C:\Old\{stem}"),
             ] {
-                assert_eq!(off(&theirs), [], "{own}: {theirs}");
+                assert!(off(&theirs).is_empty(), "{own}: {theirs}");
             }
         }
         // The app is knock-desktop.exe; the CLI, knock.exe, is not Knock's app.
@@ -398,12 +475,13 @@ mod tests {
             r#""C:\Tools\knock.exe" sim demo"#,
             "knock.exe",
         ] {
-            assert_eq!(sign_in_ops(false, Some(cli), FAKE_EXE), [], "{cli}");
+            let c = sign_in_change(false, Some(cli), FAKE_EXE);
+            assert_eq!(c, SignInChange::default(), "{cli}");
         }
         // Turning on never looks at the value.
         for current in [None, Some(""), Some("anything")] {
-            let on = sign_in_ops(true, current, FAKE_EXE);
-            assert_eq!(on, [RunOp::Write, RunOp::ClearApproved]);
+            let on = sign_in_change(true, current, FAKE_EXE);
+            assert_eq!(on.now, [RunOp::Write, RunOp::ClearApproved]);
         }
     }
 

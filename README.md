@@ -68,7 +68,7 @@ Do step 1 first. If you skip it, Knock's hooks stay in Claude Code's settings. T
 
 ## Known limitations in this beta
 
-- **No auto-update yet.** To get a newer beta, download and install it over the old one. Your settings are kept.
+- **No auto-update yet.** To get a newer beta, download and install it over the old one. Your settings are kept. Leave **Run Knock** ticked on the installer's last screen. If you untick it, open Knock once from the Start menu afterwards, or it won't start by itself at your next sign-in.
 - In Windows Terminal, a click brings the Windows Terminal window forward but can't pick the exact tab.
 - The installer is unsigned (see above).
 

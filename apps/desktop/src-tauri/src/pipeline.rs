@@ -486,19 +486,27 @@ impl Core {
         let sign_in = patch
             .get("launchAtSignIn")
             .and_then(serde_json::Value::as_bool);
-        if let Some(on) = sign_in {
-            self.sign_in(on).map_err(|_| {
+        let change = match sign_in {
+            Some(on) => Some(self.sign_in(on).map_err(|_| {
                 "Knock couldn't change whether it starts when you sign in. Please try again."
                     .to_string()
-            })?;
-        }
+            })?),
+            None => None,
+        };
         if let Err(e) = settings::save(&self.dir, &new) {
             tracing::warn!(kind = ?e.kind(), "settings not saved");
+            // An undone turn-off writes the value back and leaves the Task
+            // Manager mark as it was (ADR 0025, 0027).
             let was = self.settings.launch_at_sign_in.unwrap_or(false);
-            if sign_in.is_some_and(|on| on != was) && self.sign_in(was).is_err() {
-                tracing::warn!("launch at sign-in not undone");
+            if let Some(change) = change.filter(|_| sign_in != Some(was)) {
+                self.sign_in_ops(change.undo, "launch at sign-in not undone");
             }
             return Err("Knock couldn't save the settings.".into());
+        }
+        // A turn-off clears the Task Manager mark now. If that fails, the
+        // value is already gone, so Knock still doesn't start at sign-in.
+        if let Some(change) = change {
+            self.sign_in_ops(change.saved, "sign-in mark not cleared");
         }
         self.apply_settings(new.clone(), local_minute, run);
         Ok(new)
@@ -506,14 +514,25 @@ impl Core {
 
     /// Adds or removes the sign-in entry. The error can name the exe's path,
     /// so only its kind is logged (§11.5).
-    fn sign_in(&self, on: bool) -> std::io::Result<()> {
+    fn sign_in(&self, on: bool) -> std::io::Result<platform::SignInChange> {
         let p = (self.platform.as_ref()).ok_or_else(|| std::io::Error::other("no platform"))?;
         let r = p.set_launch_at_sign_in(on);
         match &r {
-            Ok(()) => tracing::info!(on, "launch at sign-in set"),
+            Ok(_) => tracing::info!(on, "launch at sign-in set"),
             Err(e) => tracing::warn!(on, kind = ?e.kind(), "launch at sign-in not changed"),
         }
         r
+    }
+
+    /// Finishes or undoes a sign-in change. A failure is logged by kind
+    /// only, under `failed` (§11.5).
+    fn sign_in_ops(&self, ops: &[platform::RunOp], failed: &'static str) {
+        let Some(p) = self.platform.as_ref().filter(|_| !ops.is_empty()) else {
+            return;
+        };
+        if let Err(e) = p.apply_sign_in_ops(ops) {
+            tracing::warn!(kind = ?e.kind(), "{failed}");
+        }
     }
 
     /// From the in-effect value, so two quick clicks toggle twice. Applies
@@ -1469,17 +1488,37 @@ mod tests {
         assert!(!settings::load(&t.dir, T0).sounds);
         assert_eq!(read(&t.shared).settings.launch_at_sign_in, Some(true));
         *t.fake.sign_in_fails.lock().unwrap() = false;
-        // The save fails after the entry changed: the change is undone.
+        // The user disabled Knock in Task Manager, then turns it off in
+        // Knock, and the save fails: the value is written back and the mark
+        // is left as it was, so Knock doesn't start at sign-in.
+        let disabled = vec![3, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8];
+        *t.fake.approved.lock().unwrap() = Some(disabled.clone());
+        let entry = |t: &T| {
+            let run = t.fake.run.lock().unwrap().clone();
+            (run, t.fake.approved.lock().unwrap().clone())
+        };
         let block = t.dir.join("settings.json.tmp");
         std::fs::create_dir(&block).unwrap();
         let e = set(&mut t, json!({ "launchAtSignIn": false })).unwrap_err();
         assert_eq!(e, "Knock couldn't save the settings.");
-        assert_eq!(calls(&t), [true, true, false, false, true], "undone");
+        assert_eq!(calls(&t), [true, true, false, false]);
+        let own = Some(platform::FAKE_EXE.to_string());
+        assert_eq!(entry(&t), (own.clone(), Some(disabled.clone())), "undone");
         assert_eq!(saved(&t), Some(true));
         assert_eq!(read(&t.shared).settings.launch_at_sign_in, Some(true));
-        // Same value again: nothing to undo.
+        // Same value again: nothing to undo (turning on clears the mark).
         assert!(set(&mut t, json!({ "launchAtSignIn": true })).is_err());
-        assert_eq!(calls(&t).len(), 6);
+        assert_eq!(calls(&t).len(), 5);
+        assert_eq!(entry(&t), (own.clone(), None));
+        // A saved turn-off removes the value and clears the mark.
+        std::fs::remove_dir(&block).unwrap();
+        *t.fake.approved.lock().unwrap() = Some(disabled.clone());
+        set(&mut t, json!({ "launchAtSignIn": false })).unwrap();
+        assert_eq!((entry(&t), saved(&t)), ((None, None), Some(false)));
+        // An undone turn-on deletes the value again.
+        std::fs::create_dir(&block).unwrap();
+        assert!(set(&mut t, json!({ "launchAtSignIn": true })).is_err());
+        assert_eq!((entry(&t), saved(&t)), ((None, None), Some(false)));
         std::fs::remove_dir(&block).unwrap();
     }
 

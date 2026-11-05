@@ -1,6 +1,6 @@
 //! Windows implementation of [`Platform`]. All Win32 calls live here.
 
-use super::{Display, Monitor, Platform, RunOp, Taskbar, monitor_id};
+use super::{Display, Monitor, Platform, RunOp, SignInChange, Taskbar, monitor_id};
 use crate::jump::{self, Proc, ProcessId, Target, TcpRow, Win};
 use crate::strip::Rect;
 use windows::Win32::Foundation::{
@@ -132,20 +132,23 @@ fn get_run_value() -> std::io::Result<Option<String>> {
     }
 }
 
-/// Applies [`super::sign_in_ops`]: writes `Run\Knock` with the quoted exe
-/// path, deletes it only if it starts Knock, and clears
-/// `StartupApproved\Run\Knock`. A value that isn't there is fine. Turning
-/// on doesn't read the current value: it overwrites whatever is there.
-fn set_run_value(on: bool) -> std::io::Result<()> {
+/// Applies the `now` part of [`super::sign_in_change`]: writes `Run\Knock`
+/// with the quoted exe path, or deletes it only if it starts Knock, and
+/// returns the whole change. Turning on doesn't read the current value: it
+/// overwrites whatever is there.
+fn set_run_value(on: bool) -> std::io::Result<SignInChange> {
     let own = super::run_value(&std::env::current_exe()?);
     let current = if on { None } else { get_run_value()? };
-    let ops = super::sign_in_ops(on, current.as_deref(), &own);
-    if !on && ops.is_empty() && current.is_some() {
+    let change = super::sign_in_change(on, current.as_deref(), &own);
+    if !on && change.now.is_empty() && current.is_some() {
         tracing::info!("sign-in entry is not Knock's own; left as it is");
     }
-    apply_run_ops(ops, &own)
+    apply_run_ops(change.now, &own)?;
+    Ok(change)
 }
 
+/// Writes `Run\Knock` with the quoted exe path, deletes it, or clears
+/// `StartupApproved\Run\Knock`. A value that isn't there is fine.
 fn apply_run_ops(ops: &[RunOp], own: &str) -> std::io::Result<()> {
     for op in ops {
         let r = match op {
@@ -178,14 +181,24 @@ fn apply_run_ops(ops: &[RunOp], own: &str) -> std::io::Result<()> {
 }
 
 /// [`Platform::set_launch_at_sign_in`] on the real entry, with the
-/// debug-build guard.
-fn launch_at_sign_in(on: bool) -> std::io::Result<()> {
+/// debug-build guard. When the guard stops it, nothing changed, so there is
+/// nothing to finish or undo.
+fn launch_at_sign_in(on: bool) -> std::io::Result<SignInChange> {
     let test_var = std::env::var_os("KNOCK_AUTOSTART_TEST");
     if !super::sign_in_allowed(cfg!(debug_assertions), test_var.as_deref()) {
         tracing::info!(on, "debug build: sign-in entry not changed");
-        return Ok(());
+        return Ok(SignInChange::default());
     }
     set_run_value(on)
+}
+
+/// [`Platform::apply_sign_in_ops`] on the real entry, with the same guard.
+fn apply_sign_in(ops: &[RunOp]) -> std::io::Result<()> {
+    let test_var = std::env::var_os("KNOCK_AUTOSTART_TEST");
+    if ops.is_empty() || !super::sign_in_allowed(cfg!(debug_assertions), test_var.as_deref()) {
+        return Ok(());
+    }
+    apply_run_ops(ops, &super::run_value(&std::env::current_exe()?))
 }
 
 /// [`Platform::restore_launch_at_sign_in`]: [`super::start_ops`] on the
@@ -619,8 +632,12 @@ impl Platform for WindowsPlatform {
         monitors()
     }
 
-    fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<()> {
+    fn set_launch_at_sign_in(&self, on: bool) -> std::io::Result<SignInChange> {
         launch_at_sign_in(on)
+    }
+
+    fn apply_sign_in_ops(&self, ops: &[RunOp]) -> std::io::Result<()> {
+        apply_sign_in(ops)
     }
 
     fn restore_launch_at_sign_in(&self, setting: Option<bool>) -> std::io::Result<bool> {
@@ -687,15 +704,20 @@ mod tests {
         }
         let _cleanup = Cleanup;
         let p = WindowsPlatform { strip: 0 };
+        // A turn-off as the pipeline runs it when the save succeeds.
+        let off = || {
+            let change = p.set_launch_at_sign_in(false).unwrap();
+            p.apply_sign_in_ops(change.saved).unwrap();
+        };
         p.set_launch_at_sign_in(true).unwrap();
         let exe = std::env::current_exe().unwrap();
         let got = reg_knock(run).unwrap();
         eprintln!("{}", got.trim());
         let want = format!("REG_SZ    \"{}\"", exe.display());
         assert!(got.contains(&want), "{got}");
-        p.set_launch_at_sign_in(false).unwrap();
+        off();
         assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
-        p.set_launch_at_sign_in(false).unwrap();
+        off();
 
         let reg = |args: &[&str]| {
             let ok = std::process::Command::new("reg.exe")
@@ -713,6 +735,17 @@ mod tests {
         p.set_launch_at_sign_in(true).unwrap();
         assert!(reg_knock(run).unwrap().contains(&want));
         assert_eq!(reg_knock(approved), None, "Task Manager shows it enabled");
+        // Disabled again in Task Manager, then a turn-off whose save fails:
+        // the undo writes the value back and the mark stays.
+        reg(&[&disabled[..], &["/d", "030000000000000000000000", "/f"]].concat());
+        let change = p.set_launch_at_sign_in(false).unwrap();
+        assert_eq!(reg_knock(run), None);
+        assert!(reg_knock(approved).is_some(), "not cleared before the save");
+        p.apply_sign_in_ops(change.undo).unwrap();
+        assert!(reg_knock(run).unwrap().contains(&want));
+        assert!(reg_knock(approved).is_some(), "the user's mark stays");
+        off();
+        assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
         // An older copy of Knock's value, in another folder, plain or
         // expandable (`%VAR%`s left as written): off removes it. Knock's app
         // is whatever this exe is named (ADR 0025).
@@ -725,7 +758,7 @@ mod tests {
             let before = reg_knock(run).unwrap();
             eprintln!("{}", before.trim());
             assert!(before.contains(&format!("{kind}    {data}")), "{before}");
-            p.set_launch_at_sign_in(false).unwrap();
+            off();
             assert_eq!(
                 (reg_knock(run), reg_knock(approved)),
                 (None, None),
@@ -745,7 +778,7 @@ mod tests {
             other,
             "/f",
         ]);
-        p.set_launch_at_sign_in(false).unwrap();
+        off();
         let kept = reg_knock(run);
         reg(&["delete", &hk_run, "/v", "Knock", "/f"]);
         assert!(kept.unwrap().contains(other));
@@ -762,11 +795,11 @@ mod tests {
             "/f",
         ];
         reg(&dword);
-        p.set_launch_at_sign_in(false).unwrap();
+        off();
         let kept = reg_knock(run);
         p.set_launch_at_sign_in(true).unwrap();
         let written = reg_knock(run);
-        p.set_launch_at_sign_in(false).unwrap();
+        off();
         assert!(kept.unwrap().contains("REG_DWORD"));
         assert!(written.unwrap().contains(&want));
         assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
@@ -776,7 +809,7 @@ mod tests {
             "add", &hk_run, "/v", "Knock", "/t", "REG_SZ", "/d", other, "/f",
         ]);
         reg(&[&disabled[..], &["/d", "030000000000000000000000", "/f"]].concat());
-        p.set_launch_at_sign_in(false).unwrap();
+        off();
         let kept = (reg_knock(run), reg_knock(approved));
         reg(&["delete", &hk_run, "/v", "Knock", "/f"]);
         reg(&["delete", &hk_approved, "/v", "Knock", "/f"]);
@@ -803,7 +836,7 @@ mod tests {
             assert!(p.restore_launch_at_sign_in(Some(true)).unwrap());
             assert!(reg_knock(run).unwrap().contains(&want), "{data}");
         }
-        p.set_launch_at_sign_in(false).unwrap();
+        off();
         assert_eq!((reg_knock(run), reg_knock(approved)), (None, None));
     }
 
