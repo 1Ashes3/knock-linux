@@ -37,8 +37,11 @@ Clarifications (lead):
 - A PC that sleeps before 10 idle minutes produces no away summary. Accepted for v1.
 - The den is not clickable.
 - The away card shows at most 5 items, then "and N more".
+- 2026-11-06: the user passed the Phase 4 manual test, all 9 steps:
+  - The den and eight-den read correctly (Phase 4 exit criterion).
+  - Plain-mode den.
+  - The away card appears on return, closes on a click, and folds after 60 s.
 Open questions for the user:
-- The Phase 4 manual test.
 - The G2 tester list.
 
 ## 2026-11-04 (later): Phase 3 done, Gate G1 passed
