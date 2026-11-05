@@ -679,9 +679,16 @@ fn main() {
     log::init();
     tauri::Builder::default()
         // First, so a second launch exits before anything else starts (§9.7).
+        // It brings Settings to the front instead: an open setup or Repair
+        // screen is focused, not replaced; the strip is never focused (§9.1).
+        // The plugin lets this instance take the foreground from the second.
         // Its arguments and folder are not logged (§11.5).
-        .plugin(tauri_plugin_single_instance::init(|_, _, _| {
-            tracing::info!("second launch ignored");
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            tracing::info!("second launch: opening settings");
+            // Off the main thread: creating a window in this callback (a
+            // window procedure) deadlocks on Windows.
+            let app = app.clone();
+            std::thread::spawn(move || open_settings(&app, ""));
         }))
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![

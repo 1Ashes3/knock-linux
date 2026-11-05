@@ -26,6 +26,11 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # §11.10: fails if Cargo.lock doesn't match the manifests, before any
+      # cargo command in `pnpm check` could update it.
+      - name: Cargo.lock is up to date
+        run: cargo fetch --locked --target x86_64-pc-windows-msvc
+
       - run: pnpm check
 
       # cargo-deny-action is a container action and cannot run on Windows runners.
