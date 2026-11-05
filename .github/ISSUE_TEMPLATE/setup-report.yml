@@ -1,0 +1,116 @@
+name: Setup report
+description: Tell us how installing and setting up Knock went for you, good or bad.
+title: "[Setup] "
+labels:
+  - setup-report
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying Knock! This form takes about 2 minutes. Please fill it in even if everything went smoothly. Knock sends nothing about you or your computer, so this form is the only way we learn how setup went.
+
+        **Please never paste Claude Code conversations, prompts, code, file contents or tokens here.** We only need to know what you saw and clicked.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Before you start
+      description: For now, Knock only works with the Claude Code command-line tool running directly on Windows 11. WSL, the Claude Code panel inside VS Code, the Claude desktop app, macOS and Linux aren't supported yet.
+      options:
+        - label: I am running the Claude Code CLI natively on Windows 11 (not in WSL, and not the Claude Code panel inside VS Code)
+          required: true
+        - label: I have not included any Claude Code conversations, prompts, code or tokens in this report
+          required: true
+
+  - type: dropdown
+    id: finished
+    attributes:
+      label: Did you finish setup without help?
+      options:
+        - Yes, without any trouble
+        - Yes, but I had some trouble
+        - No, I couldn't finish
+    validations:
+      required: true
+
+  - type: dropdown
+    id: duration
+    attributes:
+      label: Roughly how long did setup take?
+      description: From opening the installer to the "Done" screen.
+      options:
+        - Under 2 minutes
+        - 2 to 5 minutes
+        - 5 to 10 minutes
+        - More than 10 minutes
+    validations:
+      required: true
+
+  - type: dropdown
+    id: unsigned-warning
+    attributes:
+      label: Did Windows warn you about the installer?
+      description: |
+        Knock's installer isn't signed yet, so Windows may show a blue "Windows protected your PC" screen. If Smart App Control is turned on, Windows blocks unsigned apps completely. You can check it in Windows Security > App & browser control > Smart App Control.
+      options:
+        - No warning appeared
+        - Yes, and I chose "More info" then "Run anyway"
+        - Yes, and I stopped there
+        - Smart App Control blocked the installer
+        - Something else (tell us below)
+        - I don't remember
+    validations:
+      required: true
+
+  - type: dropdown
+    id: windows-version
+    attributes:
+      label: Windows version
+      description: Open Settings > System > About and look for "Version" under Windows specifications.
+      options:
+        - Windows 11 24H2
+        - Windows 11 25H2
+        - Other or I don't know
+    validations:
+      required: true
+
+  - type: dropdown
+    id: terminal
+    attributes:
+      label: Where do you run Claude Code?
+      description: Pick all that apply.
+      multiple: true
+      options:
+        - Windows Terminal
+        - PowerShell or Command Prompt window
+        - VS Code terminal
+        - Cursor terminal
+        - JetBrains terminal (IntelliJ, PyCharm, WebStorm and others)
+        - Other (tell us below)
+    validations:
+      required: true
+
+  - type: input
+    id: knock-version
+    attributes:
+      label: Knock version
+      description: Shown on the release page you downloaded from, and in the installer's file name.
+      placeholder: 0.3.0-beta.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: confusing
+    attributes:
+      label: Was anything confusing?
+      description: Which screen, and what you expected instead. Screenshots of Knock's own screens are welcome; please crop out anything else.
+    validations:
+      required: false
+
+  - type: textarea
+    id: other
+    attributes:
+      label: Anything else?
+      description: Anything you liked, disliked or would change.
+    validations:
+      required: false
