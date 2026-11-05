@@ -1,0 +1,155 @@
+name: Bug report
+description: Something in Knock didn't work the way you expected.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem! Describe what you saw on screen and what you did. You don't need any technical knowledge.
+
+        **Please never paste Claude Code conversations, prompts, code, file contents or tokens here.** Knock never reads or keeps those, and we don't need them to fix bugs.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Before you start
+      description: For now, Knock only works with the Claude Code command-line tool running directly on Windows 11. WSL, the Claude Code panel inside VS Code, the Claude desktop app, macOS and Linux aren't supported yet.
+      options:
+        - label: I am running the Claude Code CLI natively on Windows 11 (not in WSL, and not the Claude Code panel inside VS Code)
+          required: true
+        - label: I have not included any Claude Code conversations, prompts, code or tokens in this report
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you saw Knock do (or not do). Screenshots of Knock are welcome; please crop out your terminal and anything else on screen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can we make it happen again?
+      description: The steps you took, one per line. Describe actions, not the content of your Claude Code session.
+      placeholder: |
+        1. Opened two Claude Code windows
+        2. Asked Claude Code to do something that needs permission
+        3. Clicked the knocking animal
+        4. ...
+    validations:
+      required: true
+
+  - type: input
+    id: knock-version
+    attributes:
+      label: Knock version
+      description: Shown on the release page you downloaded from, and in the installer's file name.
+      placeholder: 0.3.0-beta.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: windows-version
+    attributes:
+      label: Windows version
+      description: Open Settings > System > About and look for "Version" under Windows specifications.
+      options:
+        - Windows 11 24H2
+        - Windows 11 25H2
+        - Other or I don't know
+    validations:
+      required: true
+
+  - type: dropdown
+    id: terminal
+    attributes:
+      label: Where was Claude Code running when this happened?
+      options:
+        - Windows Terminal
+        - PowerShell or Command Prompt window
+        - VS Code terminal
+        - Cursor terminal
+        - JetBrains terminal (IntelliJ, PyCharm, WebStorm and others)
+        - Other (tell us in "What happened?")
+    validations:
+      required: true
+
+  - type: dropdown
+    id: sessions
+    attributes:
+      label: How many Claude Code sessions were open?
+      options:
+        - "1"
+        - 2 to 3
+        - 4 to 5
+        - 6 or more
+        - I don't know
+    validations:
+      required: true
+
+  - type: dropdown
+    id: monitors
+    attributes:
+      label: How many monitors do you use?
+      options:
+        - One
+        - Two or more
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scaling
+    attributes:
+      label: Display scale
+      description: Open Settings > System > Display and look at "Scale". If you have several monitors, pick "Different on each monitor".
+      options:
+        - 100%
+        - 125%
+        - 150%
+        - 175%
+        - 200% or more
+        - Different on each monitor
+        - I don't know
+    validations:
+      required: true
+
+  - type: dropdown
+    id: taskbar-autohide
+    attributes:
+      label: Does your taskbar hide itself automatically?
+      description: Open Settings > Personalization > Taskbar > Taskbar behaviors and look at "Automatically hide the taskbar".
+      options:
+        - "No"
+        - "Yes"
+        - I don't know
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Knock's log file (optional)
+      description: |
+        A log can help us find the problem, but you don't have to share it.
+
+        **What's in it:** your project folder names, session IDs, event types (like "needs permission" or "finished") and details about your screens and windows. It never contains your messages, prompts, code or file contents.
+
+        **Only attach it if you're comfortable sharing your project folder names.** You can open it in Notepad first to check.
+
+        **How to attach it:**
+        1. Press the Windows key + R, paste `%LOCALAPPDATA%\Knock\logs` and press Enter.
+        2. Find the file for the day the problem happened (named like `knock.2026-11-06.log`).
+        3. Drag that file into this box.
+    validations:
+      required: false
