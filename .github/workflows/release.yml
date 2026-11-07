@@ -1,0 +1,252 @@
+# Release (manual beta build), ADR 0036.
+#
+# What it does: when the user clicks "Run workflow" on `main`, it builds the
+# unsigned NSIS installer on a GitHub Windows runner and creates a DRAFT
+# pre-release named after the version in apps/desktop/src-tauri/Cargo.toml.
+# The installer, its SHA-256 file and the notes from
+# docs/releases/v<version>.md (plus a Checksum section) are attached.
+#
+# It never publishes. The draft's tag `v<version>` is created only when the
+# user reviews the draft and publishes it by hand (§13.4). It refuses to run
+# if a release, draft or tag for that version already exists.
+#
+# Nothing is signed and no secret other than GitHub's built-in token is
+# used: there is no updater key yet (§11.9). Phase 6 adds the `v*` tag
+# trigger, updater signing and latest.json (ADR 0036).
+
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One release run at a time. A running build is never cancelled.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    name: Build the installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      title: ${{ steps.version.outputs.title }}
+    steps:
+      - name: Stop unless this run is from main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if ($env:REF -cne 'refs/heads/main') {
+            Write-Output "::error::Release runs only from main, but this run is from '$env:REF'. Choose 'main' under 'Use workflow from' and run it again."
+            exit 1
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rustup is preinstalled on the runner; with no arguments it installs
+      # the toolchain pinned in rust-toolchain.toml.
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0 (version from packageManager)
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: package.json # reads engines.node
+          cache: pnpm
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      # §11.10: fails if Cargo.lock doesn't match the manifests.
+      - name: Check Cargo.lock is up to date
+        run: cargo fetch --locked --target x86_64-pc-windows-msvc
+
+      - name: Read the app version
+        id: version
+        run: |
+          $json = cargo metadata --locked --no-deps --format-version 1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::Could not read the workspace metadata."
+            exit 1
+          }
+          $packages = @(($json | ConvertFrom-Json).packages | Where-Object { $_.name -ceq 'knock-desktop' })
+          if ($packages.Count -ne 1) {
+            Write-Output "::error::Expected one knock-desktop package, found $($packages.Count)."
+            exit 1
+          }
+          $version = [string]$packages[0].version
+          if ($version -cnotmatch '^[0-9A-Za-z.-]+$') {
+            Write-Output "::error::The version in apps/desktop/src-tauri/Cargo.toml has characters other than letters, digits, '.' and '-'."
+            exit 1
+          }
+          if ($version -clike '*-beta*') {
+            $title = "Knock $version (public beta)"
+          } else {
+            $title = "Knock $version"
+          }
+          Write-Output "Version: $version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+          "title=$title" >> $env:GITHUB_OUTPUT
+
+      - name: Check the release notes exist
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $notes = "docs/releases/$env:TAG.md"
+          if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) {
+            Write-Output "::error::Release notes $notes are missing. Add them on main and run again."
+            exit 1
+          }
+
+      # Early check so a clash fails before the long build. This job's
+      # read-only token may not see drafts; the release job checks again,
+      # drafts included, before creating anything.
+      - name: Check this version was not released already
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $refs = gh api "repos/$env:GH_REPO/git/matching-refs/tags/$env:TAG"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::Could not list the repository's tags."
+            exit 1
+          }
+          $tagExists = @(($refs | ConvertFrom-Json) | Where-Object { $_.ref -ceq "refs/tags/$env:TAG" }).Count -gt 0
+          $list = gh release list --limit 1000 --json tagName
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::Could not list the repository's releases."
+            exit 1
+          }
+          $releaseExists = @(($list | ConvertFrom-Json) | Where-Object { $_.tagName -ceq $env:TAG }).Count -gt 0
+          if ($tagExists -or $releaseExists) {
+            Write-Output "::error::A release, draft or tag named $env:TAG already exists. Delete it on GitHub (Releases, and Tags if needed), or raise the version in apps/desktop/src-tauri/Cargo.toml, then run again."
+            exit 1
+          }
+
+      # Runs `tauri build` (the NSIS installer, §13.3).
+      - name: Build the installer
+        run: pnpm build
+
+      - name: Find the installer and write its checksum and notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $name = "Knock_$($env:VERSION)_x64-setup.exe"
+          $bundleDir = Join-Path $env:GITHUB_WORKSPACE 'target/release/bundle/nsis'
+          $found = @(Get-ChildItem -LiteralPath $bundleDir -Filter '*-setup.exe' -File -ErrorAction SilentlyContinue)
+          if ($found.Count -ne 1 -or $found[0].Name -cne $name) {
+            $seen = if ($found.Count -eq 0) { 'none' } else { ($found | ForEach-Object Name) -join ', ' }
+            Write-Output "::error::Expected exactly one installer named $name in target/release/bundle/nsis, found: $seen"
+            exit 1
+          }
+
+          $out = Join-Path $env:RUNNER_TEMP 'knock-release'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $installer = Join-Path $out $name
+          Copy-Item -LiteralPath $found[0].FullName -Destination $installer
+
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $utf8 = New-Object System.Text.UTF8Encoding $false
+          [System.IO.File]::WriteAllText((Join-Path $out "$name.sha256"), "$hash  $name`n", $utf8)
+
+          # A copy of the notes with the checksum; the repository file is not changed.
+          $notes = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE "docs/releases/$env:TAG.md"))
+          $notes = $notes.TrimEnd() + "`n`n### Checksum`n`nSHA-256 of ``$name``:`n`n``````text`n$hash`n```````n"
+          [System.IO.File]::WriteAllText((Join-Path $out 'release-notes.md'), $notes, $utf8)
+
+          Write-Output "Installer: $name"
+          Write-Output "SHA-256:   $hash"
+
+      # Keeps the build downloadable from the run page even if the release
+      # step fails. The release job also takes its files from here.
+      - name: Keep the installer as a workflow artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Knock-${{ steps.version.outputs.version }}-installer
+          path: ${{ runner.temp }}/knock-release/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Create the draft pre-release
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    # The only job that can write: it creates the draft release. It checks
+    # out no code and runs only the GitHub CLI.
+    permissions:
+      contents: write
+    steps:
+      - name: Get the installer from the build job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Knock-${{ needs.build.outputs.version }}-installer
+          path: ${{ runner.temp }}/knock-release
+
+      - name: Check this version was not released already, drafts included
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          $refs = gh api "repos/$env:GH_REPO/git/matching-refs/tags/$env:TAG"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::Could not list the repository's tags."
+            exit 1
+          }
+          $tagExists = @(($refs | ConvertFrom-Json) | Where-Object { $_.ref -ceq "refs/tags/$env:TAG" }).Count -gt 0
+          $list = gh release list --limit 1000 --json tagName
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::Could not list the repository's releases."
+            exit 1
+          }
+          $releaseExists = @(($list | ConvertFrom-Json) | Where-Object { $_.tagName -ceq $env:TAG }).Count -gt 0
+          if ($tagExists -or $releaseExists) {
+            Write-Output "::error::A release, draft or tag named $env:TAG already exists. Delete it on GitHub (Releases, and Tags if needed), or raise the version in apps/desktop/src-tauri/Cargo.toml, then run again. The installer from this run is still under Artifacts on the run page."
+            exit 1
+          }
+
+      # --draft: never published here; the user publishes by hand (§13.4).
+      - name: Create the draft pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ needs.build.outputs.tag }}
+          TITLE: ${{ needs.build.outputs.title }}
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'knock-release'
+          $name = "Knock_$($env:VERSION)_x64-setup.exe"
+          $installer = Join-Path $dir $name
+          $checksum = Join-Path $dir "$name.sha256"
+          $notes = Join-Path $dir 'release-notes.md'
+          foreach ($file in @($installer, $checksum, $notes)) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              Write-Output "::error::Missing $(Split-Path -Leaf $file) from the build job."
+              exit 1
+            }
+          }
+          gh release create $env:TAG --draft --prerelease --target $env:TARGET_SHA --title $env:TITLE --notes-file $notes $installer $checksum
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::Creating the draft release failed. The installer is still under Artifacts on the run page."
+            exit 1
+          }
+          Write-Output "Draft pre-release $env:TAG created. Review it under Releases and publish it by hand."
