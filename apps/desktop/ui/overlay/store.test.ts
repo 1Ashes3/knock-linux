@@ -59,6 +59,23 @@ test("a failed initial load (undefined) changes nothing", () => {
 	});
 });
 
+test("away-summary is kept as sent, with when it arrived; a newer one replaces it", () => {
+	const store = createStripStore();
+	expect(store.getState().away).toBeNull();
+	const first = { since: "2026-11-01T11:30:00Z", items: [] };
+	store.getState().applyAway(first, 1000);
+	expect(store.getState().away).toEqual({ summary: first, at: 1000 });
+	expect(store.getState().away?.summary).toBe(first);
+	const second = {
+		since: "2026-11-01T11:40:00Z",
+		items: [{ id: "a", project: "web", outcome: "ready" as const }],
+	};
+	store.getState().applyAway(second, 2000);
+	expect(store.getState().away).toEqual({ summary: second, at: 2000 });
+	store.getState().clearAway();
+	expect(store.getState().away).toBeNull();
+});
+
 test("settings-changed wins over a late get_settings result", () => {
 	const store = createStripStore();
 	store.getState().applySettings(settings("large"));

@@ -357,6 +357,54 @@ mod tests {
         }
     }
 
+    /// FR-9 (ADR 0034) on the virtual clock: the user leaves as `away` starts
+    /// and comes back 1 s after its last event. Every session is simulated
+    /// and counts; each is listed with its state at return.
+    #[test]
+    fn away_summarizes_every_session_on_return() {
+        use knock_core::{AWAY_MS, Adapter, Away, ClaudeCode, Engine, Input};
+        const BASE: u64 = 1_792_000_000_000;
+        let adapter = ClaudeCode { users: Vec::new() };
+        let mut engine = Engine::new(Settings::default());
+        let mut away = Away::new(AWAY_MS);
+        let steps = scenario("away").unwrap();
+        let back = steps.last().unwrap().t() + 1000;
+        let (mut next, mut got) = (steps.iter().peekable(), Vec::new());
+        for clock in (0..=back).step_by(1000) {
+            // Events at the same ms as a tick go first, as in a replay.
+            while let Some(step) = next.next_if(|s| s.t() <= clock) {
+                let Step::Hook { body, t, .. } = step else {
+                    continue;
+                };
+                let event = adapter.parse(body, BASE + t).unwrap().unwrap();
+                engine.step(Input::Event {
+                    event,
+                    simulated: true,
+                });
+            }
+            engine.step(Input::Tick { now: BASE + clock });
+            let idle = if clock < back { clock } else { 0 };
+            if let Some(s) = away.tick(BASE + clock, idle, engine.sessions()) {
+                got.push((clock, s));
+            }
+        }
+        assert_eq!(got.len(), 1, "{got:?}");
+        let (at, s) = &got[0];
+        assert_eq!((*at, s.since), (back, BASE));
+        let items: Vec<_> = (s.items.iter())
+            .map(|i| (i.id.as_str(), i.project.as_str(), i.outcome.as_str()))
+            .collect();
+        assert_eq!(
+            items,
+            [
+                ("s51", "web-shop", "ready"),
+                ("s52", "api-gateway", "failed"),
+                ("s53", "data-jobs", "needs_you"),
+                ("s54", "docs-site", "ready"),
+            ]
+        );
+    }
+
     #[test]
     fn demo_is_a_short_mix() {
         let (out, live) = play_local("demo").unwrap();

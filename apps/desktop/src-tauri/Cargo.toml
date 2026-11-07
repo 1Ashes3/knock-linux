@@ -2,7 +2,7 @@
 name = "knock-desktop"
 # The app's one version: tauri.conf.json has none, so the installer, the
 # exe's file version and /v1/health all use this.
-version = "0.2.0"
+version = "0.3.0-beta.1"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -31,6 +31,7 @@ windows = { version = "0.62.2", features = [
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

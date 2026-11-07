@@ -6,14 +6,14 @@
 //   chip area     chips in rows, each with a tail and a leader down to its own
 //                 character; the hover tooltip is drawn here too
 //   headroom      room for step_up and the sleep "z"
-//   slots         the characters, first session nearest the clock, then "+N"
+//   slots         the characters, first session nearest the clock, then the den
 //
 // Only characters and buttons are hit regions; everything else is click-through.
 import type { HitRegion, SessionView, Size } from "../bridge";
 import { SLOT_PX, stateLabel } from "../pill";
 import { LIFT_UNITS } from "./controller";
 
-/** §9.2: 6 slots at most (5 characters plus "+N"). */
+/** §9.2: 6 slots at most (5 characters plus the den). */
 export const MAX_SLOTS = 6;
 
 export interface Metrics {

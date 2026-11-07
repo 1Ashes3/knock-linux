@@ -16,6 +16,75 @@ Open questions for the user:
 
 ---
 
+## 2026-11-06: Phase 4, public beta preparation
+Done:
+- ADR 0035 (approved by the user): v0.3 is a **public** beta via a GitHub pre-release, and the user judges G2 from setup reports. SPEC.md §13.5 and §14 were updated.
+- README written for the public, with screenshots in docs/images (lead).
+- `core-windows`: GitHub issue forms, "Setup report" and "Bug report" (313eca8). Neither asks for agent content (§11).
+- Fresh pre-release review of §8.1, §8.2, §9.7 and §11 (ADR 0029 process, user request). No serious findings. Six minor ones were verified by the lead. The user chose:
+  - Fixed now (72939db):
+    - (1) An undone sign-in turn-off no longer clears the Task Manager mark. The mark is now cleared only after the save.
+    - (3) A second launch opens Settings.
+    - (6) CI runs `cargo fetch --locked`.
+  - (2) A manual upgrade with "Run Knock" unticked leaves sign-in off until Knock is started once. This is now a README note.
+  - **Deferred to Phase 5:**
+    - (4) Setup reopens at every start after the hooks are removed while sign-in is on.
+    - (5) Misleading messages: the server error text for an invalid server.json; "development build" text when USERPROFILE is unset; the health check says "Choose Repair" while no Repair button is shown.
+- History scan before going public: no secrets or personal paths, only test placeholder tokens. `pnpm audit` is clean. cargo-deny runs in CI.
+Next:
+- The user makes the repo public, creates the `setup-report` label, merges develop → main, builds, tags `v0.3.0-beta.1` on main and publishes the pre-release.
+- Gate G2: the user judges it from setup reports.
+Dependencies added: none
+Clarifications: none
+Open questions for the user:
+- G2 verdict, once setup reports come in.
+- Later: should the app show its version (Settings or diagnostics)? Testers currently read it from the installer name.
+
+## 2026-11-04 (evening): Phase 4 (interaction and scale)
+Done:
+- Survey: FR-5 escalation, FR-6 jump (with the flash fallback and the toast click), FR-11 stall, suppression, multiple monitors and FR-15 were already built and tested (checked by `core-windows`). The quiet-hours and pause controls were in Settings and the tray since Phase 2.
+- ADR 0034, approved by the user: the away card lists sessions that entered Ready, Failed or Needs you while the user was away and are still there on return. A seen session that asks again while the user is away is listed too (user, same day).
+- 4.1 (`core-windows`): idle time in the platform layer, and a pure `Away` tracker in knock-core. `away-summary` is sent on return, and `dismiss_away_summary()` clears it (8472163, e1eba3e).
+  - A debug-only `KNOCK_AWAY_SECONDS` shortens the 10 minutes for manual tests.
+- 4.2 (`ui`): the den in both modes (1ff0a25). It shows per-tier counts, and only Needs-you sessions step out.
+  - Slot rule: Needs-you first, then the core's order. The lead accepted this because it matches FR-10.
+- 4.2 (`ui`): the away card, above the strip.
+  - Lead review caught the card placed beside the strip, past the core's 6-slot width cap. It was moved, and the dev mock now applies the cap.
+- Lead review: `pnpm check` passes, 216/216 screenshot tests, `art:check` passes, 17/17 replays.
+- Merged into `develop`: phase-4/away-core, phase-4/away-reask, phase-4/den-away-ui.
+- Version set to 0.3.0-beta.1.
+Next:
+- The user's manual test of the den, eight-den and the away card.
+- Then G2: build the beta, the lead writes tester instructions (unsigned installer, Smart App Control, §13.5), and the user publishes the GitHub pre-release by hand.
+Dependencies added: none
+Clarifications (lead):
+- A PC that sleeps before 10 idle minutes produces no away summary. Accepted for v1.
+- The den is not clickable.
+- The away card shows at most 5 items, then "and N more".
+- 2026-11-06: the user passed the Phase 4 manual test, all 9 steps:
+  - The den and eight-den read correctly (Phase 4 exit criterion).
+  - Plain-mode den.
+  - The away card appears on return, closes on a click, and folds after 60 s.
+Open questions for the user:
+- The G2 tester list.
+
+## 2026-11-04 (later): Phase 3 done, Gate G1 passed
+Done:
+- **Gate G1 passed** (user decision, 2026-11-04).
+- Version bumped to 0.2.0 (2f01cf2). The user built the installer on their v0.1 machine and passed every v0.2 checklist step (1-16):
+  - Upgrade over v0.1, uninstall and reinstall.
+  - Hover box goes away, and clicks pass through.
+  - Second-monitor placement is also tested now.
+  - No issues found.
+- **Phase 3 exit criteria are met.**
+- ADR 0033 (approved by the user): latency and CPU are goals, not tests. It supersedes 0032. SPEC.md §6 and §14 were updated.
+Next:
+- Plan Phase 4 (interaction and scale, v0.3 beta, Gate G2).
+Dependencies added: none
+Clarifications: none
+Open questions for the user:
+- none
+
 ## 2026-11-04: Phase 3 (animals)
 Done:
 - The user asked to start Phase 3 while the Gate G1 week is still running. G1 still ends with the user's pass/fail. If it fails, §14 says to fix detection or the plain strip before more animal work.

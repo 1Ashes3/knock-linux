@@ -7,10 +7,23 @@
 //   taskbar=light|dark         background; default dark
 //   mode=plain|animals         settings.mode; default plain
 //   animal=<id>                every sample's animal; default fox
+//   away=<n>                   sends an `away-summary` with n items once loaded
+//   set=eight-den              the end of `knock sim eight-den` instead of samples (§12.3)
 //
 // Tests drive changes through `window.__knockMock` (see the end of this file).
-import type { SessionsChanged, SessionView, Settings } from "../bridge";
-import { SAMPLE_KEYS, SAMPLES, type SampleKey } from "./samples";
+import type {
+	AwaySummary,
+	SessionsChanged,
+	SessionView,
+	Settings,
+} from "../bridge";
+import {
+	awaySample,
+	EIGHT_DEN,
+	SAMPLE_KEYS,
+	SAMPLES,
+	type SampleKey,
+} from "./samples";
 
 const params = new URLSearchParams(location.search);
 const keys = (params.get("show")?.split(",") ?? SAMPLE_KEYS).filter(
@@ -35,10 +48,13 @@ const settings: Settings = {
 
 let rev = 1;
 const animal = params.get("animal");
-let sessions: SessionView[] = keys.map((k) => ({
-	...structuredClone(SAMPLES[k]),
-	...(animal ? { animal } : {}),
-}));
+let sessions: SessionView[] =
+	params.get("set") === "eight-den"
+		? structuredClone(EIGHT_DEN)
+		: keys.map((k) => ({
+				...structuredClone(SAMPLES[k]),
+				...(animal ? { animal } : {}),
+			}));
 const handlers = new Map<string, ((e: { payload: unknown }) => void)[]>();
 
 function emit(event: string, payload: unknown): void {
@@ -55,6 +71,35 @@ function update(id: string, change: (s: SessionView) => SessionView | null) {
 }
 
 const log = document.getElementById("log") as HTMLElement;
+const root = document.getElementById("root") as HTMLElement;
+
+/** §9.2, as the core does it (src-tauri/src/strip.rs `clamp`): at most 6 slots wide. */
+const SLOT: Record<Settings["size"], number> = {
+	small: 48,
+	medium: 64,
+	large: 80,
+};
+const TASKBAR_PX = 48;
+const RIGHT_PX = 8;
+
+/**
+ * Clips the overlay to the window the core would give it: right edge 8 px from the
+ * screen edge, bottom on the taskbar, width capped at 6 slots and height at the work
+ * area. Anything the UI draws outside it is cut off, as in the real window.
+ */
+function placeWindow(width: number, height: number): void {
+	const w = Math.min(width, 6 * SLOT[settings.size]);
+	const h = Math.min(height, innerHeight - TASKBAR_PX);
+	const top = innerHeight - TASKBAR_PX - h;
+	const left = innerWidth - RIGHT_PX - w;
+	root.style.clipPath = `inset(${top}px ${RIGHT_PX}px ${TASKBAR_PX}px ${left}px)`;
+	root.dataset.window = JSON.stringify({
+		x: left,
+		y: top,
+		width: w,
+		height: h,
+	});
+}
 
 // Roughly what the core does for these commands (§8.4), so clicks visibly do something.
 const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
@@ -76,8 +121,10 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
 		update(id as string, (s) =>
 			s.state === "failed" || s.state === "ended_unexpectedly" ? null : s,
 		),
+	dismiss_away_summary: () => undefined,
 	set_hit_regions: () => undefined,
-	request_strip_size: () => undefined,
+	request_strip_size: ({ width, height }) =>
+		placeWindow(width as number, height as number),
 };
 
 globalThis.__TAURI__ = {
@@ -114,7 +161,15 @@ const mock = {
 		Object.assign(settings, patch);
 		emit("settings-changed", { settings: { ...settings } });
 	},
+	/** Sends `away-summary`: a given one, or a sample with `n` items (dev/samples.ts). */
+	away(summary: AwaySummary | number = 3): void {
+		emit(
+			"away-summary",
+			typeof summary === "number" ? awaySample(summary) : summary,
+		);
+	},
 };
 (globalThis as { __knockMock?: typeof mock }).__knockMock = mock;
 
-await import("../main");
+await import("../main"); // resolves once it listens and has loaded
+if (params.has("away")) mock.away(Number(params.get("away")) || 3);

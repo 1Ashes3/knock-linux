@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import type { SessionView, Settings } from "../bridge";
+import type { AwaySummary, SessionView, Settings } from "../bridge";
 import { SAMPLE_KEYS, type SampleKey } from "../dev/samples";
 
 // Animals mode (§12.1): every state x taskbar x animation effects, the three sizes, a
@@ -16,6 +16,7 @@ interface Mock {
 	set(id: string, patch: Partial<SessionView>): void;
 	remove(id: string): void;
 	settings(patch: Partial<Settings>): void;
+	away(summary: AwaySummary | number): void;
 }
 
 async function open(
@@ -39,10 +40,45 @@ const mock = (page: Page, run: (m: Mock) => void) =>
 		`(${run.toString()})(globalThis.__knockMock)` as unknown as () => void,
 	);
 
-/** The strip plus its margin and the fake taskbar under it. */
+/** The box around everything `selector` matches. */
+async function union(page: Page, selector: string) {
+	const boxes = await page.locator(selector).evaluateAll((els) =>
+		els.map((e) => {
+			const r = e.getBoundingClientRect();
+			return { x: r.x, y: r.y, right: r.right, bottom: r.bottom };
+		}),
+	);
+	if (!boxes.length) throw new Error(`nothing matches ${selector}`);
+	const x = Math.min(...boxes.map((b) => b.x));
+	const y = Math.min(...boxes.map((b) => b.y));
+	return {
+		x,
+		y,
+		width: Math.max(...boxes.map((b) => b.right)) - x,
+		height: Math.max(...boxes.map((b) => b.bottom)) - y,
+	};
+}
+
+/** Everything `selector` matches lies inside the mock's window (dev/mock.ts `placeWindow`). */
+async function expectInWindow(page: Page, selector: string) {
+	const win = JSON.parse(
+		(await page.locator("#root").getAttribute("data-window")) ?? "{}",
+	);
+	const box = await union(page, selector);
+	expect(box.x).toBeGreaterThanOrEqual(win.x);
+	expect(box.y).toBeGreaterThanOrEqual(win.y);
+	expect(box.x + box.width).toBeLessThanOrEqual(win.x + win.width);
+	expect(box.y + box.height).toBeLessThanOrEqual(win.y + win.height);
+}
+
+/** The strip (and the away card, if it shows) plus a margin and the fake taskbar under it. */
 async function shot(page: Page, name: string) {
-	const box = await page.locator(".animals").boundingBox();
-	if (!box) throw new Error("no strip");
+	// Measure the card where it rests, not part-way through its rise.
+	for (const card of await page.locator(".away").all())
+		await card.evaluate((e) => {
+			for (const a of e.getAnimations()) a.finish();
+		});
+	const box = await union(page, ".animals, .away");
 	await expect(page).toHaveScreenshot(`${name}.png`, {
 		clip: {
 			x: box.x - 8,
@@ -111,7 +147,7 @@ for (const motion of ["on", "off"] as const)
 				await shot(page, `animals-${key}-${taskbar}-motion-${motion}`);
 			});
 
-// Every size with all samples: 5 characters and "+5".
+// Every size with all samples: 5 characters and the den (FR-10).
 for (const size of ["small", "medium", "large"])
 	for (const taskbar of TASKBARS)
 		test(`animals: all samples, ${size}, ${taskbar} taskbar`, async ({
@@ -119,10 +155,205 @@ for (const size of ["small", "medium", "large"])
 		}) => {
 			await open(page, `size=${size}&taskbar=${taskbar}`);
 			await page.clock.runFor(SETTLE_MS);
-			await expect(page.locator(".animals .overflow")).toHaveText("+5more");
+			await expect(
+				page.getByRole("img", {
+					name: "5 more sessions: 1 needs you, 1 ready, 1 working, 2 resting",
+				}),
+			).toBeVisible();
+			await expect(page.locator(".animals .den-count")).toHaveText([
+				"1",
+				"1",
+				"1",
+				"2",
+			]);
 			await expect(page.locator(".animals .character")).toHaveCount(5);
 			await shot(page, `animals-all-${size}-${taskbar}`);
 		});
+
+// `knock sim eight-den` (§12.3, Phase 4 exit) in animals mode: three knock or alert, two
+// present, and the den holds 1 ready and 2 working.
+const EIGHT_DEN_NAME = "3 more sessions: 1 ready, 2 working";
+const EIGHT_DEN_CHIPS = ["s21", "s22", "s23", "s24", "s27"];
+
+for (const motion of ["on", "off"] as const)
+	for (const taskbar of TASKBARS)
+		test(`animals: den, eight-den, ${taskbar} taskbar, animation ${motion}`, async ({
+			page,
+		}) => {
+			await open(page, `set=eight-den&taskbar=${taskbar}`, motion);
+			await page.clock.runFor(SETTLE_MS);
+			await expect(page.locator(".animals .character")).toHaveCount(5);
+			await expect(
+				page.getByRole("img", { name: EIGHT_DEN_NAME }),
+			).toBeVisible();
+			await expect(page.locator(".chip")).toHaveCount(EIGHT_DEN_CHIPS.length);
+			// The den is drawn by the UI and never catches the mouse.
+			await expect(page.locator(".den")).toHaveCSS("pointer-events", "none");
+			await expect(loop(page)).toHaveAttribute(
+				"data-loop",
+				motion === "on" ? "running" : "stopped",
+			);
+			await shot(page, `animals-den-eight-${taskbar}-motion-${motion}`);
+		});
+
+for (const taskbar of TASKBARS)
+	test(`animals: den, eight-den, small, ${taskbar} taskbar`, async ({
+		page,
+	}) => {
+		await open(page, `set=eight-den&size=small&taskbar=${taskbar}`);
+		await page.clock.runFor(SETTLE_MS);
+		await expect(page.getByRole("img", { name: EIGHT_DEN_NAME })).toBeVisible();
+		await shot(page, `animals-den-eight-small-${taskbar}`);
+	});
+
+test("animals: a den session that needs you steps out and knocks; they swap back after", async ({
+	page,
+}) => {
+	await open(page, "set=eight-den&taskbar=dark");
+	await page.clock.runFor(SETTLE_MS);
+	const infra = () =>
+		page.getByRole("button", { name: /^infra,/ }).evaluate((e) => ({
+			left: Number.parseFloat((e as HTMLElement).style.left),
+			top: Number.parseFloat((e as HTMLElement).style.top),
+		}));
+	const stage = await page
+		.locator(".stage")
+		.evaluate((e) => Number.parseFloat((e as HTMLElement).style.top));
+	await mock(page, (m) =>
+		m.set("s26", {
+			state: "needs_input",
+			tier: "needs_you",
+			needs: { kind: "permission", label: "Bash", seen: false },
+		}),
+	);
+	await expect(
+		page.getByRole("button", { name: "infra, Needs permission: Bash" }),
+	).toBeVisible();
+	// api-gateway, the last calm character, went into the den in its place.
+	await expect(page.getByRole("button", { name: /^api-gateway/ })).toHaveCount(
+		0,
+	);
+	await expect(
+		page.getByRole("img", { name: "3 more sessions: 2 ready, 1 working" }),
+	).toBeVisible();
+	// It steps up (its hit region rises) and knocks.
+	await expect.poll(async () => (await infra()).top).toBe(stage + 16 - 12);
+	await page.clock.runFor(2000);
+	await expect(loop(page)).toHaveAttribute("data-loop", "running");
+	await shot(page, "animals-den-step-out");
+	await mock(page, (m) =>
+		m.set("s26", { state: "working", tier: "working", needs: null }),
+	);
+	await expect(page.getByRole("button", { name: /^infra/ })).toHaveCount(0);
+	await expect(
+		page.getByRole("button", { name: "api-gateway, Done, ready to review" }),
+	).toBeVisible();
+	await expect(page.getByRole("img", { name: EIGHT_DEN_NAME })).toBeVisible();
+});
+
+test("animals: with effects off a den session that needs you swaps in at once, still", async ({
+	page,
+}) => {
+	await open(page, "set=eight-den", "off");
+	await mock(page, (m) =>
+		m.set("s28", {
+			state: "needs_input",
+			tier: "needs_you",
+			needs: { kind: "answer", label: null, seen: false },
+		}),
+	);
+	const search = page.getByRole("button", {
+		name: "search, Has a question",
+	});
+	await expect(search).toBeVisible();
+	await expect(search.locator(".badge")).toHaveCount(1);
+	await expect(loop(page)).toHaveAttribute("data-loop", "stopped");
+});
+
+// The "While you were away" card (FR-9), above everything so it never covers a chip.
+for (const taskbar of TASKBARS)
+	test(`animals: away card above knocking characters, ${taskbar} taskbar`, async ({
+		page,
+	}) => {
+		await open(page, `set=eight-den&taskbar=${taskbar}&away=7`);
+		await page.clock.runFor(SETTLE_MS);
+		const card = page.locator(".away");
+		await expect(card).toBeVisible();
+		await expect(card.locator("li")).toHaveCount(5);
+		await expect(card.locator(".away-more")).toHaveText("and 2 more");
+		// Nothing overlaps: the card is above every chip, leader, character, den and button,
+		// and fully inside the window the core gives (6 slots wide).
+		await card.evaluate((e) => {
+			for (const a of e.getAnimations()) a.finish();
+		});
+		const box = await card.boundingBox();
+		const others = await union(
+			page,
+			".chip, .leaders, .character, .den, .dismiss, .stage",
+		);
+		if (!box) throw new Error("no card");
+		expect(box.y + box.height).toBeLessThanOrEqual(others.y);
+		await expectInWindow(page, ".away, .animals");
+		await shot(page, `animals-away-${taskbar}`);
+	});
+
+test("animals: away card, small, light taskbar", async ({ page }) => {
+	await open(page, "set=eight-den&size=small&taskbar=light&away=3");
+	await page.clock.runFor(SETTLE_MS);
+	await expect(page.locator(".away li")).toHaveCount(3);
+	await shot(page, "animals-away-small-light");
+});
+
+test("animals: away card with effects off just shows", async ({ page }) => {
+	await open(page, "show=permission,ready&taskbar=dark&away=2", "off");
+	await expect(page.locator(".away")).toHaveCSS("animation-name", "none");
+	await shot(page, "animals-away-dark-motion-off");
+});
+
+test("animals: away card is a hit region while it shows, and folds after 60 s or on click", async ({
+	page,
+}) => {
+	await open(page, "show=ready,failed");
+	const log = page.locator("#log");
+	const last = async (cmd: string) =>
+		((await log.textContent()) ?? "")
+			.split("\n")
+			.find((l) => l.startsWith(`${cmd} `));
+	const regions = async () =>
+		JSON.parse((await last("set_hit_regions"))?.slice(16) ?? "{}").regions;
+	await mock(page, (m) => m.away(2));
+	// The window stays 384 wide and grows up by the card (77) plus the gap (8).
+	await expect
+		.poll(() => last("request_strip_size"))
+		.toBe('request_strip_size {"width":384,"height":241}');
+	const strip = await page.locator(".animals").boundingBox();
+	await expect.poll(async () => (await regions()).length).toBe(4);
+	expect((await regions())[3]).toEqual({
+		x: (strip?.x ?? 0) + 384 - 264,
+		y: (strip?.y ?? 0) - 8 - 77,
+		width: 264,
+		height: 77,
+	});
+	await page.clock.runFor(59_000);
+	await expect(page.locator(".away")).toBeVisible();
+	await page.clock.runFor(1_100);
+	await expect(page.locator(".away")).toHaveCount(0);
+	await expect.poll(async () => (await regions()).length).toBe(3);
+	await expect
+		.poll(() => last("request_strip_size"))
+		.toBe('request_strip_size {"width":384,"height":156}');
+	// A new one, closed with a click: dismiss_away_summary once per card.
+	await mock(page, (m) => m.away(1));
+	await page.locator(".away").click();
+	await expect(page.locator(".away")).toHaveCount(0);
+	expect(
+		(await log.textContent())?.match(/dismiss_away_summary/g),
+	).toHaveLength(2);
+	// Mode switch keeps a showing card.
+	await mock(page, (m) => m.away(1));
+	await mock(page, (m) => m.settings({ mode: "plain" }));
+	await expect(page.locator(".away")).toBeVisible();
+});
 
 test("animals: a mixed strip, dark taskbar", async ({ page }) => {
 	await open(page, "show=permission,ready,failed,working,idle");
@@ -379,4 +610,34 @@ test("an animal with no art is drawn as the fox, and nothing breaks the CSP", as
 	await page.clock.runFor(SETTLE_MS);
 	await shot(page, "animals-unknown-animal");
 	expect(errors).toEqual([]);
+});
+
+test("the window never asks to be wider than 6 slots, in either mode, card or not (§9.2)", async ({
+	page,
+}) => {
+	for (const mode of ["plain", "animals"])
+		for (const [size, slot] of [
+			["small", 48],
+			["medium", 64],
+			["large", 80],
+		] as const) {
+			await page.goto(`/overlay/dev/mock.html?mode=${mode}&size=${size}`);
+			const log = page.locator("#log");
+			await expect(log).toContainText("request_strip_size");
+			await mock(page, (m) => m.away(7));
+			await expect(page.locator(".away")).toBeVisible();
+			await page.locator(".away").evaluate((e) => {
+				for (const a of e.getAnimations()) a.finish();
+			});
+			await expectInWindow(page, ".away, .strip, .animals");
+			await page.locator(".away").click();
+			await expect(page.locator(".away")).toHaveCount(0);
+			const widths = ((await log.textContent()) ?? "")
+				.split("\n")
+				.filter((l) => l.startsWith("request_strip_size "))
+				.map((l) => JSON.parse(l.slice(19)).width as number);
+			expect(widths.length, `${mode} ${size}`).toBeGreaterThanOrEqual(3);
+			for (const w of widths)
+				expect(w, `${mode} ${size}`).toBeLessThanOrEqual(6 * slot);
+		}
 });

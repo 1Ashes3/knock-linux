@@ -1,6 +1,6 @@
 # 0032: The Phase 3 performance measurement is deferred
 
-- **Status:** Approved by user on 2026-11-04
+- **Status:** Superseded by 0033
 - **Date:** 2026-11-04
 - **Spec sections:** §6 (Latency, CPU), §14 (Phase 3 exit criteria)
 - **VERIFY item:** none
