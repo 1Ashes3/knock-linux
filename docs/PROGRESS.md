@@ -31,8 +31,14 @@ Done:
     - (4) Setup reopens at every start after the hooks are removed while sign-in is on.
     - (5) Misleading messages: the server error text for an invalid server.json; "development build" text when USERPROFILE is unset; the health check says "Choose Repair" while no Repair button is shown.
 - History scan before going public: no secrets or personal paths, only test placeholder tokens. `pnpm audit` is clean. cargo-deny runs in CI.
+- 2026-11-07, ADR 0036 (approved by the user): a manual `release.yml` (90e73e6).
+  - Run from `main`, it builds the installer on GitHub and creates a draft pre-release with the SHA-256 and the notes from `docs/releases/`.
+  - It never publishes.
+  - The build job is read-only; only the release job can write.
+  - Reviewed by the lead and the user; action SHAs verified against their tags. Not yet run on GitHub.
 Next:
-- The user makes the repo public, creates the `setup-report` label, merges develop → main, builds, tags `v0.3.0-beta.1` on main and publishes the pre-release.
+- The user makes the repo public, creates the `setup-report` label and merges develop → main.
+- Then the user runs the Release workflow, reviews the draft and publishes it.
 - Gate G2: the user judges it from setup reports.
 Dependencies added: none
 Clarifications: none
