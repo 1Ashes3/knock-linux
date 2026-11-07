@@ -710,7 +710,7 @@ knock/
 | ------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `ci.yml`      | Pull request | `pnpm check`, `pnpm test:visual`, `pnpm art:check`, `cargo-deny`, `pnpm audit`, Windows build, smoke test                             |
 | `nightly.yml` | Push to main | Same, plus an installer artifact                                                                                                      |
-| `release.yml` | Tag `v*`     | Build the NSIS installer, sign the update package with the updater key, upload installer plus `latest.json` to a draft GitHub Release |
+| `release.yml` | Tag `v*` (until Phase 6: a manual run from `main` builds the installer into a draft pre-release, ADR 0036) | Build the NSIS installer, sign the update package with the updater key, upload installer plus `latest.json` to a draft GitHub Release |
 
 The installer is unsigned. The user publishes each release by hand.
 
