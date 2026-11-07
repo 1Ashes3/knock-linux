@@ -1,23 +1,46 @@
-# Knock
+<div align="center">
 
-Knock shows each running [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) session as a small animal on your Windows taskbar. When a session needs you, its animal knocks. Click it to jump to that session.
+<img src="docs/images/logo.svg" alt="Knock" width="300">
 
-![Knock's strip on a dark taskbar: a sleeping fox, a working cat, an owl that stopped with an error, a cat that needs permission, and a rabbit and a fox holding up "done" cards](docs/images/strip.png)
+<p><b>Your Claude Code sessions, living on your Windows taskbar.</b><br>
+When a session needs you, its animal knocks. Click it to jump straight there.</p>
 
+<p>
+<a href="https://github.com/bandaranayake/knock/releases"><img src="https://img.shields.io/github/v/release/bandaranayake/knock?include_prereleases&label=beta&color=e0702a" alt="Latest beta release"></a>
+<img src="https://img.shields.io/badge/Windows-11-0078D4?logo=windows11&logoColor=white" alt="Windows 11">
+<a href="https://docs.claude.com/en/docs/claude-code/overview"><img src="https://img.shields.io/badge/for-Claude%20Code-D97757?logo=claude&logoColor=white" alt="For Claude Code"></a>
+<a href="https://v2.tauri.app/"><img src="https://img.shields.io/badge/built%20with-Tauri%202-24C8DB?logo=tauri&logoColor=white" alt="Built with Tauri 2"></a>
+<a href="LICENSE"><img src="https://img.shields.io/github/license/bandaranayake/knock?color=6fcf87" alt="MIT license"></a>
+</p>
+
+<img src="docs/images/hero.svg" alt="Four sessions on a dark taskbar: a sleeping fox, a rabbit holding up a done card, an owl that stopped with an error, and a cat knocking because it needs permission" width="640">
+
+<p>
+<a href="#install"><b>Install</b></a> ·
+<a href="#what-it-does"><b>Features</b></a> ·
+<a href="#privacy"><b>Privacy</b></a> ·
+<a href="#feedback"><b>Feedback</b></a>
+</p>
+
+</div>
+
+> [!NOTE]
 > **Beta.** This is v0.3, a public test version. Expect rough edges, and please [tell us how it went](#feedback).
 
 ## What it does
 
-- **One animal per session**: a fox, rabbit, cat or owl. Or switch to plain colored labels in Settings.
-- **Knocks only when it matters**: one notification when a session needs permission or has a question, and one reminder after 5 minutes. Errors show a red mark. Finished sessions hold up a "done" card quietly.
-- **Hover** an animal to see the project, what it's waiting for and for how long.
-- **Click** an animal to bring its terminal or editor to the front.
-- **More than 5 sessions?** The extras wait in a little den that shows how many are in each state.
-- **While you were away**: back after 10 minutes? A card lists what finished, failed or needs you.
-- **Pause and quiet hours** for notifications.
-- Respects Windows **Animation effects**, works with Narrator, and handles 100-200% scaling, auto-hiding taskbars and multiple monitors.
+- 🦊 **One animal per session**: a fox, rabbit, cat or owl. Or switch to plain colored labels in Settings.
+- 🚪 **Knocks only when it matters**: one notification when a session needs permission or has a question, and one reminder after 5 minutes. Errors show a red mark. Finished sessions hold up a "done" card quietly.
+- 🔍 **Hover** an animal to see the project, what it's waiting for and for how long.
+- 🖱️ **Click** an animal to bring its terminal or editor to the front.
+- 🏠 **More than 5 sessions?** The extras wait in a little den that shows how many are in each state.
+- 📋 **While you were away**: back after 10 minutes? A card lists what finished, failed or needs you.
+- 🌙 **Pause and quiet hours** for notifications.
+- ♿ Respects Windows **Animation effects**, works with Narrator, and handles 100-200% scaling, auto-hiding taskbars and multiple monitors.
 
-![The "While you were away" card above the strip](docs/images/away.png)
+<p align="center">
+<img src="docs/images/away.png" alt="The &quot;While you were away&quot; card above the strip">
+</p>
 
 ## Requirements
 
@@ -31,7 +54,8 @@ Knock shows each running [Claude Code](https://docs.claude.com/en/docs/claude-co
 2. Run it. It installs for your user only, with no administrator rights.
 3. Follow the short setup.
 
-The installer is **unsigned**, so Windows may warn you (click **More info**, then **Run anyway**). If **Smart App Control** is on, Windows won't run Knock, and we don't suggest turning it off to use this. If you'd rather not run an unsigned installer, you can [build Knock yourself](#build-from-source).
+> [!WARNING]
+> The installer is **unsigned**, so Windows may warn you (click **More info**, then **Run anyway**). If **Smart App Control** is on, Windows won't run Knock, and we don't suggest turning it off to use this. If you'd rather not run an unsigned installer, you can [build Knock yourself](#build-from-source).
 
 ## What setup changes
 
@@ -51,7 +75,8 @@ Knock never reads your conversations, prompts or code. No telemetry, no accounts
 1. Open Knock's **Settings** (tray icon) and click **Remove Knock from Claude Code**.
 2. Uninstall **Knock** from **Windows Settings → Apps → Installed apps**.
 
-Do step 1 first. If you skip it, Knock's hooks stay in Claude Code's settings. They're harmless (they fail silently), but they're clutter.
+> [!TIP]
+> Do step 1 first. If you skip it, Knock's hooks stay in Claude Code's settings. They're harmless (they fail silently), but they're clutter.
 
 ## Feedback
 
