@@ -36,9 +36,10 @@ Done:
   - It never publishes.
   - The build job is read-only; only the release job can write.
   - Reviewed by the lead and the user; action SHAs verified against their tags. Not yet run on GitHub.
+- 2026-11-08: the user ran the Release workflow and **published v0.3.0-beta.1** as a public GitHub pre-release. The sidebar shows a tag count, not "Latest", because it is a pre-release; this is expected.
 Next:
-- The user makes the repo public, creates the `setup-report` label and merges develop → main.
-- Then the user runs the Release workflow, reviews the draft and publishes it.
+- Gate G2: the user judges it from setup reports.
+- The quick check of the GitHub-built installer (upgrade keeps settings; a second launch opens Settings): result not yet reported.
 - Gate G2: the user judges it from setup reports.
 Dependencies added: none
 Clarifications: none
