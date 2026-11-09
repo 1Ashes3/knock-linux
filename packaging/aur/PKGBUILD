@@ -1,0 +1,61 @@
+# Maintainer: 1Ashes3 <16182117+1Ashes3@users.noreply.github.com>
+#
+# Knock for Linux: Claude Code sessions as little animals on your desktop
+# that knock when a session needs you. Named knock-claude because Arch
+# already has an unrelated port-knocking tool called `knock`.
+
+pkgname=knock-claude-git
+_pkgname=knock
+pkgver=0.3.0.beta.1.r0.g0000000
+pkgrel=1
+pkgdesc="Claude Code sessions as little animals that knock when they need you"
+arch=('x86_64' 'aarch64')
+url="https://github.com/1Ashes3/knock"
+license=('MIT')
+depends=(
+	'gtk3'
+	'gtk-layer-shell'
+	'hicolor-icon-theme'
+	'libayatana-appindicator'
+	'webkit2gtk-4.1'
+)
+makedepends=('cargo' 'git' 'nodejs' 'pnpm')
+optdepends=('wmctrl: click-to-jump on X11 desktops other than KDE')
+provides=('knock-claude')
+conflicts=('knock-claude')
+# KNOCK_REPO overrides the source, e.g. to build a local checkout:
+#   KNOCK_REPO="file://$PWD/../.." makepkg -si
+source=("$_pkgname::git+${KNOCK_REPO:-$url.git}#branch=linux-port")
+sha256sums=('SKIP')
+
+pkgver() {
+	cd "$_pkgname"
+	local version
+	version=$(grep -m1 '^version' apps/desktop/src-tauri/Cargo.toml | cut -d'"' -f2 | tr '-' '.')
+	printf '%s.r%s.g%s' "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+	cd "$_pkgname"
+	export CARGO_HOME="$srcdir/cargo-home"
+	cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+	pnpm install --frozen-lockfile
+}
+
+build() {
+	cd "$_pkgname"
+	export CARGO_HOME="$srcdir/cargo-home"
+	pnpm tauri build --no-bundle
+}
+
+package() {
+	cd "$_pkgname"
+	install -Dm755 target/release/knock-desktop "$pkgdir/usr/bin/knock-desktop"
+	install -Dm644 packaging/linux/knock-desktop.desktop \
+		"$pkgdir/usr/share/applications/knock-desktop.desktop"
+	local icons=apps/desktop/src-tauri/icons
+	install -Dm644 "$icons/32x32.png" "$pkgdir/usr/share/icons/hicolor/32x32/apps/knock-desktop.png"
+	install -Dm644 "$icons/128x128.png" "$pkgdir/usr/share/icons/hicolor/128x128/apps/knock-desktop.png"
+	install -Dm644 "$icons/128x128@2x.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/knock-desktop.png"
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

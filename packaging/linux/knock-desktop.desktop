@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Knock
+GenericName=Claude Code session companion
+Comment=Your Claude Code sessions as little animals that knock when they need you
+Exec=knock-desktop
+Icon=knock-desktop
+Terminal=false
+Categories=Utility;
+Keywords=claude;notification;tray;
+StartupNotify=false
+StartupWMClass=knock-desktop

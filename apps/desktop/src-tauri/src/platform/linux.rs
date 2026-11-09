@@ -710,7 +710,7 @@ pub fn autostart_entry(exec: &str) -> String {
     format!(
         "[Desktop Entry]\nType=Application\nName=Knock\n\
          Comment=Your Claude Code sessions, living on your panel\n\
-         Exec={exec}\nIcon=knock\nTerminal=false\nNoDisplay=true\n\
+         Exec={exec}\nIcon=knock-desktop\nTerminal=false\nNoDisplay=true\n\
          X-GNOME-Autostart-enabled=true\n"
     )
 }
