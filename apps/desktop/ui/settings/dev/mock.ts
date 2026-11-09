@@ -40,6 +40,7 @@ let settings: Settings = {
 	placement: "top",
 	cardFadeSeconds: 3,
 	pack: "classic",
+	hiddenPacks: [],
 };
 let installed = q.get("installed") === "1";
 const SERVER_ERROR =

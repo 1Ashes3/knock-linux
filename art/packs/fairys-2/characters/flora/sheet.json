@@ -1,0 +1,52 @@
+{
+  "id": "flora",
+  "displayName": "Flora",
+  "image": "flora.png",
+  "frameWidth": 64,
+  "frameHeight": 64,
+  "pixelArt": true,
+  "clips": {
+    "sleep": {
+      "row": 0,
+      "frames": 4,
+      "fps": 4,
+      "loop": true
+    },
+    "work": {
+      "row": 1,
+      "frames": 6,
+      "fps": 10,
+      "loop": true
+    },
+    "wait": {
+      "row": 2,
+      "frames": 6,
+      "fps": 6,
+      "loop": true
+    },
+    "knock": {
+      "row": 3,
+      "frames": 6,
+      "fps": 12,
+      "loop": true
+    },
+    "rest": {
+      "row": 4,
+      "frames": 4,
+      "fps": 5,
+      "loop": true
+    },
+    "alert": {
+      "row": 5,
+      "frames": 4,
+      "fps": 8,
+      "loop": true
+    },
+    "pace": {
+      "row": 6,
+      "frames": 6,
+      "fps": 8,
+      "loop": true
+    }
+  }
+}

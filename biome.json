@@ -12,7 +12,8 @@
 			"!**/node_modules",
 			"!**/dist",
 			"!SPEC.md",
-			"!docs"
+			"!docs",
+			"!art/packs"
 		]
 	},
 	"formatter": {

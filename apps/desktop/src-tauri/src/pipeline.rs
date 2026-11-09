@@ -246,9 +246,10 @@ impl Core {
     /// pack.
     fn cast(&self, settings: &Settings) -> Option<Vec<String>> {
         let packs = self.packs.as_ref()?;
-        (settings.pack != crate::packs::CLASSIC)
-            .then(|| packs.cast(&settings.pack))
-            .flatten()
+        // A hidden built-in pack isn't used, even if still chosen.
+        let usable = settings.pack != crate::packs::CLASSIC
+            && !settings.hidden_packs.contains(&settings.pack);
+        usable.then(|| packs.cast(&settings.pack)).flatten()
     }
 
     /// Loads the settings from `dir` and tells the engine whether

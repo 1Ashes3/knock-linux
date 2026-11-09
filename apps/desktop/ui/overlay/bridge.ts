@@ -81,6 +81,8 @@ export interface Settings {
 	cardFadeSeconds: number;
 	/** ADR 0038: the sprite pack sessions get characters from; "classic" is Knock's own. */
 	pack: string;
+	/** ADR 0038: built-in packs the user removed; hidden and never used. */
+	hiddenPacks: string[];
 }
 
 /** ADR 0038: one character of a pack, as `list_packs` and `get_pack` give it. */

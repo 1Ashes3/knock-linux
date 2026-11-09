@@ -15,6 +15,11 @@ use std::sync::{Mutex, RwLock};
 /// The built-in pack's id: Knock's fox, rabbit, cat and owl.
 pub const CLASSIC: &str = "classic";
 
+/// Knock's other built-in packs, compiled in from `art/packs` (build.rs).
+mod builtin {
+    include!(concat!(env!("OUT_DIR"), "/builtin_packs.rs"));
+}
+
 /// At most this many problems are listed per pack.
 const MAX_ERRORS: usize = 20;
 
@@ -24,6 +29,8 @@ struct Installed {
     check: PackCheck,
     /// Only for a valid pack.
     files: PackFiles,
+    /// Compiled into Knock: removing it only hides it (`hiddenPacks`).
+    builtin: bool,
 }
 
 impl Installed {
@@ -123,9 +130,15 @@ impl Packs {
         self.dir.as_deref()
     }
 
-    /// Reads and checks every pack folder again.
+    /// Reads and checks every pack folder again, after the built-in packs.
+    /// An installed pack with a built-in pack's id takes its place.
     pub fn reload(&self) {
-        let found = self.dir.as_deref().map(scan).unwrap_or_default();
+        let user = self.dir.as_deref().map(scan).unwrap_or_default();
+        let mut found: Vec<Installed> = builtins()
+            .into_iter()
+            .filter(|b| !user.iter().any(|u| u.folder == b.folder))
+            .collect();
+        found.extend(user);
         let valid = found.iter().filter(|p| p.check.ok()).count();
         tracing::info!(packs = found.len(), valid, "sprite packs loaded");
         *self.installed.write().unwrap_or_else(|e| e.into_inner()) = found;
@@ -143,7 +156,7 @@ impl Packs {
                 author: m.and_then(|m| m.author.clone()),
                 license: m.and_then(|m| m.license.clone()),
                 description: m.and_then(|m| m.description.clone()),
-                builtin: false,
+                builtin: p.builtin,
                 valid: p.check.ok(),
                 errors: p.check.errors.iter().take(MAX_ERRORS).cloned().collect(),
                 characters: p.check.characters.clone(),
@@ -151,6 +164,13 @@ impl Packs {
             }
         }));
         out
+    }
+
+    /// A built-in pack is in use under `id` (not replaced by an installed
+    /// one): removing it hides it instead.
+    pub fn is_builtin(&self, id: &str) -> bool {
+        let installed = self.installed.read().unwrap_or_else(|e| e.into_inner());
+        installed.iter().any(|p| p.builtin && p.id() == id)
     }
 
     /// The character ids of a valid installed pack, in assignment order.
@@ -514,7 +534,42 @@ fn load(path: &Path, folder: String) -> Installed {
         folder,
         check,
         files,
+        builtin: false,
     }
+}
+
+/// The built-in packs, checked like any other: a broken one is listed with
+/// its problems and never used.
+fn builtins() -> Vec<Installed> {
+    let mut out: Vec<Installed> = (builtin::BUILTIN_PACKS.iter())
+        .map(|(folder, files)| {
+            let files: PackFiles = (files.iter())
+                .map(|(path, bytes)| ((*path).to_string(), bytes.to_vec()))
+                .collect();
+            let mut check = packs::check_pack(&files);
+            if let Some(Manifest { id, .. }) = &check.manifest
+                && id != folder
+            {
+                check
+                    .errors
+                    .push(format!("the pack's folder must be named \"{id}\""));
+            }
+            if !check.ok() {
+                tracing::warn!(pack = folder, "built-in pack failed its checks");
+            }
+            Installed {
+                folder: (*folder).to_string(),
+                files: if check.ok() { files } else { PackFiles::new() },
+                check,
+                builtin: true,
+            }
+        })
+        .collect();
+    out.sort_by_key(|p| {
+        (p.check.manifest.as_ref())
+            .map_or_else(|| p.folder.clone(), |m| m.display_name.to_lowercase())
+    });
+    out
 }
 
 /// Percent-decodes a `knockpack://` request path (`convertFileSrc` encodes
@@ -582,7 +637,10 @@ mod tests {
         std::fs::write(d.join("broken/pack.json"), b"{").unwrap();
         std::fs::create_dir_all(d.join(".install-123")).unwrap();
         let packs = Packs::new(Some(d.clone()));
-        let list = packs.list();
+        // Classic and the user's packs (the built-in ones have their own test).
+        let list: Vec<_> = (packs.list().into_iter())
+            .filter(|p| !p.builtin || p.id == CLASSIC)
+            .collect();
         let ids: Vec<_> = list.iter().map(|p| (p.id.as_str(), p.valid)).collect();
         assert_eq!(
             ids,
@@ -624,7 +682,8 @@ mod tests {
             packs.image(&token, "characters/fox/head.svg").is_some(),
             "preview"
         );
-        assert_eq!(packs.list().len(), 1, "not installed yet");
+        let has = |id: &str| packs.list().iter().any(|p| p.id == id);
+        assert!(!has("foxes"), "not installed yet");
         assert!(packs.install("staged-wrong", false).is_err());
         assert_eq!(packs.install(&token, false).unwrap(), "foxes");
         assert!(
@@ -654,7 +713,7 @@ mod tests {
         // Remove: gone, and classic can't be.
         packs.remove("foxes").unwrap();
         assert!(!d.join("packs/foxes").exists());
-        assert_eq!(packs.list().len(), 1);
+        assert!(!has("foxes"));
         assert!(packs.remove(CLASSIC).is_err());
         assert!(packs.remove("../x").is_err());
         assert!(packs.remove("missing").is_err());
@@ -686,11 +745,36 @@ mod tests {
     }
 
     #[test]
-    fn no_folder_means_classic_only() {
+    fn the_built_in_packs_pass_their_checks() {
         let packs = Packs::new(None);
-        assert_eq!(packs.list().len(), 1);
-        assert_eq!(packs.list()[0].id, CLASSIC);
+        let list = packs.list();
+        assert_eq!(list[0].id, CLASSIC);
         assert!(packs.get(CLASSIC).is_none());
+        let built: Vec<_> = list[1..].iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            built,
+            ["chibi-girls", "fairys-2", "flowers", "fairies"],
+            "by name"
+        );
+        for p in &list[1..] {
+            assert!(p.builtin && p.valid, "{}: {:?}", p.id, p.errors);
+            assert!(packs.is_builtin(&p.id));
+            assert!(packs.cast(&p.id).is_some_and(|c| !c.is_empty()));
+        }
+    }
+
+    #[test]
+    fn an_installed_pack_takes_a_built_in_ones_place() {
+        let d = temp("override");
+        fox_pack(&d, "fairies", "fairies");
+        let packs = Packs::new(Some(d.clone()));
+        let fairies: Vec<_> = (packs.list().into_iter())
+            .filter(|p| p.id == "fairies")
+            .collect();
+        assert_eq!(fairies.len(), 1);
+        assert!(!fairies[0].builtin && fairies[0].display_name == "Pack fairies");
+        assert!(!packs.is_builtin("fairies"));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

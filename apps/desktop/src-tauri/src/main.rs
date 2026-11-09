@@ -358,8 +358,8 @@ fn install_pack(
     Ok(packs.list())
 }
 
-/// ADR 0038: removes an installed pack; if it was the chosen one, sessions
-/// go back to Classic.
+/// ADR 0038: removes an installed pack, or hides a built-in one (it is part
+/// of the app); if it was the chosen one, sessions go back to Classic.
 #[tauri::command]
 fn remove_pack(
     id: String,
@@ -367,9 +367,23 @@ fn remove_pack(
     packs: tauri::State<'_, Arc<packs::Packs>>,
     k: tauri::State<'_, Knock>,
 ) -> Result<Vec<packs::PackSummary>, String> {
-    packs.remove(&id)?;
-    if pipeline::read(&k.shared).settings.pack == id {
-        let patch = json!({ "pack": packs::CLASSIC });
+    let settings = pipeline::read(&k.shared).settings.clone();
+    let mut patch = serde_json::Map::new();
+    if packs.is_builtin(&id) {
+        // Part of the app: hidden instead, and "Bring back" undoes it.
+        let mut hidden = settings.hidden_packs.clone();
+        if !hidden.contains(&id) {
+            hidden.push(id.clone());
+        }
+        patch.insert("hiddenPacks".into(), json!(hidden));
+    } else {
+        packs.remove(&id)?;
+    }
+    if settings.pack == id {
+        patch.insert("pack".into(), json!(packs::CLASSIC));
+    }
+    if !patch.is_empty() {
+        let patch = Value::Object(patch);
         let _ = k.tx.send(Msg::Settings { patch, reply: None });
     }
     let _ = k.tx.send(Msg::PacksChanged);

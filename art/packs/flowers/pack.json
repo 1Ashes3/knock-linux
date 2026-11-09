@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "id": "flowers",
+  "displayName": "Pocket Garden",
+  "author": "antigravity",
+  "license": "CC0-1.0",
+  "description": "Four potted flower companions with custom botanical sway, petal bloom, and leaf-wave clips.",
+  "characters": [
+    "sunflower",
+    "tulip",
+    "bluebell",
+    "sakura"
+  ]
+}

@@ -43,6 +43,10 @@ pub struct Settings {
     /// installed pack's id, or `classic` for Knock's own animals.
     #[serde(default = "default_pack")]
     pub pack: String,
+    /// Built-in packs the user removed (ADR 0038): hidden, never used. They
+    /// are part of the app, so removing one can't delete it.
+    #[serde(default)]
+    pub hidden_packs: Vec<String>,
 }
 
 fn default_pack() -> String {
@@ -137,6 +141,7 @@ impl Default for Settings {
             placement: Placement::os_default(),
             card_fade_seconds: default_card_fade(),
             pack: default_pack(),
+            hidden_packs: Vec::new(),
         }
     }
 }
@@ -195,6 +200,12 @@ impl Settings {
         }
         if self.pack != crate::packs::CLASSIC && !knock_core::packs::is_id(&self.pack) {
             return Err("pack must be classic or a pack id".into());
+        }
+        if self.hidden_packs.len() > 64
+            || !(self.hidden_packs.iter())
+                .all(|p| knock_core::packs::is_id(p) && p != crate::packs::CLASSIC)
+        {
+            return Err("hiddenPacks must list pack ids".into());
         }
         if self.card_fade_seconds > MAX_CARD_FADE {
             return Err(format!("cardFadeSeconds must be from 0 to {MAX_CARD_FADE}"));
@@ -459,6 +470,7 @@ mod tests {
         spec["placement"] = Value::from(placement);
         spec["cardFadeSeconds"] = Value::from(3);
         spec["pack"] = Value::from("classic");
+        spec["hiddenPacks"] = serde_json::json!([]);
         assert_eq!(saved, spec);
         assert!(!dir.join("settings.json.tmp").exists());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -512,6 +524,9 @@ mod tests {
         assert_eq!(parse(SPEC.as_bytes()).unwrap().pack, "classic");
         assert!(merged(&s, &serde_json::json!({ "pack": "fairy-folk" })).is_ok());
         assert!(merged(&s, &serde_json::json!({ "pack": "../x" })).is_err());
+        assert!(merged(&s, &serde_json::json!({ "hiddenPacks": ["fairies"] })).is_ok());
+        assert!(merged(&s, &serde_json::json!({ "hiddenPacks": ["classic"] })).is_err());
+        assert!(merged(&s, &serde_json::json!({ "hiddenPacks": ["../x"] })).is_err());
     }
 
     #[test]

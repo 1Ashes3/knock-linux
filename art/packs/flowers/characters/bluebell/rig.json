@@ -1,0 +1,102 @@
+{
+  "id": "bluebell",
+  "displayName": "Bluebell",
+  "viewBox": [
+    0,
+    0,
+    64,
+    64
+  ],
+  "parts": [
+    {
+      "name": "tail",
+      "file": "tail.svg",
+      "pivot": [
+        41,
+        52
+      ],
+      "z": 0
+    },
+    {
+      "name": "card",
+      "file": "card.svg",
+      "pivot": [
+        32,
+        46
+      ],
+      "z": 1
+    },
+    {
+      "name": "body",
+      "file": "body.svg",
+      "pivot": [
+        32,
+        58
+      ],
+      "z": 2
+    },
+    {
+      "name": "ear_l",
+      "file": "ear_l.svg",
+      "pivot": [
+        22,
+        24
+      ],
+      "z": 3
+    },
+    {
+      "name": "ear_r",
+      "file": "ear_r.svg",
+      "pivot": [
+        42,
+        24
+      ],
+      "z": 3
+    },
+    {
+      "name": "head",
+      "file": "head.svg",
+      "pivot": [
+        32,
+        25
+      ],
+      "z": 4
+    },
+    {
+      "name": "eyes_open",
+      "file": "eyes_open.svg",
+      "pivot": [
+        32,
+        25
+      ],
+      "z": 5
+    },
+    {
+      "name": "eyes_closed",
+      "file": "eyes_closed.svg",
+      "pivot": [
+        32,
+        25
+      ],
+      "z": 5
+    },
+    {
+      "name": "paw_l",
+      "file": "paw_l.svg",
+      "pivot": [
+        26,
+        41
+      ],
+      "z": 6
+    },
+    {
+      "name": "paw_r",
+      "file": "paw_r.svg",
+      "pivot": [
+        38,
+        41
+      ],
+      "z": 6
+    }
+  ]
+}

@@ -47,10 +47,16 @@ interface SheetJson {
 
 export function Characters({
 	value,
+	hidden,
 	onChoose,
+	onShowHidden,
 }: {
 	value: string;
+	/** Built-in packs the user removed (`hiddenPacks`). */
+	hidden: string[];
 	onChoose(id: string): Promise<string | null>;
+	/** "Bring back": clears `hiddenPacks`. */
+	onShowHidden(): Promise<string | null>;
 }) {
 	const id = useId();
 	const [packs, setPacks] = useState<PackSummary[] | null>(null);
@@ -160,8 +166,10 @@ export function Characters({
 			),
 		);
 
-	const chosen = packs?.find((p) => p.id === value);
-	const missing = packs !== null && !(chosen?.valid ?? false);
+	const shown = packs?.filter((p) => !(p.builtin && hidden.includes(p.id)));
+	const hiddenCount = (packs ?? []).length - (shown ?? []).length;
+	const chosen = shown?.find((p) => p.id === value);
+	const missing = shown !== undefined && !(chosen?.valid ?? false);
 
 	return (
 		<section
@@ -187,11 +195,11 @@ export function Characters({
 					showing Classic.
 				</p>
 			)}
-			{packs === null ? (
+			{shown === undefined ? (
 				<p className="help">Looking for packs…</p>
 			) : (
 				<div className="packs" role="radiogroup" aria-labelledby={`${id}t`}>
-					{packs.map((p) => (
+					{shown.map((p) => (
 						<PackRow
 							key={p.id}
 							pack={p}
@@ -208,6 +216,25 @@ export function Characters({
 						/>
 					))}
 				</div>
+			)}
+			{hiddenCount > 0 && (
+				<p className="help">
+					{hiddenCount} built-in pack{hiddenCount === 1 ? " is" : "s are"}{" "}
+					hidden.{" "}
+					<button
+						type="button"
+						className="link"
+						onClick={() =>
+							void run(
+								onShowHidden().then((e) => {
+									if (e) throw new Error(e);
+								}),
+							)
+						}
+					>
+						Bring back
+					</button>
+				</p>
 			)}
 			{notice && <p role="status">{notice}</p>}
 			{error && (
@@ -391,11 +418,14 @@ function PackRow({
 					)}
 				</span>
 			</label>
-			{!p.builtin && (
+			{p.id !== CLASSIC && (
 				<div className="pack-remove">
 					{removing ? (
 						<>
-							<span>Remove {p.displayName} from Knock?</span>
+							<span>
+								Remove {p.displayName} from Knock?
+								{p.builtin && " It comes with Knock, so you can bring it back."}
+							</span>
 							<button type="button" onClick={() => onRemove(true)}>
 								Remove
 							</button>
@@ -438,7 +468,7 @@ function Preview({
 	data: PackData | null;
 	character: PackCharacterInfo;
 }) {
-	if (pack.builtin) {
+	if (pack.id === CLASSIC) {
 		const rig = RIGS.get(c.id);
 		return rig ? (
 			<RigPreview rig={rig} url={(f) => classicPartUrl(c.id, f) ?? ""} />

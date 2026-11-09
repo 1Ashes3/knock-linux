@@ -146,7 +146,12 @@ export function SettingsPage({
 				/>
 			</section>
 
-			<Characters value={s.pack} onChoose={(pack) => update({ pack })} />
+			<Characters
+				value={s.pack}
+				hidden={s.hiddenPacks}
+				onChoose={(pack) => update({ pack })}
+				onShowHidden={() => update({ hiddenPacks: [] })}
+			/>
 
 			<section aria-labelledby="notify">
 				<h2 id="notify">Notifications</h2>

@@ -47,6 +47,7 @@ const settings: Settings = {
 	placement: "top",
 	cardFadeSeconds: 3,
 	pack: "classic",
+	hiddenPacks: [],
 };
 
 let rev = 1;

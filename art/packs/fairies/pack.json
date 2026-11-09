@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "id": "fairies",
+  "displayName": "Whispering Fairies",
+  "author": "antigravity",
+  "license": "CC0-1.0",
+  "description": "Four winged fairy sprites (Sylph, Ember, Dewdrop, and Starlight) with hand-crafted wing flutter and wand magic.",
+  "characters": [
+    "sylph",
+    "ember",
+    "dewdrop",
+    "starlight"
+  ]
+}
