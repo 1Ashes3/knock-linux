@@ -11,7 +11,7 @@ const run = (
 	memory: Memory = EMPTY_MEMORY,
 	now = T0,
 	still = false,
-) => step(sessions, memory, still, now, CLIPS);
+) => step(sessions, memory, still, now, () => CLIPS);
 const ids = (r: ReturnType<typeof run>) =>
 	r.model.characters.map(
 		(c) => `${c.slot}:${c.session.id}${c.leaving ? "~" : ""}`,

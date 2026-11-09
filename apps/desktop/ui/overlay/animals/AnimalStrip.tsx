@@ -24,7 +24,7 @@ import {
 } from "../placement";
 import { STALL_DEFAULT, useMinuteClock, useSend } from "../Strip";
 import type { StripStore } from "../store";
-import { currentClips, packVersion, subscribePack } from "./art";
+import { clipsFor, packVersion, subscribePack } from "./art";
 import { endsRaised, frameAt } from "./controller";
 import {
 	CHIP,
@@ -158,7 +158,6 @@ export function AnimalStrip({
 
 	// A new sprite pack (ADR 0038) draws the strip again.
 	useSyncExternalStore(subscribePack, packVersion);
-	const clips = currentClips();
 	const memory = useRef(EMPTY_MEMORY);
 	const [measureFor] = useState(createMeasure);
 	const now = Date.now();
@@ -167,7 +166,7 @@ export function AnimalStrip({
 		memory.current,
 		still,
 		now,
-		clips,
+		clipsFor,
 	);
 	memory.current = next;
 
@@ -358,7 +357,7 @@ export function AnimalStrip({
 					rect={characterRect(c.slot, raised(c), chipArea, m)}
 					m={m}
 					still={still}
-					settled={frameAt(c.plan, now, clips).settled}
+					settled={frameAt(c.plan, now, clipsFor(c.session.animal)).settled}
 					name={accessibleName(c.session, now, stallMinutes)}
 					onHover={onHover}
 				/>

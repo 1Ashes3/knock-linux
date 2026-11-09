@@ -12,6 +12,7 @@ import {
 	autoDetectRenderer,
 	CanvasSource,
 	Container,
+	Rectangle,
 	type Renderer,
 	Sprite,
 	Texture,
@@ -19,12 +20,20 @@ import {
 } from "pixi.js";
 import type { Clip, Rig } from "../../gallery/format.ts";
 import { poseAt } from "../../gallery/player.ts";
-import { currentClips, packOf, partUrl, rigFor } from "./art";
+import {
+	clipsFor,
+	lookFor,
+	packOf,
+	partUrl,
+	type SheetLook,
+	sheetCell,
+} from "./art";
 import {
 	type Animated,
 	anyAnimating,
 	fadeAlpha,
 	frameAt,
+	LIFT_UNITS,
 	type Plan,
 } from "./controller";
 
@@ -57,13 +66,48 @@ export interface View {
 
 type Parts = Map<string, Texture>;
 
-interface CharacterView {
+interface RigView {
+	kind: "rig";
 	root: Container;
 	body: Container;
 	sprites: Map<string, Sprite>;
 	rig: Rig;
 	texKey: string;
 }
+
+/** A sprite-sheet character (ADR 0038): one sprite showing a cell of its sheet. */
+interface SheetView {
+	kind: "sheet";
+	root: Container;
+	body: Container;
+	sprite: Sprite;
+	look: SheetLook;
+	texKey: string;
+}
+
+type CharacterView = RigView | SheetView;
+
+/** Loads a sprite sheet once, at its own size; cells are cut from it as needed. */
+async function loadSheet(url: string, pixelArt: boolean): Promise<Texture> {
+	const img = new Image();
+	img.crossOrigin = "anonymous";
+	img.src = url;
+	await img.decode();
+	const canvas = document.createElement("canvas");
+	canvas.width = img.naturalWidth;
+	canvas.height = img.naturalHeight;
+	canvas.getContext("2d")?.drawImage(img, 0, 0);
+	return new Texture({
+		source: new CanvasSource({
+			resource: canvas,
+			scaleMode: pixelArt ? "nearest" : "linear",
+		}),
+	});
+}
+
+/** Sine ease-in-out from 0 to 1, as the clip player eases. */
+const ease = (x: number) =>
+	(1 - Math.cos(Math.PI * Math.min(1, Math.max(0, x)))) / 2;
 
 /** Rasterises one part SVG to a canvas of `px` device pixels. */
 async function rasterise(url: string, px: number): Promise<Texture> {
@@ -87,6 +131,10 @@ export class AnimalRenderer {
 	private readonly chars = new Map<string, CharacterView>();
 	private readonly textures = new Map<string, Promise<Parts>>();
 	private readonly loaded = new Map<string, Parts>();
+	/** Sprite sheets by pack and character, and the cells cut from them. */
+	private readonly sheets = new Map<string, Promise<Texture>>();
+	private readonly sheetsLoaded = new Map<string, Texture>();
+	private readonly cells = new Map<string, Texture>();
 	private list: DrawCharacter[] = [];
 	private view: View | null = null;
 	private raf = 0;
@@ -201,7 +249,12 @@ export class AnimalRenderer {
 
 	/** Creates or updates the sprites for one character. */
 	private ensure(c: DrawCharacter, view: View): void {
-		const rig = rigFor(c.animal);
+		const look = lookFor(c.animal);
+		if (look.kind === "sheet") {
+			this.ensureSheet(c, look, view);
+			return;
+		}
+		const rig = look.rig;
 		const key = this.texKey(rig, view);
 		let cv = this.chars.get(c.id);
 		if (cv && cv.texKey !== key) {
@@ -223,7 +276,78 @@ export class AnimalRenderer {
 				sprites.set(part.name, sprite);
 			}
 			this.stage.addChild(root);
-			cv = { root, body, sprites, rig, texKey: key };
+			cv = { kind: "rig", root, body, sprites, rig, texKey: key };
+			this.chars.set(c.id, cv);
+		}
+		cv.root.position.set(c.x, c.y);
+		cv.root.scale.set(view.s / UNITS);
+	}
+
+	private sheet(look: SheetLook): Texture | undefined {
+		const key = `${look.pack}:${look.id}`;
+		const ready = this.sheetsLoaded.get(key);
+		if (ready) return ready;
+		if (!this.sheets.has(key)) {
+			const load = loadSheet(look.url, look.sheet.pixelArt ?? false);
+			this.sheets.set(key, load);
+			load.then(
+				(t) => {
+					if (this.destroyed) {
+						t.destroy(true);
+						return;
+					}
+					this.sheetsLoaded.set(key, t);
+					if (this.view) this.sync(this.list, this.view);
+				},
+				(e) => console.warn(`Could not load the ${look.id} sheet`, e),
+			);
+		}
+		return undefined;
+	}
+
+	/** The texture of one cell of a loaded sheet. */
+	private cell(
+		look: SheetLook,
+		base: Texture,
+		row: number,
+		col: number,
+	): Texture {
+		const key = `${look.pack}:${look.id}:${row}:${col}`;
+		let t = this.cells.get(key);
+		if (!t) {
+			const { frameWidth: w, frameHeight: h } = look.sheet;
+			t = new Texture({
+				source: base.source,
+				frame: new Rectangle(col * w, row * h, w, h),
+			});
+			this.cells.set(key, t);
+		}
+		return t;
+	}
+
+	private ensureSheet(c: DrawCharacter, look: SheetLook, view: View): void {
+		const key = `${look.pack}:${look.id}:sheet`;
+		let cv = this.chars.get(c.id);
+		if (cv && cv.texKey !== key) {
+			cv.root.destroy({ children: true });
+			this.chars.delete(c.id);
+			cv = undefined;
+		}
+		if (!cv) {
+			const base = this.sheet(look);
+			if (!base) return; // drawn once its sheet has loaded
+			const root = new Container();
+			const body = new Container();
+			root.addChild(body);
+			const { frameWidth: w, frameHeight: h } = look.sheet;
+			const sprite = new Sprite(this.cell(look, base, 0, 0));
+			// Into the rig's 64-unit square: centred, standing on its bottom edge.
+			const scale = UNITS / Math.max(w, h);
+			sprite.scale.set(scale);
+			sprite.position.set((UNITS - w * scale) / 2, UNITS - h * scale);
+			body.addChild(sprite);
+			this.stage.addChild(root);
+			cv = { kind: "sheet", root, body, sprite, look, texKey: key };
 			this.chars.set(c.id, cv);
 		}
 		cv.root.position.set(c.x, c.y);
@@ -237,24 +361,33 @@ export class AnimalRenderer {
 		const now = Date.now();
 		for (const c of this.list) {
 			const cv = this.chars.get(c.id);
-			if (cv) this.pose(cv, c.plan, c.fadeFrom, now);
+			if (cv) this.pose(cv, c.animal, c.plan, c.fadeFrom, now);
 		}
 		r.render(this.stage);
 		this.lastFrame = now;
 		this.host.dataset.drawn = String(this.chars.size);
 		const pending = this.list.some((c) => !this.chars.has(c.id));
-		if (!pending && anyAnimating(this.list, now, currentClips()))
-			this.schedule();
+		const moving = this.list.some((c) =>
+			anyAnimating([c], now, clipsFor(c.animal)),
+		);
+		if (!pending && moving) this.schedule();
 		else this.stop();
 	};
 
 	private pose(
 		cv: CharacterView,
+		animal: string,
 		plan: Plan,
 		fadeFrom: number | null,
 		now: number,
 	): void {
-		const clips = currentClips();
+		cv.root.alpha =
+			fadeFrom === null ? 1 : fadeAlpha(fadeFrom, now, plan.still);
+		if (cv.kind === "sheet") {
+			this.poseSheet(cv, plan, now);
+			return;
+		}
+		const clips = clipsFor(animal);
 		const f = frameAt(plan, now, clips);
 		const names = [...cv.sprites.keys()];
 		const poses = poseAt(f.clip ? clips[f.clip] : RIG_POSE, names, f.t);
@@ -269,8 +402,23 @@ export class AnimalRenderer {
 			sprite.visible = p.visible;
 		}
 		cv.body.position.set(0, -f.lift);
-		cv.root.alpha =
-			fadeFrom === null ? 1 : fadeAlpha(fadeFrom, now, plan.still);
+	}
+
+	/** A sheet shows one cell; stepping up and down lifts the whole sprite. */
+	private poseSheet(cv: SheetView, plan: Plan, now: number): void {
+		const { look } = cv;
+		const f = frameAt(plan, now, look.clips);
+		const base = this.sheetsLoaded.get(`${look.pack}:${look.id}`);
+		if (base) {
+			const { row, col } = sheetCell(look.sheet, f.clip, f.t);
+			cv.sprite.texture = this.cell(look, base, row, col);
+		}
+		let lift = f.lift;
+		if (f.clip === "step_up" || f.clip === "step_down") {
+			const p = ease(f.t / look.clips[f.clip].durationMs);
+			lift = LIFT_UNITS * (f.clip === "step_up" ? p : 1 - p);
+		}
+		cv.body.position.set(0, -lift);
 	}
 
 	private schedule(): void {
@@ -307,6 +455,8 @@ export class AnimalRenderer {
 		this.stage.destroy({ children: true });
 		for (const parts of this.loaded.values())
 			for (const t of parts.values()) t.destroy(true);
+		for (const t of this.cells.values()) t.destroy(false);
+		for (const t of this.sheetsLoaded.values()) t.destroy(true);
 		this.renderer?.destroy({ removeView: true });
 		this.renderer = null;
 	}

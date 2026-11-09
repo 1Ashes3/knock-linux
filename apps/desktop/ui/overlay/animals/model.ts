@@ -62,7 +62,8 @@ export function step(
 	memory: Memory,
 	still: boolean,
 	now: number,
-	clips: Clips,
+	/** Each character's clips: a sprite sheet times them by its own frames (ADR 0038). */
+	clipsFor: (animal: string) => Clips,
 ): { model: Model; memory: Memory } {
 	const live = sessions.filter((s) => !faded(s, now, still));
 	const { visible, hidden } = layout(live);
@@ -90,7 +91,13 @@ export function step(
 	for (const session of live)
 		plans.set(
 			session.id,
-			nextPlan(memory.plans.get(session.id), session, still, now, clips),
+			nextPlan(
+				memory.plans.get(session.id),
+				session,
+				still,
+				now,
+				clipsFor(session.animal),
+			),
 		);
 	const order: Character[] = visible.map((session) => ({
 		session,
@@ -124,7 +131,7 @@ export function step(
 		if (t > now && t < wakeAt) wakeAt = t;
 	};
 	for (const c of characters) {
-		later(settlesAt(c.plan, clips));
+		later(settlesAt(c.plan, clipsFor(c.session.animal)));
 		if (c.fadeFrom !== null) {
 			later(c.fadeFrom);
 			later(c.fadeFrom + FADE_MS);

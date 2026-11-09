@@ -38,9 +38,38 @@ export const CLIPS = Object.fromEntries(
 /** The fallback for an `animal` id with no art (lead decision, Phase 3). */
 export const FALLBACK_ANIMAL = "fox";
 
+/** `sheet.json` as the core checked it (ADR 0038). */
+export interface SheetJson {
+	image: string;
+	frameWidth: number;
+	frameHeight: number;
+	pixelArt?: boolean;
+	clips: Partial<Record<ClipName, SheetClip>>;
+}
+
+export interface SheetClip {
+	row: number;
+	frames: number;
+	fps: number;
+	loop: boolean;
+}
+
+/** A sprite-sheet character of the active pack. */
+export interface SheetLook {
+	kind: "sheet";
+	pack: string;
+	id: string;
+	sheet: SheetJson;
+	url: string;
+	clips: Record<ClipName, Clip>;
+}
+
+export type Look = { kind: "rig"; rig: Rig } | SheetLook;
+
 interface ActivePack {
 	id: string;
 	rigs: Map<string, Rig>;
+	sheets: Map<string, SheetLook>;
 	clips: Record<ClipName, Clip>;
 }
 
@@ -60,7 +89,19 @@ export function setActivePack(data: PackData | null): void {
 	if (!data) active = null;
 	else {
 		const rigs = new Map<string, Rig>();
+		const sheets = new Map<string, SheetLook>();
 		for (const c of data.characters) {
+			if (c.kind === "sheet" && c.sheet) {
+				const sheet = c.sheet as SheetJson;
+				sheets.set(c.id, {
+					kind: "sheet",
+					pack: data.id,
+					id: c.id,
+					sheet,
+					url: packUrl(data.id, `characters/${c.id}/${sheet.image}`),
+					clips: sheetClips(sheet),
+				});
+			}
 			if (c.kind !== "rig" || !c.rig) continue;
 			const rig = c.rig as Rig;
 			owner.set(rig, data.id);
@@ -69,6 +110,7 @@ export function setActivePack(data: PackData | null): void {
 		active = {
 			id: data.id,
 			rigs,
+			sheets,
 			clips: { ...CLIPS, ...(data.clips as Partial<Record<ClipName, Clip>>) },
 		};
 	}
@@ -89,6 +131,70 @@ export function packVersion(): number {
 /** The clips every character plays now. */
 export function currentClips(): Record<ClipName, Clip> {
 	return active?.clips ?? CLIPS;
+}
+
+/** What to draw for a session's `animal`: the active pack's sheet or rig, else a rig. */
+export function lookFor(animal: string): Look {
+	const sheet = active?.sheets.get(animal);
+	return sheet ?? { kind: "rig", rig: rigFor(animal) };
+}
+
+/** The clips `animal` plays: its sheet's own timings, or the rig clips. */
+export function clipsFor(animal: string): Record<ClipName, Clip> {
+	return active?.sheets.get(animal)?.clips ?? currentClips();
+}
+
+/** ADR 0038: a sheet's missing optional clips play these instead. */
+const SHEET_FALLBACK: Partial<Record<ClipName, ClipName>> = {
+	alert: "knock",
+	pace: "wait",
+	present: "rest",
+};
+
+/** The sheet row a clip uses, after fallbacks; `null` for the still pose. */
+function sheetSource(sheet: SheetJson, clip: ClipName): SheetClip | null {
+	const own = sheet.clips[clip];
+	if (own) return own;
+	const instead = SHEET_FALLBACK[clip];
+	return (instead && sheet.clips[instead]) || null;
+}
+
+/**
+ * A sheet's clips for the controller: each lasts its frames at its fps. Clips the sheet
+ * doesn't draw take their fallback's timing; `step_up` and `step_down` without frames keep
+ * Knock's own timing, while the renderer lifts the still pose.
+ */
+export function sheetClips(sheet: SheetJson): Record<ClipName, Clip> {
+	const out = {} as Record<ClipName, Clip>;
+	for (const name of Object.keys(CLIPS) as ClipName[]) {
+		const src = sheetSource(sheet, name);
+		out[name] = {
+			name,
+			loop: src ? src.loop : CLIPS[name].loop,
+			durationMs: src
+				? Math.max(1, (src.frames / src.fps) * 1000)
+				: CLIPS[name].durationMs,
+			tracks: {},
+			swaps: [],
+		};
+	}
+	return out;
+}
+
+/**
+ * The cell to show `t` ms into `clip` (`null`: the still pose, the first frame of `wait`).
+ * A looping row wraps; a play-once row holds its last frame.
+ */
+export function sheetCell(
+	sheet: SheetJson,
+	clip: ClipName | null,
+	t: number,
+): { row: number; col: number } {
+	const src = (clip && sheetSource(sheet, clip)) || null;
+	if (!src) return { row: sheet.clips.wait?.row ?? 0, col: 0 };
+	const i = Math.floor((Math.max(0, t) / 1000) * src.fps);
+	const col = src.loop ? i % src.frames : Math.min(i, src.frames - 1);
+	return { row: src.row, col };
 }
 
 /** The rig to draw for a session's `animal`: the active pack's, else Knock's own, else the fox. */
