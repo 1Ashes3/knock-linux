@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 /// The built-in pack's id: Knock's fox, rabbit, cat and owl.
 pub const CLASSIC: &str = "classic";
@@ -74,9 +74,33 @@ pub struct PackData {
     pub clips: BTreeMap<String, Value>,
 }
 
+/// A pack offered for install (step 3): checked, held in memory until the
+/// user confirms. Only one at a time; a new offer replaces it.
+struct Staged {
+    token: String,
+    check: PackCheck,
+    files: PackFiles,
+}
+
+/// `offer_pack_*`: what the user is asked to confirm.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Offer {
+    /// For `install_pack`; `None` when the pack can't be installed. It is
+    /// also the pack's name under `knockpack://`, for the previews.
+    pub token: Option<String>,
+    pub pack: PackSummary,
+    /// A pack with this id is installed already.
+    pub replaces: bool,
+    /// For the previews, under the token; `None` when it can't be installed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<PackData>,
+}
+
 pub struct Packs {
     dir: Option<PathBuf>,
     installed: RwLock<Vec<Installed>>,
+    staged: Mutex<Option<Staged>>,
 }
 
 impl Packs {
@@ -85,6 +109,7 @@ impl Packs {
         let packs = Packs {
             dir,
             installed: RwLock::new(Vec::new()),
+            staged: Mutex::new(None),
         };
         packs.reload();
         packs
@@ -135,36 +160,7 @@ impl Packs {
     pub fn get(&self, id: &str) -> Option<PackData> {
         let installed = self.installed.read().unwrap_or_else(|e| e.into_inner());
         let p = installed.iter().find(|p| p.id() == id && p.check.ok())?;
-        let json = |path: &str| {
-            p.files
-                .get(path)
-                .and_then(|b| serde_json::from_slice::<Value>(b).ok())
-        };
-        let characters = (p.check.characters.iter())
-            .map(|c| {
-                let file = |f: &str| json(&format!("characters/{}/{f}", c.id));
-                PackCharacter {
-                    id: c.id.clone(),
-                    display_name: c.display_name.clone(),
-                    kind: c.kind,
-                    rig: (c.kind == Kind::Rig).then(|| file("rig.json")).flatten(),
-                    sheet: (c.kind == Kind::Sheet)
-                        .then(|| file("sheet.json"))
-                        .flatten(),
-                }
-            })
-            .collect();
-        let clips = (p.files.keys())
-            .filter_map(|path| {
-                let name = path.strip_prefix("clips/")?.strip_suffix(".json")?;
-                Some((name.to_string(), json(path)?))
-            })
-            .collect();
-        Some(PackData {
-            id: p.id().to_string(),
-            characters,
-            clips,
-        })
+        Some(data_of(p.id(), &p.check, &p.files))
     }
 
     /// An image of a valid pack for `knockpack://`: only a character's
@@ -179,10 +175,249 @@ impl Packs {
         if !path.starts_with("characters/") {
             return None;
         }
+        // An offered pack's previews, by its token.
+        if let Some(staged) = self
+            .staged
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            && staged.token == pack
+        {
+            return Some((staged.files.get(path)?.clone(), media));
+        }
         let installed = self.installed.read().unwrap_or_else(|e| e.into_inner());
         let p = installed.iter().find(|p| p.id() == pack && p.check.ok())?;
         Some((p.files.get(path)?.clone(), media))
     }
+
+    /// Offers the pack at `path`: a `.knockpack` file or a pack folder.
+    pub fn offer_path(&self, path: &Path) -> Offer {
+        let files = match std::fs::symlink_metadata(path) {
+            Ok(m) if m.is_dir() => packs::read_folder(path),
+            Ok(m) if m.is_file() => read_capped(path).and_then(|b| packs::read_zip(&b)),
+            Ok(_) => Err("that isn't a pack file or folder".into()),
+            Err(e) => Err(format!("can't open it ({})", e.kind())),
+        };
+        self.offer(files)
+    }
+
+    /// Offers a `.knockpack` the Settings window read (the file picker).
+    pub fn offer_bytes(&self, bytes: &[u8]) -> Offer {
+        self.offer(packs::read_zip(bytes))
+    }
+
+    fn offer(&self, files: Result<PackFiles, String>) -> Offer {
+        let (check, files) = match files {
+            Ok(files) => (packs::check_pack(&files), files),
+            Err(e) => (
+                PackCheck {
+                    errors: vec![e],
+                    ..PackCheck::default()
+                },
+                PackFiles::new(),
+            ),
+        };
+        let mut staged = self.staged.lock().unwrap_or_else(|e| e.into_inner());
+        *staged = None;
+        let m = check.manifest.as_ref();
+        let id = m.map_or_else(String::new, |m| m.id.clone());
+        let valid = check.ok();
+        let token = valid.then(|| format!("staged-{}", random_hex()));
+        let pack = PackSummary {
+            id: token.clone().unwrap_or_else(|| id.clone()),
+            display_name: m.map_or_else(|| "This pack".into(), |m| m.display_name.clone()),
+            author: m.and_then(|m| m.author.clone()),
+            license: m.and_then(|m| m.license.clone()),
+            description: m.and_then(|m| m.description.clone()),
+            builtin: false,
+            valid,
+            errors: check.errors.iter().take(MAX_ERRORS).cloned().collect(),
+            characters: check.characters.clone(),
+        };
+        let replaces = valid
+            && (self.installed.read().unwrap_or_else(|e| e.into_inner()))
+                .iter()
+                .any(|p| p.folder == id);
+        let data = token.as_ref().map(|t| data_of(t, &check, &files));
+        if let Some(token) = &token {
+            *staged = Some(Staged {
+                token: token.clone(),
+                check,
+                files,
+            });
+        }
+        Offer {
+            token,
+            pack,
+            replaces,
+            data,
+        }
+    }
+
+    /// Installs the offered pack `token` and reads the packs again. It goes
+    /// into a hidden folder first and is moved into place whole, so a pack is
+    /// never seen half-written; `replace` swaps out an installed one the same
+    /// way. Returns the pack's id.
+    pub fn install(&self, token: &str, replace: bool) -> Result<String, String> {
+        let dir = self
+            .dir
+            .as_deref()
+            .ok_or("Knock has no packs folder here.")?;
+        let staged = {
+            let mut slot = self.staged.lock().unwrap_or_else(|e| e.into_inner());
+            match slot.take() {
+                Some(s) if s.token == token => s,
+                other => {
+                    *slot = other;
+                    return Err(
+                        "That pack is no longer waiting to be added. Please add it again.".into(),
+                    );
+                }
+            }
+        };
+        let id = (staged.check.manifest.as_ref())
+            .map(|m| m.id.clone())
+            .ok_or("The pack can't be installed.")?;
+        let target = dir.join(&id);
+        let exists = std::fs::symlink_metadata(&target).is_ok();
+        if exists && !replace {
+            return Err(format!("A pack called \"{id}\" is installed already."));
+        }
+        let failed = |what: &str, e: std::io::Error| {
+            tracing::warn!(kind = ?e.kind(), what, "pack not installed");
+            format!("Knock couldn't install the pack ({what}).")
+        };
+        std::fs::create_dir_all(dir).map_err(|e| failed("folder", e))?;
+        let fresh = dir.join(format!(".install-{}", random_hex()));
+        let written = write_pack(&fresh, &staged.files);
+        if let Err(e) = written {
+            let _ = std::fs::remove_dir_all(&fresh);
+            return Err(failed("write", e));
+        }
+        let old = dir.join(format!(".remove-{}", random_hex()));
+        if exists {
+            std::fs::rename(&target, &old).map_err(|e| {
+                let _ = std::fs::remove_dir_all(&fresh);
+                failed("replace", e)
+            })?;
+        }
+        if let Err(e) = std::fs::rename(&fresh, &target) {
+            if exists {
+                let _ = std::fs::rename(&old, &target);
+            }
+            let _ = std::fs::remove_dir_all(&fresh);
+            return Err(failed("move", e));
+        }
+        if exists {
+            let _ = std::fs::remove_dir_all(&old);
+        }
+        tracing::info!(replace = exists, "pack installed");
+        self.reload();
+        Ok(id)
+    }
+
+    /// Removes the installed pack `id` (never classic) and reads the packs
+    /// again.
+    pub fn remove(&self, id: &str) -> Result<(), String> {
+        let dir = self
+            .dir
+            .as_deref()
+            .ok_or("Knock has no packs folder here.")?;
+        if id == CLASSIC || !packs::is_id(id) {
+            return Err("That pack can't be removed.".into());
+        }
+        let target = dir.join(id);
+        match std::fs::symlink_metadata(&target) {
+            Ok(m) if m.is_dir() => {}
+            _ => return Err("That pack isn't installed.".into()),
+        }
+        // Out of sight first, so a slow delete never leaves half a pack.
+        let gone = dir.join(format!(".remove-{}", random_hex()));
+        std::fs::rename(&target, &gone).map_err(|e| {
+            tracing::warn!(kind = ?e.kind(), "pack not removed");
+            "Knock couldn't remove the pack.".to_string()
+        })?;
+        let _ = std::fs::remove_dir_all(&gone);
+        tracing::info!("pack removed");
+        self.reload();
+        Ok(())
+    }
+}
+
+/// What the overlay or a preview needs to draw a checked pack, under `id`.
+fn data_of(id: &str, check: &PackCheck, files: &PackFiles) -> PackData {
+    let json = |path: &str| {
+        files
+            .get(path)
+            .and_then(|b| serde_json::from_slice::<Value>(b).ok())
+    };
+    let characters = (check.characters.iter())
+        .map(|c| {
+            let file = |f: &str| json(&format!("characters/{}/{f}", c.id));
+            PackCharacter {
+                id: c.id.clone(),
+                display_name: c.display_name.clone(),
+                kind: c.kind,
+                rig: (c.kind == Kind::Rig).then(|| file("rig.json")).flatten(),
+                sheet: (c.kind == Kind::Sheet)
+                    .then(|| file("sheet.json"))
+                    .flatten(),
+            }
+        })
+        .collect();
+    let clips = (files.keys())
+        .filter_map(|path| {
+            let name = path.strip_prefix("clips/")?.strip_suffix(".json")?;
+            Some((name.to_string(), json(path)?))
+        })
+        .collect();
+    PackData {
+        id: id.to_string(),
+        characters,
+        clips,
+    }
+}
+
+/// A file's bytes, refusing anything bigger than a pack may be.
+fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(packs::MAX_PACK_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(|e| format!("can't read it ({})", e.kind()))?;
+    if bytes.len() as u64 > packs::MAX_PACK_BYTES {
+        return Err("the file is larger than a pack may be".into());
+    }
+    Ok(bytes)
+}
+
+/// Writes checked pack `files` into the new folder `to` (plain files, the
+/// owner's permissions). The paths passed `check_pack`, so they are plain
+/// relative names with no `..`.
+fn write_pack(to: &Path, files: &PackFiles) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir(to)?;
+    for (rel, bytes) in files {
+        let path = to.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        f.write_all(bytes)?;
+    }
+    Ok(())
+}
+
+/// 16 random hex digits, for tokens and temporary folder names.
+fn random_hex() -> String {
+    let mut b = [0u8; 8];
+    if crate::platform::fill_random(&mut b).is_err() {
+        b = crate::pipeline::now_ms().to_le_bytes();
+    }
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// Knock's own pack, as the list shows it.
@@ -365,6 +600,81 @@ mod tests {
         packs.reload();
         assert!(!packs.list().iter().any(|p| p.id == "good" && p.valid));
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn offered_packs_install_only_when_confirmed() {
+        let d = temp("install");
+        let src = temp("install-src");
+        fox_pack(&src, "foxes", "foxes");
+        let packs = Packs::new(Some(d.join("packs")));
+        // Offered: checked and previewable, but not installed.
+        let offer = packs.offer_path(&src.join("foxes"));
+        let token = offer.token.clone().unwrap();
+        assert!(offer.pack.valid && !offer.replaces);
+        assert!(
+            packs.image(&token, "characters/fox/head.svg").is_some(),
+            "preview"
+        );
+        assert_eq!(packs.list().len(), 1, "not installed yet");
+        assert!(packs.install("staged-wrong", false).is_err());
+        assert_eq!(packs.install(&token, false).unwrap(), "foxes");
+        assert!(
+            packs.install(&token, false).is_err(),
+            "a token is used once"
+        );
+        assert!(packs.list().iter().any(|p| p.id == "foxes" && p.valid));
+        assert_eq!(packs.cast("foxes"), Some(vec!["fox".to_string()]));
+        // The same pack again: it replaces only when asked.
+        let again = packs.offer_path(&src.join("foxes"));
+        assert!(again.replaces);
+        let t = again.token.unwrap();
+        assert!(
+            packs
+                .install(&t, false)
+                .unwrap_err()
+                .contains("installed already")
+        );
+        let t = packs.offer_path(&src.join("foxes")).token.unwrap();
+        assert_eq!(packs.install(&t, true).unwrap(), "foxes");
+        // No temporary folders are left behind.
+        let left: Vec<_> = std::fs::read_dir(d.join("packs"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(left, ["foxes"]);
+        // Remove: gone, and classic can't be.
+        packs.remove("foxes").unwrap();
+        assert!(!d.join("packs/foxes").exists());
+        assert_eq!(packs.list().len(), 1);
+        assert!(packs.remove(CLASSIC).is_err());
+        assert!(packs.remove("../x").is_err());
+        assert!(packs.remove("missing").is_err());
+        std::fs::remove_dir_all(&d).unwrap();
+        std::fs::remove_dir_all(&src).unwrap();
+    }
+
+    #[test]
+    fn a_zip_installs_like_a_folder_and_bad_ones_get_no_token() {
+        let d = temp("zip");
+        let src = temp("zip-src");
+        fox_pack(&src, "zipped", "zipped");
+        let files = knock_core::packs::read_folder(&src.join("zipped")).unwrap();
+        let bytes = knock_core::packs::write_zip(&files).unwrap();
+        let packs = Packs::new(Some(d.clone()));
+        let offer = packs.offer_bytes(&bytes);
+        assert_eq!(offer.pack.display_name, "Pack zipped");
+        packs.install(&offer.token.unwrap(), false).unwrap();
+        assert_eq!(packs.cast("zipped"), Some(vec!["fox".to_string()]));
+        let bad = packs.offer_bytes(b"not a zip");
+        assert!(bad.token.is_none() && !bad.pack.valid);
+        assert!(bad.pack.errors[0].contains("isn't a .knockpack"));
+        // A failed offer drops the one before it.
+        let ok = packs.offer_bytes(&bytes).token.unwrap();
+        packs.offer_bytes(b"x");
+        assert!(packs.install(&ok, true).is_err());
+        std::fs::remove_dir_all(&d).unwrap();
+        std::fs::remove_dir_all(&src).unwrap();
     }
 
     #[test]

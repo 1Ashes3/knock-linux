@@ -22,6 +22,11 @@ const COMMANDS: &[&str] = &[
     "get_pack",
     "reload_packs",
     "open_packs_folder",
+    "offer_pack_path",
+    "offer_pack_bytes",
+    "take_offered_pack",
+    "install_pack",
+    "remove_pack",
 ];
 
 fn main() {

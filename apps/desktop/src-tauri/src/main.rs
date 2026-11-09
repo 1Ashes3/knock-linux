@@ -69,6 +69,29 @@ struct Knock {
     dir: PathBuf,
     /// No Knock `settings.json` existed when the app started.
     first_run: bool,
+    /// A `.knockpack` opened with Knock (a double-click), until Settings
+    /// asks for it (ADR 0038).
+    offered: Mutex<Option<PathBuf>>,
+}
+
+/// The `.knockpack` among a launch's arguments, if any (a double-click in a
+/// file manager runs `knock-desktop <file>`).
+fn knockpack_arg(args: &[String]) -> Option<PathBuf> {
+    args.iter().skip(1).map(PathBuf::from).find(|p| {
+        p.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("knockpack"))
+            && p.is_file()
+    })
+}
+
+/// Remembers a `.knockpack` to offer and opens Settings, which asks for it
+/// (`take_offered_pack`), and tells an open Settings window.
+fn offer_from_launch(app: &AppHandle, path: PathBuf) {
+    if let Some(k) = app.try_state::<Knock>() {
+        *lock(&k.offered) = Some(path);
+    }
+    open_settings(app, "pack=1");
+    let _ = app.emit_to("settings", "pack-offered", ());
 }
 
 /// ADR 0037: which layer the strip is on, from the `placement` setting and
@@ -287,6 +310,71 @@ fn open_packs_folder(packs: tauri::State<'_, Arc<packs::Packs>>) -> Result<(), S
         .spawn()
         .map(|_| ())
         .map_err(|_| "Couldn't open the packs folder.".into())
+}
+
+/// ADR 0038: checks the `.knockpack` file or pack folder at `path` (a drop
+/// on Settings) and holds it for `install_pack`.
+#[tauri::command]
+fn offer_pack_path(path: String, packs: tauri::State<'_, Arc<packs::Packs>>) -> packs::Offer {
+    packs.offer_path(std::path::Path::new(&path))
+}
+
+/// ADR 0038: the same for a `.knockpack` the file picker read; the body is
+/// the file's bytes.
+#[tauri::command]
+fn offer_pack_bytes(
+    request: tauri::ipc::Request<'_>,
+    packs: tauri::State<'_, Arc<packs::Packs>>,
+) -> Result<packs::Offer, String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => Ok(packs.offer_bytes(bytes)),
+        _ => Err("Knock didn't get the file.".into()),
+    }
+}
+
+/// ADR 0038: the `.knockpack` Knock was opened with, offered; `null` if none.
+#[tauri::command]
+fn take_offered_pack(
+    k: tauri::State<'_, Knock>,
+    packs: tauri::State<'_, Arc<packs::Packs>>,
+) -> Option<packs::Offer> {
+    let path = lock(&k.offered).take()?;
+    Some(packs.offer_path(&path))
+}
+
+/// ADR 0038: installs the offered pack, then every window reads the packs
+/// again (`packs-changed`).
+#[tauri::command]
+fn install_pack(
+    token: String,
+    replace: bool,
+    app: AppHandle,
+    packs: tauri::State<'_, Arc<packs::Packs>>,
+    k: tauri::State<'_, Knock>,
+) -> Result<Vec<packs::PackSummary>, String> {
+    packs.install(&token, replace)?;
+    let _ = k.tx.send(Msg::PacksChanged);
+    let _ = app.emit("packs-changed", ());
+    Ok(packs.list())
+}
+
+/// ADR 0038: removes an installed pack; if it was the chosen one, sessions
+/// go back to Classic.
+#[tauri::command]
+fn remove_pack(
+    id: String,
+    app: AppHandle,
+    packs: tauri::State<'_, Arc<packs::Packs>>,
+    k: tauri::State<'_, Knock>,
+) -> Result<Vec<packs::PackSummary>, String> {
+    packs.remove(&id)?;
+    if pipeline::read(&k.shared).settings.pack == id {
+        let patch = json!({ "pack": packs::CLASSIC });
+        let _ = k.tx.send(Msg::Settings { patch, reply: None });
+    }
+    let _ = k.tx.send(Msg::PacksChanged);
+    let _ = app.emit("packs-changed", ());
+    Ok(packs.list())
 }
 
 /// `knockpack://<pack>/<path>` (ADR 0038): a valid pack's images, from
@@ -762,6 +850,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         repairing: Mutex::new(()),
         dir,
         first_run,
+        offered: Mutex::new(knockpack_arg(&std::env::args().collect::<Vec<_>>())),
     };
 
     // If the port can't be bound, Knock keeps running and offers Repair
@@ -845,10 +934,13 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         server = started.is_ok(),
         "setup status"
     );
+    let offered = lock(&k.offered).is_some();
     app.manage(k);
     match (started.is_ok(), first_run || !installed) {
         (false, _) => open_settings(app.handle(), "repair=1"),
         (true, true) => open_settings(app.handle(), "setup=1"),
+        // Started by a double-click on a .knockpack.
+        (true, false) if offered => open_settings(app.handle(), "pack=1"),
         (true, false) => {}
     }
     Ok(())
@@ -862,12 +954,16 @@ fn main() {
         // screen is focused, not replaced; the strip is never focused (§9.1).
         // The plugin lets this instance take the foreground from the second.
         // Its arguments and folder are not logged (§11.5).
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             tracing::info!("second launch: opening settings");
             // Off the main thread: creating a window in this callback (a
             // window procedure) deadlocks on Windows.
             let app = app.clone();
-            std::thread::spawn(move || open_settings(&app, ""));
+            let pack = knockpack_arg(&args);
+            std::thread::spawn(move || match pack {
+                Some(path) => offer_from_launch(&app, path),
+                None => open_settings(&app, ""),
+            });
         }))
         .plugin(tauri_plugin_notification::init())
         .register_uri_scheme_protocol("knockpack", |ctx, request| {
@@ -895,6 +991,11 @@ fn main() {
             get_pack,
             reload_packs,
             open_packs_folder,
+            offer_pack_path,
+            offer_pack_bytes,
+            take_offered_pack,
+            install_pack,
+            remove_pack,
         ])
         .setup(setup)
         .run(tauri::generate_context!())

@@ -13,6 +13,7 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/1Ashes3/knock"
 license=('MIT')
 depends=(
+	'shared-mime-info'
 	'gtk3'
 	'gtk-layer-shell'
 	'hicolor-icon-theme'
@@ -55,6 +56,9 @@ package() {
 	install -Dm755 target/release/knock-desktop "$pkgdir/usr/bin/knock-desktop"
 	install -Dm644 packaging/linux/knock-desktop.desktop \
 		"$pkgdir/usr/share/applications/knock-desktop.desktop"
+	# Double-clicking a .knockpack offers to add it (pacman's hooks update the MIME database).
+	install -Dm644 packaging/linux/knock-knockpack.xml \
+		"$pkgdir/usr/share/mime/packages/knock-knockpack.xml"
 	local icons=apps/desktop/src-tauri/icons
 	install -Dm644 "$icons/32x32.png" "$pkgdir/usr/share/icons/hicolor/32x32/apps/knock-desktop.png"
 	install -Dm644 "$icons/128x128.png" "$pkgdir/usr/share/icons/hicolor/128x128/apps/knock-desktop.png"

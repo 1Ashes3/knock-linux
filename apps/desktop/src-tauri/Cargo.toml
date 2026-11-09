@@ -11,7 +11,7 @@ publish.workspace = true
 tauri-build = { version = "2.7.3", features = [] }
 
 [dependencies]
-knock-core = { path = "../../../crates/knock-core", features = ["fs"] }
+knock-core = { path = "../../../crates/knock-core", features = ["fs", "zip"] }
 tauri = { version = "2.12.4", features = ["image-png", "tray-icon"] }
 tauri-plugin-notification = "2.7.0"
 tauri-plugin-single-instance = "2.5.5"

@@ -4,7 +4,8 @@ declare var __TAURI__:
 			core: {
 				invoke: (
 					cmd: string,
-					args?: Record<string, unknown>,
+					/** Named arguments, or a raw body (a file's bytes). */
+					args?: Record<string, unknown> | Uint8Array,
 				) => Promise<unknown>;
 				/** A URL for `path` under a custom protocol, in the platform's form. */
 				convertFileSrc?: (path: string, protocol?: string) => string;

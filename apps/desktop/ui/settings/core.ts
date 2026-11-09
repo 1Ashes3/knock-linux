@@ -47,6 +47,16 @@ export async function invoke<T>(
 	return (await run(cmd, args)) as T;
 }
 
+/** `invoke` with a raw body: Tauri hands the command the bytes as they are. */
+export async function invokeBytes<T>(
+	cmd: string,
+	bytes: Uint8Array,
+): Promise<T> {
+	const run = globalThis.__TAURI__?.core.invoke;
+	if (!run) throw new Error("Knock isn't running, so this can't be done.");
+	return (await run(cmd, bytes)) as T;
+}
+
 /** The core's error, as text. Tauri rejects with whatever the command returned as Err. */
 export function errorText(e: unknown): string {
 	if (typeof e === "string" && e) return e;

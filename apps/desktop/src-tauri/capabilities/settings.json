@@ -20,6 +20,11 @@
 		"allow-list-packs",
 		"allow-get-pack",
 		"allow-reload-packs",
-		"allow-open-packs-folder"
+		"allow-open-packs-folder",
+		"allow-offer-pack-path",
+		"allow-offer-pack-bytes",
+		"allow-take-offered-pack",
+		"allow-install-pack",
+		"allow-remove-pack"
 	]
 }

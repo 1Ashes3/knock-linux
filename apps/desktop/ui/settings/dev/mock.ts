@@ -241,7 +241,8 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
 const log = document.getElementById("log") as HTMLElement;
 globalThis.__TAURI__ = {
 	core: {
-		invoke: async (cmd, args = {}) => {
+		invoke: async (cmd, raw = {}) => {
+			const args = raw instanceof Uint8Array ? { bytes: raw } : raw;
 			calls.push([cmd, args]);
 			log.textContent = `${cmd} ${JSON.stringify(args)}\n${log.textContent}`;
 			const run = commands[cmd];

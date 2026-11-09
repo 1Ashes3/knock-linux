@@ -36,6 +36,31 @@ fn pack_check(dir: &std::path::Path) -> Result<(), String> {
     Err(format!("{n} problem{s}; the pack can't be used yet"))
 }
 
+/// `knock pack build <folder> [-o <file>]`: checks the pack, then writes it
+/// as one `.knockpack` file (default `<id>.knockpack` here) that users add
+/// with Settings → Characters → Add a pack, or by double-clicking it.
+fn pack_build(dir: &std::path::Path, out: Option<&std::path::Path>) -> Result<(), String> {
+    pack_check(dir)?;
+    let files = knock_core::packs::read_folder(dir)?;
+    let id = knock_core::packs::check_pack(&files)
+        .manifest
+        .map(|m| m.id)
+        .ok_or("the pack has no id")?;
+    let bytes = knock_core::packs::write_zip(&files)?;
+    let out = out.map_or_else(
+        || std::path::PathBuf::from(format!("{id}.knockpack")),
+        Into::into,
+    );
+    std::fs::write(&out, &bytes)
+        .map_err(|e| format!("can't write {} ({})", out.display(), e.kind()))?;
+    println!(
+        "wrote {} ({} KB)",
+        out.display(),
+        bytes.len().div_ceil(1024)
+    );
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -57,6 +82,8 @@ fn main() -> ExitCode {
             }
         }),
         ["pack", "check", dir] => pack_check(dir.as_ref()),
+        ["pack", "build", dir] => pack_build(dir.as_ref(), None),
+        ["pack", "build", dir, "-o", out] => pack_build(dir.as_ref(), Some(out.as_ref())),
         ["replay", target] => {
             // A fixture file, a folder of fixtures, or a name in `fixtures/`.
             let path = std::path::Path::new(target);
@@ -82,7 +109,8 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: knock <sim <scenario> [--speed <factor> | --local] | replay <fixture | dir> | doctor \
                  | fixtures sanitize <recording.jsonl> <out-dir> --map <names-file> \
-                 | fixtures check <dir> | pack check <folder>>"
+                 | fixtures check <dir> | pack check <folder> \
+                 | pack build <folder> [-o <file.knockpack>]>"
             );
             return ExitCode::from(2);
         }

@@ -25,6 +25,15 @@
 				"installMode": "currentUser",
 				"installerHooks": "installer-hooks.nsh"
 			}
-		}
+		},
+		"fileAssociations": [
+			{
+				"ext": ["knockpack"],
+				"name": "Knock pack",
+				"description": "Knock sprite pack",
+				"mimeType": "application/x-knockpack",
+				"role": "Viewer"
+			}
+		]
 	}
 }

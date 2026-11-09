@@ -468,3 +468,34 @@ input[aria-invalid="true"] {
 	clip-path: inset(50%);
 	white-space: nowrap;
 }
+
+/* A pack waiting for the user's yes (ADR 0038). */
+.offer {
+	border: 2px solid var(--accent);
+	border-radius: 6px;
+	padding: 10px 12px;
+	margin-bottom: 12px;
+}
+
+.offer p {
+	margin: 0 0 6px;
+}
+
+.offer .pack-cast {
+	margin: 4px 0 8px;
+}
+
+.pack-remove {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-top: 6px;
+	padding-left: 28px;
+	font-size: 0.9em;
+}
+
+/* A file is being dragged over the window: the drop target is this section. */
+.settings section[data-dragging] {
+	outline: 2px dashed var(--accent);
+	outline-offset: 4px;
+}

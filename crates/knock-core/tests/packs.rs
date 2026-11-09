@@ -592,3 +592,98 @@ mod folder {
         std::fs::remove_dir_all(&d).unwrap();
     }
 }
+
+#[cfg(feature = "zip")]
+mod zipped {
+    use super::*;
+    use knock_core::packs::{read_zip, write_zip};
+    use std::io::Write;
+
+    /// A zip with exactly these entries, names as given.
+    fn raw_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let o = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, bytes) in entries {
+            z.start_file(*name, o).unwrap();
+            z.write_all(bytes).unwrap();
+        }
+        z.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn a_built_pack_reads_back_and_passes() {
+        let files = builtin();
+        let bytes = write_zip(&files).unwrap();
+        assert_eq!(read_zip(&bytes).unwrap(), files);
+        assert!(check_pack(&read_zip(&bytes).unwrap()).ok());
+    }
+
+    #[test]
+    fn one_top_folder_is_dropped() {
+        let bytes = raw_zip(&[("fairies/pack.json", b"{}"), ("fairies/README.md", b"hi")]);
+        let files = read_zip(&bytes).unwrap();
+        assert_eq!(files.keys().collect::<Vec<_>>(), ["README.md", "pack.json"]);
+        // Two top folders: kept as they are (and check_pack refuses them).
+        let bytes = raw_zip(&[("a/pack.json", b"{}"), ("b/x.svg", b"")]);
+        assert!(read_zip(&bytes).unwrap().contains_key("a/pack.json"));
+    }
+
+    #[test]
+    fn names_that_could_escape_are_refused() {
+        for name in [
+            "../evil.json",
+            "characters/../../evil.svg",
+            "/etc/passwd",
+            "characters\\fox\\head.svg",
+            "C:/Windows/evil.svg",
+            "characters//fox.svg",
+            "./pack.json",
+        ] {
+            let e = read_zip(&raw_zip(&[(name, b"x")])).unwrap_err();
+            assert!(e.contains("not a safe file name"), "{name}: {e}");
+        }
+    }
+
+    #[test]
+    fn links_are_refused() {
+        let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let o = zip::write::SimpleFileOptions::default();
+        z.add_symlink("README.md", "/home/someone/.ssh/id_ed25519", o)
+            .unwrap();
+        let bytes = z.finish().unwrap().into_inner();
+        assert!(
+            read_zip(&bytes)
+                .unwrap_err()
+                .contains("links are not allowed")
+        );
+    }
+
+    #[test]
+    fn a_zip_bomb_stops_at_the_size_limit() {
+        // 20 MB of zeros deflates to a few KB; the headers aren't trusted.
+        let zeros = vec![0u8; 20 * 1024 * 1024];
+        let bytes = raw_zip(&[("characters/fox/head.svg", &zeros)]);
+        assert!(bytes.len() < 100 * 1024, "{}", bytes.len());
+        let e = read_zip(&bytes).unwrap_err();
+        assert!(e.contains("unpacks to more than 16 MB"), "{e}");
+    }
+
+    #[test]
+    fn too_many_entries_and_non_zips() {
+        let names: Vec<String> = (0..301)
+            .map(|i| format!("characters/fox/f{i}.svg"))
+            .collect();
+        let entries: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b""[..])).collect();
+        assert!(
+            read_zip(&raw_zip(&entries))
+                .unwrap_err()
+                .contains("more than 300 files")
+        );
+        assert!(
+            read_zip(b"not a zip at all")
+                .unwrap_err()
+                .contains("isn't a .knockpack")
+        );
+    }
+}

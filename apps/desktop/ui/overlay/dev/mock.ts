@@ -132,7 +132,8 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
 
 globalThis.__TAURI__ = {
 	core: {
-		invoke: async (cmd, args = {}) => {
+		invoke: async (cmd, raw = {}) => {
+			const args = raw instanceof Uint8Array ? { bytes: raw } : raw;
 			log.textContent = `${cmd} ${JSON.stringify(args)}\n${log.textContent}`;
 			const run = commands[cmd];
 			if (!run) throw new Error(`mock: unknown command ${cmd}`);

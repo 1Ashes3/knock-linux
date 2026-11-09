@@ -839,6 +839,125 @@ fn open_plain(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     Ok(f)
 }
 
+/// Reads a `.knockpack` (a zip) into [`PackFiles`] without trusting it,
+/// entirely in memory: nothing is written anywhere until [`check_pack`] has
+/// passed. Entries that are links, encrypted, use another compression than
+/// deflate, or have a name that could escape (`..`, `/…`, `\`, `C:`) are
+/// refused. Sizes in the zip's headers aren't trusted: reading stops as soon
+/// as the bytes actually decompressed pass [`MAX_PACK_BYTES`], so a zip bomb
+/// costs at most that much. A zip whose files sit in one top folder
+/// (`fairies/pack.json`) reads as if they didn't.
+#[cfg(feature = "zip")]
+pub fn read_zip(bytes: &[u8]) -> Result<PackFiles, String> {
+    use std::io::Read;
+    if bytes.len() as u64 > MAX_PACK_BYTES {
+        return Err(format!(
+            "the file is larger than {} MB",
+            MAX_PACK_BYTES / (1024 * 1024)
+        ));
+    }
+    let not_zip = || "this isn't a .knockpack file (a zip)".to_string();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|_| not_zip())?;
+    if zip.len() > MAX_FILES * 4 {
+        return Err(format!("the pack has more than {MAX_FILES} files"));
+    }
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut total: u64 = 0;
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|_| {
+            format!(
+                "entry {} can't be read (encrypted, damaged or not deflate)",
+                i + 1
+            )
+        })?;
+        let name = entry
+            .name()
+            .map_err(|_| format!("entry {} has a name that isn't valid text", i + 1))?
+            .to_string();
+        if entry.is_symlink() {
+            return Err(format!("{name}: links are not allowed in a pack"));
+        }
+        if entry.is_dir() {
+            continue;
+        }
+        if !safe_entry_name(&name) {
+            return Err(format!("{name}: not a safe file name"));
+        }
+        if entries.len() >= MAX_FILES {
+            return Err(format!("the pack has more than {MAX_FILES} files"));
+        }
+        let left = MAX_PACK_BYTES - total;
+        let mut data = Vec::new();
+        (&mut entry)
+            .take(left + 1)
+            .read_to_end(&mut data)
+            .map_err(|_| format!("{name}: can't be unpacked"))?;
+        total += data.len() as u64;
+        if total > MAX_PACK_BYTES {
+            return Err(format!(
+                "the pack unpacks to more than {} MB",
+                MAX_PACK_BYTES / (1024 * 1024)
+            ));
+        }
+        entries.push((name, data));
+    }
+    // One top folder around everything: drop it.
+    let top = (!entries.iter().any(|(n, _)| n == "pack.json"))
+        .then(|| {
+            entries
+                .first()
+                .and_then(|(n, _)| n.split_once('/'))
+                .map(|(t, _)| format!("{t}/"))
+        })
+        .flatten()
+        .filter(|t| entries.iter().all(|(n, _)| n.starts_with(t.as_str())));
+    let mut files = PackFiles::new();
+    for (name, data) in entries {
+        let rel = match &top {
+            Some(t) => name[t.len()..].to_string(),
+            None => name,
+        };
+        if files.insert(rel.clone(), data).is_some() {
+            return Err(format!("{rel}: in the pack twice"));
+        }
+    }
+    Ok(files)
+}
+
+/// A zip entry name a pack may use: relative, `/`-separated, no `.`/`..`
+/// or empty parts, no `\` or `:` (Windows paths and drives), plain text.
+#[cfg(feature = "zip")]
+fn safe_entry_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && !name.starts_with('/')
+        && !name.contains(['\\', ':', '\0'])
+        && name.chars().all(|c| !c.is_control())
+        && name
+            .split('/')
+            .all(|p| !p.is_empty() && p != "." && p != "..")
+}
+
+/// A `.knockpack` of `files`, for artists (`knock pack build`): deflated,
+/// in path order, plain 0644 files.
+#[cfg(feature = "zip")]
+pub fn write_zip(files: &PackFiles) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+    for (path, bytes) in files {
+        zip.start_file(path.as_str(), options)
+            .and_then(|()| zip.write_all(bytes).map_err(Into::into))
+            .map_err(|e| format!("{path}: can't be added ({e})"))?;
+    }
+    let out = zip
+        .finish()
+        .map_err(|e| format!("can't finish the file ({e})"))?;
+    Ok(out.into_inner())
+}
+
 /// A PNG's width and height, or `None` unless it is a well-formed PNG a
 /// sheet may use (security review finding 4): a 13-byte `IHDR` first, 8-bit
 /// RGBA or a palette of up to 8 bits, standard compression and filter, and
