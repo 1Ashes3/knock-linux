@@ -433,14 +433,25 @@ pub fn kwin_script(pids: &[u32], project: &str) -> String {
 
 const KWIN_SCRIPT_NAME: &str = "knock-focus";
 
+/// Lookups kept for `focus_window`; far more than sessions at once.
+const MAX_JUMPS: usize = 64;
+
 fn kwin_focus(pids: &[u32], project: &str) -> zbus::Result<()> {
     use zbus::blocking::{Connection, Proxy};
+    // Only in the user's private runtime folder (0700): in a shared /tmp,
+    // another user could plant a link at the name or swap the script before
+    // KWin reads it, and KWin would run their script in this session.
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+        .ok_or_else(|| zbus::Error::Failure("XDG_RUNTIME_DIR not set".into()))?;
     let path = dir.join("knock-focus.js");
-    std::fs::write(&path, kwin_script(pids, project))
-        .map_err(|e| zbus::Error::Failure(e.to_string()))?;
+    let write = || -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = crate::settings::create_with_mode(&path, 0o600)?;
+        f.write_all(kwin_script(pids, project).as_bytes())
+    };
+    write().map_err(|e| zbus::Error::Failure(e.to_string()))?;
     let conn = Connection::session()?;
     let scripting = Proxy::new(
         &conn,
@@ -931,8 +942,13 @@ impl Platform for LinuxPlatform {
         let host = host(&chain)?;
         let pids: Vec<u32> = chain.iter().map(|p| p.pid).collect();
         let token = process.pid as isize;
-        (self.jumps.lock().unwrap_or_else(|e| e.into_inner()))
-            .insert(token, (pids, project.to_string()));
+        let mut jumps = self.jumps.lock().unwrap_or_else(|e| e.into_inner());
+        // A focus follows its lookup at once; old entries are never needed,
+        // so the map can't grow with every session Knock has seen.
+        if jumps.len() >= MAX_JUMPS {
+            jumps.clear();
+        }
+        jumps.insert(token, (pids, project.to_string()));
         Some(Target {
             window: token,
             owner: host.exe.clone(),

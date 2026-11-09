@@ -21,7 +21,8 @@ pub fn init() {
     let Some(dir) = knock_core::paths::log_dir(&knock_core::paths::process_env) else {
         return;
     };
-    if fs::create_dir_all(&dir).is_ok() {
+    // Logs name projects and sessions: owner only (ADR 0037).
+    if crate::settings::make_private_dir(&dir).is_ok() {
         let _ = tracing::subscriber::set_global_default(FileLog::new(dir));
     }
 }

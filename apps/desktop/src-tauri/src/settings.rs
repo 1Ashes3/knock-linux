@@ -297,17 +297,90 @@ fn merge(target: &mut Value, patch: &Value) {
 
 /// Writes `bytes` to a temporary file next to `path`, flushes it to disk,
 /// then replaces `path` with it, so readers see the old or the new file only.
+///
+/// Knock's own files: on unix the result is readable by the owner only
+/// (0600), since they can hold a token or settings (ADR 0037).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    write_atomic_if(path, bytes, || true).map(|_| ())
+    write_atomic_mode(path, bytes, || true, PRIVATE_FILE).map(|_| ())
 }
 
 /// [`write_atomic`], but `still()` is asked just before the replace; `false`
 /// replaces nothing and returns `Ok(false)`. The temporary file is deleted
 /// whenever `path` isn't replaced, since it can hold a token.
+///
+/// For another program's file (Claude Code's settings): on unix the result
+/// keeps the permissions `path` has, so they're never loosened, or 0600 if
+/// there is no file yet.
 pub fn write_atomic_if(
     path: &Path,
     bytes: &[u8],
     still: impl FnOnce() -> bool,
+) -> io::Result<bool> {
+    write_atomic_mode(
+        path,
+        bytes,
+        still,
+        current_mode(path).unwrap_or(PRIVATE_FILE),
+    )
+}
+
+/// Owner read and write only.
+const PRIVATE_FILE: u32 = 0o600;
+
+/// `path`'s permission bits, if it exists (always `None` off unix).
+fn current_mode(path: &Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .ok()
+            .map(|m| m.permissions().mode() & 0o7777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Makes `dir` (created if missing) readable by its owner only on unix:
+/// Knock's data and logs hold tokens, backups and project names. Windows'
+/// per-user folders already are.
+pub fn make_private_dir(dir: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Opens `path` for writing, truncated, with permission bits `mode` on unix
+/// (also when the file was already there).
+pub fn create_with_mode(path: &Path, mode: u32) -> io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        opts.mode(mode);
+        let f = opts.open(path)?;
+        f.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        Ok(f)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+        opts.open(path)
+    }
+}
+
+fn write_atomic_mode(
+    path: &Path,
+    bytes: &[u8],
+    still: impl FnOnce() -> bool,
+    mode: u32,
 ) -> io::Result<bool> {
     use std::io::Write;
     if let Some(dir) = path.parent() {
@@ -317,7 +390,8 @@ pub fn write_atomic_if(
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
     let done = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
+        // The mode is set before any byte is written.
+        let mut f = create_with_mode(&tmp, mode)?;
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
@@ -372,6 +446,37 @@ mod tests {
         spec["cardFadeSeconds"] = Value::from(3);
         assert_eq!(saved, spec);
         assert!(!dir.join("settings.json.tmp").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn knocks_files_are_private_and_claudes_keep_their_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = temp_dir("modes");
+        // Knock's own file: 0600, even replacing a world-readable one.
+        let own = dir.join("server.json");
+        std::fs::write(&own, b"old").unwrap();
+        std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_atomic(&own, b"{}").unwrap();
+        assert_eq!(mode(&own), 0o600);
+        // Another program's file keeps its mode, tighter or looser...
+        for m in [0o600, 0o644] {
+            let theirs = dir.join(format!("claude-{m:o}.json"));
+            std::fs::write(&theirs, b"{}").unwrap();
+            std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(m)).unwrap();
+            assert!(write_atomic_if(&theirs, b"{ }", || true).unwrap());
+            assert_eq!(mode(&theirs), m);
+        }
+        // ...and a new one starts private.
+        let new = dir.join("new.json");
+        write_atomic_if(&new, b"{}", || true).unwrap();
+        assert_eq!(mode(&new), 0o600);
+        // Folders: owner only.
+        let sub = dir.join("data");
+        make_private_dir(&sub).unwrap();
+        assert_eq!(mode(&sub), 0o700);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

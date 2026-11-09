@@ -594,6 +594,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let platform: Arc<dyn Platform> = Arc::new(NativePlatform::new(&window)?);
 
     let dir = settings::data_dir()?;
+    // Holds the server token and Claude settings backups: owner only.
+    if let Err(e) = settings::make_private_dir(&dir) {
+        tracing::warn!(kind = ?e.kind(), "data folder not made private");
+    }
     let first_run = !dir.join(settings::FILE).exists();
     let shared = Shared::default();
     let now = pipeline::now_ms();

@@ -757,7 +757,11 @@ mod tests {
             }
         }
         let _cleanup = Cleanup;
-        let p = WindowsPlatform { strip: 0 };
+        let p = WindowsPlatform {
+            strip: 0,
+            layer: std::sync::atomic::AtomicU8::new(0),
+            shown: std::sync::atomic::AtomicBool::new(false),
+        };
         // A turn-off as the pipeline runs it when the save succeeds.
         let off = || {
             let change = p.set_launch_at_sign_in(false).unwrap();

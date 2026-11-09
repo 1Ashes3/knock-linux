@@ -464,7 +464,12 @@ fn backup(dir: &Path, original: &[u8], now_ms: u64) -> io::Result<PathBuf> {
             _ => format!("settings.{stamp}-{n}.json"),
         };
         let path = dir.join(name);
-        match std::fs::File::create_new(&path) {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        // A backup can hold API keys from the user's settings: owner only.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        match opts.open(&path) {
             Ok(mut f) => {
                 f.write_all(original)?;
                 f.sync_all()?;
@@ -1289,6 +1294,13 @@ mod tests {
         let written = std::fs::read(d.file()).unwrap();
         assert!(!written.starts_with(BOM));
         assert_eq!(v(std::str::from_utf8(&written).unwrap())["model"], "opus");
+        // The backup can hold API keys: owner only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&backup).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
         assert_eq!(std::fs::read(backup).unwrap(), bytes);
     }
 
