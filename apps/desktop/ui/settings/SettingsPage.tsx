@@ -21,7 +21,7 @@ import {
 	selectedMonitor,
 } from "./flow";
 import { WORDS } from "./os";
-import { Characters } from "./Packs";
+import { CharactersSummary } from "./Packs";
 import { Backup, type Update } from "./Setup";
 
 interface Props {
@@ -31,6 +31,8 @@ interface Props {
 	serverError: string | null;
 	onRunSetup(): void;
 	onRepair(): void;
+	/** Opens the Characters page (ADR 0038). */
+	onOpenCharacters(): void;
 }
 
 export function SettingsPage({
@@ -39,6 +41,7 @@ export function SettingsPage({
 	serverError,
 	onRunSetup,
 	onRepair,
+	onOpenCharacters,
 }: Props) {
 	// null until the core answers. Read again whenever the window comes back, so a display
 	// plugged in meanwhile shows up without reopening Settings.
@@ -146,11 +149,10 @@ export function SettingsPage({
 				/>
 			</section>
 
-			<Characters
+			<CharactersSummary
 				value={s.pack}
 				hidden={s.hiddenPacks}
-				onChoose={(pack) => update({ pack })}
-				onShowHidden={() => update({ hiddenPacks: [] })}
+				onOpen={onOpenCharacters}
 			/>
 
 			<section aria-labelledby="notify">

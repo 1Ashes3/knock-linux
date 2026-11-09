@@ -1,11 +1,13 @@
 // The settings window (opened by the core). `?setup=1` starts the setup flow (§10.4);
-// `?repair=1` starts the Repair flow (§8.1, ADR 0023).
-import { useState } from "react";
+// `?repair=1` starts the Repair flow (§8.1, ADR 0023); `?pack=1` opens the Characters page
+// for a .knockpack Knock was opened with (ADR 0038).
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useStore } from "zustand";
 import { call, listen, type Settings } from "../overlay/bridge";
 import { createStripStore } from "../overlay/store";
 import { closeWindow, errorText, invoke, type SetupStatus } from "./core";
+import { Characters, type Dropped } from "./Packs";
 import { SettingsPage } from "./SettingsPage";
 import { Setup } from "./Setup";
 import "./settings.css";
@@ -35,7 +37,7 @@ const loadStatus = () =>
 		}),
 	);
 
-type View = "setup" | "repair" | "settings";
+type View = "setup" | "repair" | "settings" | "packs";
 
 function App(props: { status: SetupStatus; view: View }) {
 	const settings = useStore(store, (s) => s.settings);
@@ -43,12 +45,29 @@ function App(props: { status: SetupStatus; view: View }) {
 	const [view, setView] = useState(props.view);
 	const [run, setRun] = useState(0);
 	const [repairNow, setRepairNow] = useState(false);
+	const [dropped, setDropped] = useState<Dropped | null>(null);
 	document.title =
 		view === "setup"
 			? "Set up Knock"
 			: view === "repair"
 				? "Repair Knock"
-				: "Knock Settings";
+				: view === "packs"
+					? "Knock Characters"
+					: "Knock Settings";
+
+	// A .knockpack opened with Knock, or a file dropped on the window, goes to the
+	// Characters page, where it is offered. Never in the middle of setup or Repair.
+	useEffect(() => {
+		const toPacks = () =>
+			setView((v) => (v === "settings" || v === "packs" ? "packs" : v));
+		void listen<null>("pack-offered", toPacks);
+		void listen<{ paths: string[] }>("tauri://drag-drop", (p) => {
+			const path = p.paths[0];
+			if (!path) return;
+			toPacks();
+			setDropped((d) => ({ path, n: (d?.n ?? 0) + 1 }));
+		});
+	}, []);
 
 	// Back on Settings, the status is read again: a repair may have fixed the connection.
 	const toSettings = async () => {
@@ -62,7 +81,7 @@ function App(props: { status: SetupStatus; view: View }) {
 		setView(next);
 	};
 
-	if (view !== "settings")
+	if (view === "setup" || view === "repair")
 		return (
 			<Setup
 				key={run}
@@ -83,6 +102,26 @@ function App(props: { status: SetupStatus; view: View }) {
 				<p role="status">Loading your settings…</p>
 			</main>
 		);
+	if (view === "packs")
+		return (
+			<main className="settings">
+				<button
+					type="button"
+					className="link back"
+					onClick={() => setView("settings")}
+				>
+					← Settings
+				</button>
+				<h1>Characters</h1>
+				<Characters
+					value={settings.pack}
+					hidden={settings.hiddenPacks}
+					dropped={dropped}
+					onChoose={(pack) => update({ pack })}
+					onShowHidden={() => update({ hiddenPacks: [] })}
+				/>
+			</main>
+		);
 	return (
 		<SettingsPage
 			settings={settings}
@@ -90,6 +129,7 @@ function App(props: { status: SetupStatus; view: View }) {
 			serverError={status.serverError}
 			onRunSetup={() => void open("setup")}
 			onRepair={() => void open("repair", true)}
+			onOpenCharacters={() => setView("packs")}
 		/>
 	);
 }
@@ -99,7 +139,9 @@ const startView = (q: URLSearchParams): View =>
 		? "repair"
 		: q.get("setup") === "1"
 			? "setup"
-			: "settings";
+			: q.get("pack") === "1"
+				? "packs"
+				: "settings";
 
 // Listen first, then load, so nothing sent in between is lost (§8.5).
 await listen<{ settings: Settings }>("settings-changed", (p) =>

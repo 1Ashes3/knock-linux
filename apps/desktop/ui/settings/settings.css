@@ -507,3 +507,15 @@ input[aria-invalid="true"] {
 	border-left: 1px solid var(--line);
 	box-sizing: content-box;
 }
+
+/* Settings' Characters section and the Characters page (ADR 0038). */
+.pack-summary {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 12px;
+}
+
+button.link.back {
+	margin-bottom: 8px;
+}

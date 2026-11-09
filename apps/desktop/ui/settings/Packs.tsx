@@ -45,15 +45,25 @@ interface SheetJson {
 	clips: Record<string, { row: number }>;
 }
 
+/** A file or folder dropped on the window; `n` counts drops, so the same path twice still offers. */
+export interface Dropped {
+	path: string;
+	n: number;
+}
+
+/** The Characters page's body: every pack, adding, removing and choosing. */
 export function Characters({
 	value,
 	hidden,
+	dropped,
 	onChoose,
 	onShowHidden,
 }: {
 	value: string;
 	/** Built-in packs the user removed (`hiddenPacks`). */
 	hidden: string[];
+	/** The window passes drops here; it listens for them on every page. */
+	dropped: Dropped | null;
 	onChoose(id: string): Promise<string | null>;
 	/** "Bring back": clears `hiddenPacks`. */
 	onShowHidden(): Promise<string | null>;
@@ -119,15 +129,15 @@ export function Characters({
 			);
 		take();
 		void listen<null>("pack-offered", take);
-		// A file or folder dropped on this window.
-		void listen<{ paths: string[] }>("tauri://drag-drop", (p) => {
-			setDragging(false);
-			const path = p.paths[0];
-			if (path) void offerPath(path);
-		});
 		void listen<null>("tauri://drag-enter", () => setDragging(true));
 		void listen<null>("tauri://drag-leave", () => setDragging(false));
-	}, [load, offerPath]);
+		void listen<null>("tauri://drag-drop", () => setDragging(false));
+	}, [load]);
+
+	// A file or folder dropped on the window (on this page or on Settings).
+	useEffect(() => {
+		if (dropped) void offerPath(dropped.path);
+	}, [dropped, offerPath]);
 
 	const choose = (pack: string) =>
 		run(
@@ -176,7 +186,7 @@ export function Characters({
 			aria-labelledby={`${id}t`}
 			data-dragging={dragging ? "" : undefined}
 		>
-			<h2 id={`${id}t`}>Characters</h2>
+			<h2 id={`${id}t`}>Packs</h2>
 			<p className="help">
 				Which cast your sessions get. Switching changes the characters on screen
 				at once. To add a pack, choose Add a pack, drop a .knockpack file on
@@ -528,5 +538,68 @@ function SheetPreview({ sheet, url }: { sheet: SheetJson; url: string }) {
 				<img src={url} alt="" draggable={false} style={image} />
 			</span>
 		</span>
+	);
+}
+
+/**
+ * Settings' Characters section: the pack in use and its cast, and the way to the
+ * Characters page, so the main page stays short.
+ */
+export function CharactersSummary({
+	value,
+	hidden,
+	onOpen,
+}: {
+	value: string;
+	hidden: string[];
+	onOpen(): void;
+}) {
+	const id = useId();
+	const [pack, setPack] = useState<PackSummary | null>(null);
+	const [data, setData] = useState<PackData | null>(null);
+	useEffect(() => {
+		const load = () =>
+			void invoke<PackSummary[]>("list_packs").then(
+				async (list) => {
+					const usable = (p: PackSummary) =>
+						p.valid && !(p.builtin && hidden.includes(p.id));
+					const chosen =
+						list.find((p) => p.id === value && usable(p)) ??
+						list.find((p) => p.id === CLASSIC) ??
+						null;
+					setPack(chosen);
+					setData(
+						chosen && chosen.id !== CLASSIC
+							? await invoke<PackData | null>("get_pack", { id: chosen.id })
+							: null,
+					);
+				},
+				() => {},
+			);
+		load();
+		void listen<null>("packs-changed", load);
+	}, [value, hidden]);
+	return (
+		<section aria-labelledby={`${id}t`}>
+			<h2 id={`${id}t`}>Characters</h2>
+			<div className="pack-summary">
+				<span className="pack-text">
+					<span className="help">Your sessions are shown as</span>
+					<strong>{pack?.displayName ?? "…"}</strong>
+				</span>
+				{pack && (
+					<span className="pack-cast" aria-hidden="true">
+						{pack.characters.slice(0, PICTURED).map((c) => (
+							<Preview key={c.id} pack={pack} data={data} character={c} />
+						))}
+					</span>
+				)}
+			</div>
+			<div className="actions start">
+				<button type="button" onClick={onOpen}>
+					Choose characters…
+				</button>
+			</div>
+		</section>
 	);
 }
