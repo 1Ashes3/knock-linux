@@ -2111,6 +2111,7 @@ name = "knock-core"
 version = "0.0.0"
 dependencies = [
  "insta",
+ "libc",
  "proptest",
  "serde",
  "serde_json",

@@ -8,7 +8,7 @@ publish.workspace = true
 [features]
 # The one disk helper: reading a pack folder safely (packs::read_folder).
 # Off by default, so the engine itself stays free of I/O (§7.1).
-fs = []
+fs = ["dep:libc"]
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
@@ -17,3 +17,7 @@ serde_json = "1.0.154"
 [dev-dependencies]
 proptest = "1.12.0"
 insta = { version = "1.49.0", features = ["json"] }
+
+# read_folder opens pack files with O_NOFOLLOW | O_NONBLOCK (feature "fs").
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2.190", optional = true }

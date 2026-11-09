@@ -111,93 +111,76 @@ fn with_head(svg: &str) -> PackFiles {
 const OK_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M0 0" fill="#e0702a"/></svg>"##;
 
 #[test]
-fn part_svgs_are_flat_shapes_with_nothing_that_runs_or_loads() {
+fn part_svgs_are_plain_shapes_on_an_allowlist() {
     assert!(check_pack(&with_head(OK_SVG)).ok());
+    let ok = |inner: &str| {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true">{inner}</svg>"#
+        )
+    };
+    assert!(check_svg(&ok(r##"<g transform="rotate(10 32 32)"><circle cx="1" cy="2" r="3" fill="#abc" stroke="none"/></g>"##)).is_ok());
+    assert!(check_svg(&format!("<?xml version=\"1.0\"?>\n{}", ok(""))).is_ok());
     for (bad, why) in [
-        (
-            r#"<svg viewBox="0 0 64 64"><script>alert(1)</script></svg>"#,
-            "<script",
-        ),
-        (
-            r#"<svg viewBox="0 0 64 64"><path onload="x()"/></svg>"#,
-            "event handler",
-        ),
-        (
-            r#"<svg viewBox="0 0 64 64"><path ONCLICK = "x()"/></svg>"#,
-            "event handler",
-        ),
-        (
-            r#"<svg viewBox="0 0 64 64"><image href="http://x/y.png"/></svg>"#,
-            "<image",
-        ),
-        (
-            r##"<svg viewBox="0 0 64 64"><use href="#a"/></svg>"##,
-            "<use",
-        ),
-        (
-            r#"<svg viewBox="0 0 64 64"><path xlink:href="x"/></svg>"#,
-            "href",
-        ),
-        (
-            r#"<svg viewBox="0 0 64 64"><path fill="url(http://x)"/></svg>"#,
-            "url(",
-        ),
-        (
-            r#"<svg viewBox="0 0 64 64"><style>@import 'x';</style></svg>"#,
-            "<style",
-        ),
-        (
-            r#"<svg viewBox="0 0 64 64"><path style="fill:url(#g)"/></svg>"#,
-            "url(",
-        ),
-        (
-            r#"<svg viewBox="0 0 64 64"><a href="javascript:x"><path/></a></svg>"#,
-            "<a",
-        ),
-        (
-            r#"<svg viewBox="0 0 64 64"><foreignObject/></svg>"#,
-            "<foreignobject",
-        ),
-        (
-            r#"<svg viewBox="0 0 64 64"><set attributeName="x"/></svg>"#,
-            "<set",
-        ),
-        (
-            r#"<svg viewBox="0 0 64 64"><linearGradient/></svg>"#,
-            "<lineargradient",
-        ),
-        (
-            r#"<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY a "aaaa">]><svg viewBox="0 0 64 64">&a;</svg>"#,
-            "not an SVG",
-        ),
-        (
-            r#"<svg viewBox="0 0 64 64"><!ENTITY a "aaaa"><path/></svg>"#,
-            "<!entity",
-        ),
-        (r#"<svg viewBox="0 0 64 64"><![CDATA[x]]></svg>"#, "cdata"),
-        (r#"<svg viewBox="0 0 32 32"><path/></svg>"#, "viewBox"),
-        (
-            r#"<html><svg viewBox="0 0 64 64"></svg></html>"#,
-            "not an SVG",
-        ),
-        ("not svg at all", "not an SVG"),
+        // Elements and attributes outside the allowlist.
+        (ok("<script>alert(1)</script>"), "uses <script>"),
+        (ok(r#"<path onload="x()"/>"#), r#"attribute "onload""#),
+        (ok(r#"<image href="http://x/y.png"/>"#), "uses <image>"),
+        (ok(r##"<use href="#a"/>"##), "uses <use>"),
+        (ok(r#"<path style="fill:red"/>"#), r#"attribute "style""#),
+        (ok(r#"<path id="a" class="b"/>"#), r#"attribute "id""#),
+        (ok("<style>@import 'x';</style>"), "uses <style>"),
+        (ok("<foreignObject/>"), "uses <foreignObject>"),
+        (ok(r#"<set attributeName="x"/>"#), "uses <set>"),
+        (ok("<linearGradient/>"), "uses <linearGradient>"),
+        (ok("<a\r><path/></a>"), "uses <a"),
+        (ok(r#"<path filter="url(#f)"/>"#), r#"attribute "filter""#),
+        // Security review finding 1: namespace prefixes, character references, src.
+        (r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:s="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><s:script>x</s:script></svg>"#.into(), r#"attribute "xmlns:s""#),
+        (ok("<s:script>x</s:script>"), "uses <s:script>"),
+        (ok(r#"<path fill="url&#40;https://example.invalid/t.svg#a)"/>"#), "contains &"),
+        (ok(r#"<h:img src="https://example.invalid/p.png"/>"#), "uses <h:img>"),
+        (ok(r#"<path src="https://example.invalid/p.png"/>"#), r#"attribute "src""#),
+        (ok(r#"<path xlink:href="x"/>"#), r#"attribute "xlink:href""#),
+        (r#"<svg xmlns="http://evil.example/" viewBox="0 0 64 64"></svg>"#.into(), "xmlns must be"),
+        // XML tricks.
+        (r#"<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY a "aaaa">]><svg viewBox="0 0 64 64">&a;</svg>"#.into(), "contains &"),
+        (ok(r#"<!ENTITY a "aaaa"><path/>"#), "<! or <?"),
+        (ok("<![CDATA[x]]>"), "<! or <?"),
+        (ok("<!-- hi -->"), "<! or <?"),
+        (ok("<?php x ?>"), "<! or <?"),
+        (ok("text"), "text inside the drawing"),
+        (format!("{}x", ok("")), "text outside the shapes"),
+        (format!("{}<svg/>", ok("")), "after </svg>"),
+        (ok("<svg viewBox=\"0 0 64 64\"/>"), "<svg> inside the <svg>"),
+        (ok("<g><path/>"), "don't match"),
+        (ok(r#"<path d="M0 0" d="M1 1"/>"#), "sets d twice"),
+        (ok(r#"<path d=M0/>"#), "needs a quoted value"),
+        (ok(r#"<path transform="translate(0;0)"/>"#), "characters that aren't allowed"),
+        (r#"<svg viewBox="0 0 32 32"><path/></svg>"#.into(), "viewBox"),
+        (r#"<html><svg viewBox="0 0 64 64"></svg></html>"#.into(), "uses <html>"),
+        ("not svg at all".into(), "text outside"),
+        // Colors: hex or none only (finding 6).
+        (ok(r#"<path fill="rgb( 255,0,0)"/>"#), "hex color"),
+        (ok(r#"<path fill="currentColor"/>"#), "hex color"),
+        (ok(r#"<path stroke="red"/>"#), "hex color"),
     ] {
-        let e = errors(&with_head(bad));
+        let e = errors(&with_head(&bad));
         assert!(
-            e.iter()
-                .any(|x| x.starts_with("characters/fox/head.svg") && x.contains(why)),
+            e.iter().any(|x| x.starts_with("characters/fox/head.svg") && x.contains(why)),
             "{bad} → {e:#?}"
         );
     }
+    let deep = format!("{}{}", "<g>".repeat(20), "</g>".repeat(20));
+    assert!(check_svg(&ok(&deep)).unwrap_err().contains("too deeply"));
 }
 
 #[test]
-fn colors_are_counted_like_art_check() {
-    let svg = r##"<svg viewBox="0 0 64 64"><path fill="#abc" stroke="#AABBCC" stroke-width="2" fill-opacity="1"/><path style="fill: red; stroke:none"/></svg>"##;
+fn colors_are_counted_per_character() {
+    let svg = r##"<svg viewBox="0 0 64 64"><path fill="#abc" stroke="#AABBCC" stroke-width="2" fill-opacity="1"/><path fill="#E0702A" stroke="none"/></svg>"##;
     let mut c = check_svg(svg).unwrap();
     c.sort();
     c.dedup();
-    assert_eq!(c, ["#aabbcc", "red"]);
+    assert_eq!(c, ["#aabbcc", "#e0702a"]);
     let many = (0..7)
         .map(|i| format!(r##"<path fill="#00000{i}"/>"##))
         .collect::<String>();
@@ -272,14 +255,76 @@ fn rigs_need_every_part_and_their_files() {
     rejects(&f, "missing required part head");
 }
 
-/// A PNG header of `w`×`h`; enough for [`png_size`].
-fn png(w: u32, h: u32) -> Vec<u8> {
+/// Security review finding 3: a rig has exactly the 10 parts, nothing else.
+#[test]
+fn rigs_are_typed_with_exactly_the_ten_parts() {
+    let fox: serde_json::Value =
+        serde_json::from_slice(&builtin()["characters/fox/rig.json"]).unwrap();
+    let set = |rig: serde_json::Value| {
+        let mut f = builtin();
+        f.insert(
+            "characters/fox/rig.json".into(),
+            rig.to_string().into_bytes(),
+        );
+        f
+    };
+    let mut extra = fox.clone();
+    extra["extraTopLevelField"] = true.into();
+    rejects(&set(extra), "unknown field");
+    let mut odd = fox.clone();
+    odd["parts"].as_array_mut().unwrap().push(serde_json::json!(
+        {"name": "\"><script>bad</script>", "file": "body.svg", "pivot": [0, 0], "z": 7}
+    ));
+    rejects(&set(odd), "isn't one of body");
+    let mut twice = fox.clone();
+    let body = twice["parts"][2].clone();
+    twice["parts"].as_array_mut().unwrap().push(body);
+    rejects(&set(twice), "part body: listed twice");
+    let mut field = fox.clone();
+    field["parts"][0]["onload"] = "x".into();
+    rejects(&set(field), "unknown field");
+    let mut huge = fox;
+    huge["parts"][0]["z"] = 1e300.into();
+    rejects(&set(huge), "pivot and z must be plain numbers");
+}
+
+/// Security review finding 2: every file in a character's folder is used,
+/// so none goes unchecked.
+#[test]
+fn files_a_character_doesnt_use_are_refused() {
+    for (extra, bytes) in [
+        (
+            "unreferenced.svg",
+            b"<svg><script>x</script></svg>".to_vec(),
+        ),
+        ("extra.json", b"{}".to_vec()),
+        ("extra.png", png(8, 8)),
+    ] {
+        let mut f = builtin();
+        f.insert(format!("characters/fox/{extra}"), bytes);
+        rejects(
+            &f,
+            &format!("characters/fox/{extra}: not used by its character"),
+        );
+    }
+    let mut s = sheet_pack(sheet(five_clips()), png(192, 160));
+    s.insert("characters/frog/other.png".into(), png(8, 8));
+    rejects(&s, "characters/frog/other.png: not used");
+}
+
+/// A PNG's header and end, enough for [`png_size`] (no pixel data).
+fn png_with(w: u32, h: u32, depth: u8, color: u8) -> Vec<u8> {
     let mut b = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13];
     b.extend(b"IHDR");
     b.extend(w.to_be_bytes());
     b.extend(h.to_be_bytes());
-    b.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    b.extend([depth, color, 0, 0, 0, 0, 0, 0, 0]);
+    b.extend([0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82]);
     b
+}
+
+fn png(w: u32, h: u32) -> Vec<u8> {
+    png_with(w, h, 8, 6)
 }
 
 fn sheet_pack(sheet: serde_json::Value, image: Vec<u8>) -> PackFiles {
@@ -361,6 +406,73 @@ fn sprite_sheets() {
     rejects(&sheet_pack(s, png(192, 160)), "unknown field");
 }
 
+/// Security review finding 4: well-formed PNGs only, and a pixel budget.
+#[test]
+fn png_headers_are_strict_and_pixels_are_budgeted() {
+    assert_eq!(png_size(&png_with(64, 64, 4, 3)), Some((64, 64)), "palette");
+    let mut lie = png(4096, 4096);
+    lie[8..12].copy_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+    assert_eq!(png_size(&lie), None, "IHDR length must be 13");
+    assert_eq!(png_size(&png_with(64, 64, 16, 6)), None, "16-bit");
+    assert_eq!(png_size(&png_with(64, 64, 8, 2)), None, "RGB without alpha");
+    let mut cut = png(64, 64);
+    cut.truncate(cut.len() - 12);
+    assert_eq!(png_size(&cut), None, "no IEND");
+    // Sixteen 1024×1024 sheets fit; one more megapixel doesn't.
+    let mut f = PackFiles::new();
+    let ids: Vec<String> = (0..16).map(|i| format!("c{i}")).collect();
+    let m = serde_json::json!({"format": 1, "id": "big", "displayName": "Big", "characters": ids});
+    f.insert("pack.json".into(), m.to_string().into_bytes());
+    for (i, id) in ids.iter().enumerate() {
+        let mut sh = sheet(five_clips());
+        sh["id"] = id.clone().into();
+        sh["image"] = "s.png".into();
+        f.insert(
+            format!("characters/{id}/sheet.json"),
+            sh.to_string().into_bytes(),
+        );
+        let side = if i == 0 { 1100 } else { 1024 };
+        f.insert(format!("characters/{id}/s.png"), png(side, 1024));
+    }
+    rejects(&f, "megapixels, at most 16 allowed");
+}
+
+/// Security review finding 6: clips have limits.
+#[test]
+fn clips_have_limits() {
+    let set = |clip: serde_json::Value| {
+        let mut f = builtin();
+        f.insert("clips/knock.json".into(), clip.to_string().into_bytes());
+        f
+    };
+    let base = || serde_json::json!({"name": "knock", "loop": true, "durationMs": 1000, "tracks": {}, "swaps": []});
+    let mut long = base();
+    long["durationMs"] = 1e300.into();
+    rejects(&set(long), "at most 60000");
+    let mut many = base();
+    let keys: Vec<_> = (0..300).map(|t| serde_json::json!({"t": t})).collect();
+    many["tracks"]["head"] = keys.into();
+    rejects(&set(many), "at most 256 keyframes");
+    for (field, value) in [
+        ("x", 1e9),
+        ("rot", 99999.0),
+        ("scaleX", -1.0),
+        ("alpha", 2.0),
+    ] {
+        let mut c = base();
+        c["tracks"]["head"] = serde_json::json!([{ "t": 0, field: value }]);
+        rejects(&set(c), &format!("{field} must be from"));
+    }
+    let mut swaps = base();
+    let s: Vec<_> = (0..65)
+        .map(
+            |_| serde_json::json!({"from": "eyes_open", "to": "eyes_closed", "start": 0, "end": 1}),
+        )
+        .collect();
+    swaps["swaps"] = s.into();
+    rejects(&set(swaps), "at most 64 swaps");
+}
+
 #[test]
 fn pack_clips_replace_shared_ones_for_rigs_only() {
     let mut f = builtin();
@@ -431,17 +543,52 @@ mod folder {
     }
 
     #[test]
-    fn deep_or_huge_folders_stop_early() {
+    fn unexpected_folders_names_and_huge_folders_stop_early() {
         let d = temp("deep");
         std::fs::create_dir_all(d.join("a/b/c")).unwrap();
-        std::fs::write(d.join("a/b/c/x.svg"), b"").unwrap();
-        assert!(read_folder(&d).unwrap_err().contains("nest too deep"));
+        assert!(
+            read_folder(&d)
+                .unwrap_err()
+                .contains("a: not a folder a pack may contain")
+        );
+        std::fs::remove_dir_all(&d).unwrap();
+        let d = temp("nested");
+        std::fs::create_dir_all(d.join("characters/fox/more")).unwrap();
+        let e = read_folder(&d).unwrap_err();
+        assert!(e.contains("characters/fox/more: not a folder"), "{e}");
+        std::fs::remove_dir_all(&d).unwrap();
+        // A badly named file is refused before it is read.
+        let d = temp("name");
+        std::fs::write(d.join("movie.mkv"), b"").unwrap();
+        assert_eq!(
+            read_folder(&d).unwrap_err(),
+            "movie.mkv: not a file a pack may contain"
+        );
         std::fs::remove_dir_all(&d).unwrap();
         let d = temp("many");
+        std::fs::create_dir_all(d.join("characters/fox")).unwrap();
         for i in 0..301 {
-            std::fs::write(d.join(format!("f{i}")), b"").unwrap();
+            std::fs::write(d.join(format!("characters/fox/f{i}.svg")), b"").unwrap();
         }
         assert!(read_folder(&d).unwrap_err().contains("more than 300 files"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Security review finding 5: a named pipe is refused, never waited on.
+    #[cfg(unix)]
+    #[test]
+    fn a_named_pipe_is_refused_without_blocking() {
+        let d = temp("fifo");
+        let fifo = d.join("README.md");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            read_folder(&d).unwrap_err(),
+            "README.md: not a regular file"
+        );
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

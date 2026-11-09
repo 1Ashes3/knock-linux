@@ -65,6 +65,24 @@ pub const MAX_PNG_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_IMAGE_SIDE: u32 = 4096;
 pub const MAX_CHARACTERS: usize = 16;
 pub const MAX_FRAMES: u32 = 64;
+/// Clip limits (security review finding 6).
+pub const MAX_CLIP_MS: f64 = 60_000.0;
+pub const MAX_KEYFRAMES: usize = 256;
+pub const MAX_SWAPS: usize = 64;
+
+/// The range a keyframe field may take.
+fn field_range(field: &str) -> Option<(f64, f64)> {
+    match field {
+        "x" | "y" => Some((-256.0, 256.0)),
+        "rot" => Some((-3600.0, 3600.0)),
+        "scaleX" | "scaleY" => Some((0.0, 16.0)),
+        "alpha" => Some((0.0, 1.0)),
+        _ => None,
+    }
+}
+
+/// All sprite sheets together, in pixels: 64 MB once decoded.
+pub const MAX_PACK_PIXELS: u64 = 16 * 1024 * 1024;
 
 /// A pack's files: path relative to the pack folder with `/` separators →
 /// contents.
@@ -241,6 +259,9 @@ pub fn check_pack(files: &PackFiles) -> PackCheck {
     }
 
     let mut rig_parts: Vec<(String, BTreeSet<String>)> = Vec::new();
+    // Every file a character uses, and the sheets' total pixels.
+    let mut used: BTreeSet<String> = BTreeSet::new();
+    let mut pixels: u64 = 0;
     for id in &manifest.characters {
         let rig = files.get(&format!("characters/{id}/rig.json"));
         let sheet = files.get(&format!("characters/{id}/sheet.json"));
@@ -253,11 +274,14 @@ pub fn check_pack(files: &PackFiles) -> PackCheck {
                 errors.push(format!("characters/{id}: needs rig.json or sheet.json"));
                 continue;
             }
-            (Some(bytes), None) => check_rig(id, bytes, files, errors).map(|(name, parts)| {
-                rig_parts.push((id.clone(), parts));
-                (name, Kind::Rig)
-            }),
-            (None, Some(bytes)) => check_sheet(id, bytes, files, errors).map(|n| (n, Kind::Sheet)),
+            (Some(bytes), None) => {
+                check_rig(id, bytes, files, &mut used, errors).map(|(name, parts)| {
+                    rig_parts.push((id.clone(), parts));
+                    (name, Kind::Rig)
+                })
+            }
+            (None, Some(bytes)) => check_sheet(id, bytes, files, &mut used, &mut pixels, errors)
+                .map(|n| (n, Kind::Sheet)),
         };
         if let Some((display_name, kind)) = info {
             out.characters.push(CharacterInfo {
@@ -266,6 +290,22 @@ pub fn check_pack(files: &PackFiles) -> PackCheck {
                 kind,
             });
         }
+    }
+
+    // Security review finding 2: a file nobody uses is never checked, so
+    // it may not be in the pack at all.
+    for path in files.keys() {
+        if matches!(place(path), Some(Place::Character(..))) && !used.contains(path) {
+            errors.push(format!("{path}: not used by its character; remove it"));
+        }
+    }
+    // Finding 4: decoded images take 4 bytes a pixel, whatever the PNG's size.
+    if pixels > MAX_PACK_PIXELS {
+        errors.push(format!(
+            "the sprite sheets add up to {} megapixels, at most {} allowed",
+            pixels / 1_000_000,
+            MAX_PACK_PIXELS / 1_000_000
+        ));
     }
 
     for (path, bytes) in files {
@@ -356,67 +396,87 @@ fn is_num(v: &Value) -> bool {
     v.as_f64().is_some_and(f64::is_finite)
 }
 
+/// `rig.json` (§8.7). Typed, so unknown fields are refused (security
+/// review finding 3).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RigFile {
+    id: String,
+    display_name: String,
+    view_box: [f64; 4],
+    parts: Vec<RigPartFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RigPartFile {
+    name: String,
+    file: String,
+    pivot: [f64; 2],
+    z: f64,
+}
+
 /// A rig: its display name and part names, or `None` if it can't be used.
+/// It has exactly the 10 [`REQUIRED_PARTS`], each once.
 fn check_rig(
     id: &str,
     bytes: &[u8],
     files: &PackFiles,
+    used: &mut BTreeSet<String>,
     errors: &mut Vec<String>,
 ) -> Option<(String, BTreeSet<String>)> {
     let path = format!("characters/{id}/rig.json");
+    used.insert(path.clone());
     let before = errors.len();
-    let Ok(rig) = serde_json::from_slice::<Value>(bytes) else {
-        errors.push(format!("{path}: not valid JSON"));
-        return None;
+    let rig: RigFile = match serde_json::from_slice(bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            errors.push(format!("{path}: {}", serde_message(&e)));
+            return None;
+        }
     };
-    let Some(rig) = rig.as_object() else {
-        errors.push(format!("{path}: must be an object"));
-        return None;
-    };
-    if rig.get("id").and_then(Value::as_str) != Some(id) {
+    if rig.id != id {
         errors.push(format!("{path}: id must be \"{id}\""));
     }
-    let name = rig.get("displayName").and_then(Value::as_str).unwrap_or("");
-    if !(1..=64).contains(&name.trim().len()) {
+    if !(1..=64).contains(&rig.display_name.trim().len()) {
         errors.push(format!("{path}: displayName must be 1-64 characters"));
     }
-    let view_box = rig.get("viewBox").and_then(Value::as_array);
-    if view_box.map(|v| v.iter().map(Value::as_f64).collect::<Vec<_>>())
-        != Some(VIEW_BOX.iter().map(|&n| Some(n)).collect())
-    {
+    if rig.view_box != VIEW_BOX {
         errors.push(format!("{path}: viewBox must be [0, 0, 64, 64]"));
     }
-    let Some(parts) = rig.get("parts").and_then(Value::as_array) else {
-        errors.push(format!("{path}: parts must be a list"));
-        return None;
-    };
     let mut names = BTreeSet::new();
     let mut colors = BTreeSet::new();
-    for p in parts {
-        let Some(part) = p.get("name").and_then(Value::as_str) else {
-            errors.push(format!("{path}: every part needs a name"));
+    for p in &rig.parts {
+        let at = format!("characters/{id} part {}", p.name);
+        if !REQUIRED_PARTS.contains(&p.name.as_str()) {
+            errors.push(format!(
+                "{path}: part {:?} isn't one of {}",
+                p.name,
+                REQUIRED_PARTS.join(", ")
+            ));
             continue;
-        };
-        let at = format!("characters/{id} part {part}");
-        if !names.insert(part.to_string()) {
-            errors.push(format!("{at}: duplicate part"));
         }
-        let pivot = p.get("pivot").and_then(Value::as_array);
-        if !pivot.is_some_and(|v| v.len() == 2 && v.iter().all(is_num)) {
-            errors.push(format!("{at}: pivot must be [x, y]"));
+        if !names.insert(p.name.clone()) {
+            errors.push(format!("{at}: listed twice"));
         }
-        if !p.get("z").is_some_and(is_num) {
-            errors.push(format!("{at}: z must be a number"));
+        if !p
+            .pivot
+            .iter()
+            .chain([&p.z])
+            .all(|n| n.is_finite() && n.abs() <= 1024.0)
+        {
+            errors.push(format!("{at}: pivot and z must be plain numbers"));
         }
-        let file = p.get("file").and_then(Value::as_str).unwrap_or("");
-        if !is_file_name(file) || ext(file) != "svg" {
+        if !is_file_name(&p.file) || ext(&p.file) != "svg" {
             errors.push(format!(
                 "{at}: file must be an .svg file in the character's folder"
             ));
             continue;
         }
-        let Some(svg) = files.get(&format!("characters/{id}/{file}")) else {
-            errors.push(format!("{at}: file {file} is missing"));
+        let file = format!("characters/{id}/{}", p.file);
+        used.insert(file.clone());
+        let Some(svg) = files.get(&file) else {
+            errors.push(format!("{at}: file {} is missing", p.file));
             continue;
         };
         match std::str::from_utf8(svg)
@@ -424,7 +484,7 @@ fn check_rig(
             .and_then(check_svg)
         {
             Ok(c) => colors.extend(c),
-            Err(why) => errors.push(format!("characters/{id}/{file}: {why}")),
+            Err(why) => errors.push(format!("{file}: {why}")),
         }
     }
     for r in REQUIRED_PARTS {
@@ -438,143 +498,250 @@ fn check_rig(
             colors.len()
         ));
     }
-    (errors.len() == before).then(|| (name.trim().to_string(), names))
+    (errors.len() == before).then(|| (rig.display_name.trim().to_string(), names))
 }
 
-/// Markup a pack SVG may never contain. Flat shapes only (§8.7), and
-/// nothing that runs, loads, links or expands: scripts, event handlers,
-/// external or internal references, CSS, entities.
-const FORBIDDEN: &[&str] = &[
-    "<!doctype",
-    "<!entity",
-    "<script",
-    "<foreignobject",
-    "<image",
-    "<use",
-    "<style",
-    "<iframe",
-    "<object",
-    "<embed",
-    "<a ",
-    "<a>",
-    "<a\n",
-    "<a\t",
-    "<animate",
-    "<set",
-    "<lineargradient",
-    "<radialgradient",
-    "<filter",
-    "<pattern",
-    "<mask",
-    "<clippath",
-    "<mpath",
-    "<feimage",
-    "href",
-    "url(",
-    "@import",
-    "javascript:",
-    "data:",
-    "<![cdata[",
+/// serde's message, which names the field, without the line and column.
+fn serde_message(e: &serde_json::Error) -> String {
+    e.to_string()
+        .split(" at line")
+        .next()
+        .unwrap_or("invalid")
+        .to_string()
+}
+
+/// The SVG namespace, the only one a part SVG may name.
+const SVG_NS: &str = "http://www.w3.org/2000/svg";
+
+/// The elements a part SVG may use: plain shapes (§8.7, ADR 0038).
+pub const SVG_ELEMENTS: [&str; 9] = [
+    "svg", "g", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon",
 ];
 
-/// Checks one part SVG; returns its colors (`fill`, `stroke`, `stop-color`).
+/// The attributes a part SVG may use: geometry, paint and `transform`.
+/// Nothing that names a resource (`href`, `src`, `style`, `class`, `id`,
+/// `filter`, `mask`, `clip-path`…) and no `on…` handlers.
+pub const SVG_ATTRIBUTES: [&str; 31] = [
+    "xmlns",
+    "viewBox",
+    "aria-hidden",
+    "d",
+    "x",
+    "y",
+    "x1",
+    "y1",
+    "x2",
+    "y2",
+    "cx",
+    "cy",
+    "r",
+    "rx",
+    "ry",
+    "width",
+    "height",
+    "points",
+    "fill",
+    "fill-opacity",
+    "fill-rule",
+    "stroke",
+    "stroke-width",
+    "stroke-opacity",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-miterlimit",
+    "stroke-dasharray",
+    "stroke-dashoffset",
+    "opacity",
+    "transform",
+];
+
+/// Deepest element nesting a part may use.
+const MAX_SVG_DEPTH: usize = 16;
+
+/// Checks one part SVG and returns its colors (`fill` and `stroke`).
+///
+/// An allowlist, not a blocklist (security review finding 1): the file is
+/// read as a strict subset of XML, so nothing can hide behind namespace
+/// prefixes, character references or attributes a blocklist forgot.
+/// - Only an optional `<?xml …?>` declaration, then one `<svg>` with
+///   `viewBox="0 0 64 64"`; whitespace between tags, never text.
+/// - Elements from [`SVG_ELEMENTS`], attributes from [`SVG_ATTRIBUTES`],
+///   each once, no prefixes (`:`); `xmlns` only on `<svg>`, only the SVG
+///   namespace.
+/// - No `&` anywhere (entities, character references), no `<!` (comments,
+///   CDATA, DOCTYPE) and no other `<?`.
+/// - Colors are `none` or hex (`#rgb`, `#rrggbb`); other values are plain
+///   numbers, words and path data.
 pub fn check_svg(svg: &str) -> Result<Vec<String>, String> {
-    let body = svg.trim();
-    let after_decl = match body.strip_prefix("<?xml") {
-        Some(rest) => rest.split_once("?>").map_or("", |(_, r)| r).trim_start(),
-        None => body,
-    };
-    let opens = after_decl
-        .strip_prefix("<svg")
-        .is_some_and(|r| r.starts_with(|c: char| c.is_whitespace() || c == '>'));
-    if !opens || !body.ends_with("</svg>") {
-        return Err("is not an SVG file".into());
+    if svg.contains('&') {
+        return Err("contains &; entities and character references aren't allowed".into());
     }
-    if !svg.contains(r#"viewBox="0 0 64 64""#) {
+    let mut rest = svg.trim();
+    if let Some(after) = rest.strip_prefix("<?xml") {
+        let (decl, after) = after.split_once("?>").ok_or("is not an SVG file")?;
+        if decl.contains('<') {
+            return Err("is not an SVG file".into());
+        }
+        rest = after.trim_start();
+    }
+    let mut colors = Vec::new();
+    let mut open: Vec<&str> = Vec::new();
+    let (mut saw_root, mut view_box) = (false, false);
+    loop {
+        let Some(i) = rest.find('<') else {
+            if !rest.trim().is_empty() {
+                return Err("has text outside the shapes; only shapes are allowed".into());
+            }
+            break;
+        };
+        if !rest[..i].trim().is_empty() {
+            return Err("has text inside the drawing; only shapes are allowed".into());
+        }
+        if saw_root && open.is_empty() {
+            return Err("has something after </svg>".into());
+        }
+        rest = &rest[i + 1..];
+        if rest.starts_with('!') || rest.starts_with('?') {
+            return Err("contains a comment, CDATA, DOCTYPE or instruction (<! or <?)".into());
+        }
+        let end = rest.find('>').ok_or("has an unfinished tag")?;
+        let (tag, after) = (&rest[..end], &rest[end + 1..]);
+        rest = after;
+        if let Some(name) = tag.strip_prefix('/') {
+            if open.pop() != Some(name.trim()) {
+                return Err("has tags that don't match".into());
+            }
+            continue;
+        }
+        let (tag, closed) = match tag.strip_suffix('/') {
+            Some(t) => (t, true),
+            None => (tag, false),
+        };
+        let name_end = tag
+            .find(|c: char| c.is_ascii_whitespace())
+            .unwrap_or(tag.len());
+        let name = &tag[..name_end];
+        if !SVG_ELEMENTS.contains(&name) {
+            return Err(format!(
+                "uses <{name}>; only {} are allowed",
+                SVG_ELEMENTS.join(", ")
+            ));
+        }
+        match (saw_root, name) {
+            (false, "svg") => saw_root = true,
+            (false, _) => return Err("is not an SVG file".into()),
+            (true, "svg") => return Err("has an <svg> inside the <svg>".into()),
+            _ => {}
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        let mut attrs = &tag[name_end..];
+        loop {
+            attrs = attrs.trim_start();
+            if attrs.is_empty() {
+                break;
+            }
+            let eq = attrs
+                .find('=')
+                .ok_or(format!("<{name}> has an attribute without a value"))?;
+            let attr = attrs[..eq].trim_end();
+            if !SVG_ATTRIBUTES.contains(&attr) {
+                return Err(format!("uses the attribute {attr:?}, which isn't allowed"));
+            }
+            if seen.contains(&attr) {
+                return Err(format!("<{name}> sets {attr} twice"));
+            }
+            seen.push(attr);
+            let v = attrs[eq + 1..].trim_start();
+            let quote = v.chars().next().filter(|c| *c == '"' || *c == '\'');
+            let quote = quote.ok_or(format!("{attr} needs a quoted value"))?;
+            let close = v[1..]
+                .find(quote)
+                .ok_or(format!("{attr} has an unfinished value"))?;
+            let value = &v[1..1 + close];
+            attrs = &v[close + 2..];
+            check_value(name, attr, value, &mut colors, &mut view_box)?;
+        }
+        if !closed {
+            if open.len() >= MAX_SVG_DEPTH {
+                return Err("nests elements too deeply".into());
+            }
+            open.push(name);
+        }
+    }
+    if !saw_root || !open.is_empty() {
+        return Err("is not a complete SVG file".into());
+    }
+    if !view_box {
         return Err(r#"must use viewBox="0 0 64 64""#.into());
     }
-    let lower = svg.to_ascii_lowercase();
-    if let Some(bad) = FORBIDDEN.iter().find(|f| lower.contains(*f)) {
-        return Err(format!(
-            "must be flat shapes only; it contains {:?}",
-            bad.trim()
-        ));
-    }
-    if has_event_handler(&lower) {
-        return Err("must be flat shapes only; it has an event handler (on…=)".into());
-    }
-    Ok(colors(&lower))
+    Ok(colors)
 }
 
-/// An attribute like ` onload=` or ` onclick =`.
-fn has_event_handler(lower: &str) -> bool {
-    let b = lower.as_bytes();
-    (1..b.len().saturating_sub(2)).any(|i| {
-        if !(b[i - 1].is_ascii_whitespace() || b[i - 1] == b'"' || b[i - 1] == b'\'')
-            || &b[i..i + 2] != b"on"
-        {
-            return false;
+/// One attribute's value: see [`check_svg`].
+fn check_value(
+    element: &str,
+    attr: &str,
+    value: &str,
+    colors: &mut Vec<String>,
+    view_box: &mut bool,
+) -> Result<(), String> {
+    match attr {
+        "xmlns" if element == "svg" && value == SVG_NS => return Ok(()),
+        "xmlns" => return Err(format!("xmlns must be {SVG_NS:?}, on <svg> only")),
+        "viewBox" if element == "svg" => {
+            let parts: Vec<&str> = value.split([' ', ',']).filter(|p| !p.is_empty()).collect();
+            if parts != ["0", "0", "64", "64"] {
+                return Err(r#"must use viewBox="0 0 64 64""#.into());
+            }
+            *view_box = true;
+            return Ok(());
         }
-        let mut j = i + 2;
-        let start = j;
-        while j < b.len() && b[j].is_ascii_alphabetic() {
-            j += 1;
-        }
-        while j < b.len() && b[j].is_ascii_whitespace() {
-            j += 1;
-        }
-        j > start && j < b.len() && b[j] == b'='
-    })
-}
-
-/// Color values, normalized: `#abc` becomes `#aabbcc`; `none` and
-/// `transparent` don't count.
-fn colors(lower: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for key in ["fill", "stroke", "stop-color"] {
-        let mut rest = lower;
-        while let Some(i) = rest.find(key) {
-            let before_ok = i == 0
-                || !rest.as_bytes()[i - 1].is_ascii_alphanumeric()
-                    && rest.as_bytes()[i - 1] != b'-';
-            rest = &rest[i + key.len()..];
-            let after = rest.trim_start();
-            let Some(v) = after.strip_prefix('=').or_else(|| after.strip_prefix(':')) else {
-                continue;
+        "fill" | "stroke" => {
+            let v = value.trim().to_ascii_lowercase();
+            let hex = |h: &str| {
+                (h.len() == 3 || h.len() == 6) && h.bytes().all(|b| b.is_ascii_hexdigit())
             };
-            if !before_ok {
-                continue;
-            }
-            let v = v.trim_start().trim_start_matches(['"', '\'']);
-            let end = v
-                .find(['"', '\'', ';', ' ', '>', '\n', '/'])
-                .unwrap_or(v.len());
-            let c = &v[..end];
-            if c.is_empty() || c == "none" || c == "transparent" {
-                continue;
-            }
-            let c = match c.strip_prefix('#') {
-                Some(h) if h.len() == 3 => {
+            match v.strip_prefix('#') {
+                _ if v == "none" => {}
+                Some(h) if hex(h) => colors.push(if h.len() == 3 {
                     h.chars()
-                        .flat_map(|x| [x, x])
-                        .fold(String::from("#"), |mut s, x| {
-                            s.push(x);
+                        .flat_map(|c| [c, c])
+                        .fold(String::from("#"), |mut s, c| {
+                            s.push(c);
                             s
                         })
-                }
-                _ => c.to_string(),
-            };
-            out.push(c);
+                } else {
+                    v.clone()
+                }),
+                _ => return Err(format!("{attr} must be none or a hex color like #e0702a")),
+            }
+            return Ok(());
         }
+        _ => {}
     }
-    out
+    // Numbers, words (round, nonzero, true) and path data; `transform`
+    // also needs its parentheses.
+    let extra = if attr == "transform" { "()" } else { "" };
+    let plain = value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || " .,+-%\t\n\r".contains(c) || extra.contains(c));
+    if !plain {
+        return Err(format!("{attr} has characters that aren't allowed"));
+    }
+    Ok(())
 }
 
-/// Reads the pack folder `dir` into [`PackFiles`] without trusting it: no
-/// links are followed (one could point at `~/.ssh`), only regular files are
-/// read, at most three levels deep, and reading stops as soon as the file
-/// count or total size passes the limits. [`check_pack`] then checks the
-/// rest. Errors are plain words naming the file, never its content.
+/// Reads the pack folder `dir` into [`PackFiles`] without trusting it
+/// (security review finding 5): only the folders and file names a pack may
+/// have ([`place`]), checked before anything is read; no links followed (one
+/// could point at `~/.ssh`); only regular files, opened without following a
+/// link or blocking on a pipe and checked again once open; and reading stops
+/// as soon as the file count or total size passes the limits. [`check_pack`]
+/// then checks the rest. Errors name the file, never its content.
+///
+/// Left open: another process running as the same user could swap a folder
+/// for a link between listing and reading it. That process could read the
+/// user's files anyway.
 #[cfg(feature = "fs")]
 pub fn read_folder(dir: &std::path::Path) -> Result<PackFiles, String> {
     use std::io::Read;
@@ -585,8 +752,8 @@ pub fn read_folder(dir: &std::path::Path) -> Result<PackFiles, String> {
     }
     let mut files = PackFiles::new();
     let mut total: u64 = 0;
-    let mut todo = vec![(dir.to_path_buf(), String::new(), 0usize)];
-    while let Some((path, prefix, depth)) = todo.pop() {
+    let mut todo = vec![(dir.to_path_buf(), String::new())];
+    while let Some((path, prefix)) = todo.pop() {
         let entries =
             std::fs::read_dir(&path).map_err(|e| format!("{prefix}: can't read ({})", e.kind()))?;
         for entry in entries {
@@ -608,14 +775,19 @@ pub fn read_folder(dir: &std::path::Path) -> Result<PackFiles, String> {
                 return Err(format!("{rel}: links are not allowed in a pack"));
             }
             if kind.is_dir() {
-                if depth >= 2 {
-                    return Err(format!("{rel}: folders nest too deep for a pack"));
+                if !pack_folder(&rel) {
+                    return Err(format!("{rel}: not a folder a pack may contain"));
                 }
-                todo.push((entry.path(), rel, depth + 1));
+                todo.push((entry.path(), rel));
                 continue;
             }
             if !kind.is_file() {
                 return Err(format!("{rel}: not a regular file"));
+            }
+            // Checked before reading, so a big file with a wrong name is
+            // never read.
+            if place(&rel).is_none() {
+                return Err(format!("{rel}: not a file a pack may contain"));
             }
             if files.len() >= MAX_FILES {
                 return Err(format!("the pack has more than {MAX_FILES} files"));
@@ -624,7 +796,7 @@ pub fn read_folder(dir: &std::path::Path) -> Result<PackFiles, String> {
             let mut bytes = Vec::new();
             // At most one byte past what's left, so a growing file can't
             // slip past the limit between a size check and the read.
-            std::fs::File::open(entry.path())
+            open_plain(&entry.path())
                 .and_then(|f| f.take(left + 1).read_to_end(&mut bytes))
                 .map_err(|e| format!("{rel}: can't read ({})", e.kind()))?;
             total += bytes.len() as u64;
@@ -640,23 +812,66 @@ pub fn read_folder(dir: &std::path::Path) -> Result<PackFiles, String> {
     Ok(files)
 }
 
-/// A PNG's width and height from its header, or `None` if it isn't a PNG.
+/// The folders a pack may have: `clips`, `characters` and
+/// `characters/<id>`.
+#[cfg(feature = "fs")]
+fn pack_folder(rel: &str) -> bool {
+    match rel.split('/').collect::<Vec<_>>().as_slice() {
+        ["clips" | "characters"] => true,
+        ["characters", id] => is_id(id),
+        _ => false,
+    }
+}
+
+/// Opens a regular file for reading without following a link at its name
+/// or blocking on a pipe (unix), and checks what was opened is a regular
+/// file.
+#[cfg(feature = "fs")]
+fn open_plain(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut opts, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let f = opts.open(path)?;
+    if !f.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    Ok(f)
+}
+
+/// A PNG's width and height, or `None` unless it is a well-formed PNG a
+/// sheet may use (security review finding 4): a 13-byte `IHDR` first, 8-bit
+/// RGBA or a palette of up to 8 bits, standard compression and filter, and
+/// the `IEND` chunk last. Pixel data isn't decoded here; the limits on the
+/// image's sides and the pack's total pixels bound what decoding can cost.
 pub fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
     const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-    if bytes.len() < 24 || bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
+    const IEND: [u8; 12] = [0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82];
+    if bytes.len() < 8 + 25 + 12
+        || bytes[..8] != SIGNATURE
+        || bytes[8..12] != [0, 0, 0, 13]
+        || &bytes[12..16] != b"IHDR"
+        || !bytes.ends_with(&IEND)
+    {
         return None;
     }
     let be = |i: usize| u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
-    Some((be(16), be(20)))
+    let (depth, color, compression, filter, interlace) =
+        (bytes[24], bytes[25], bytes[26], bytes[27], bytes[28]);
+    let pixels_ok = matches!((color, depth), (6, 8) | (3, 1 | 2 | 4 | 8));
+    (pixels_ok && compression == 0 && filter == 0 && interlace <= 1).then(|| (be(16), be(20)))
 }
 
 fn check_sheet(
     id: &str,
     bytes: &[u8],
     files: &PackFiles,
+    used: &mut BTreeSet<String>,
+    pixels: &mut u64,
     errors: &mut Vec<String>,
 ) -> Option<String> {
     let path = format!("characters/{id}/sheet.json");
+    used.insert(path.clone());
     let before = errors.len();
     let sheet: Sheet = match serde_json::from_slice(bytes) {
         Ok(s) => s,
@@ -688,6 +903,7 @@ fn check_sheet(
         ));
         None
     } else {
+        used.insert(format!("characters/{id}/{}", sheet.image));
         match files.get(&format!("characters/{id}/{}", sheet.image)) {
             None => {
                 errors.push(format!("{path}: image {} is missing", sheet.image));
@@ -696,7 +912,7 @@ fn check_sheet(
             Some(png) => match png_size(png) {
                 None => {
                     errors.push(format!(
-                        "characters/{id}/{}: is not a PNG image",
+                        "characters/{id}/{}: is not a PNG image Knock can use (8-bit RGBA or a palette)",
                         sheet.image
                     ));
                     None
@@ -708,7 +924,10 @@ fn check_sheet(
                     ));
                     None
                 }
-                Some(size) => Some(size),
+                Some((w, h)) => {
+                    *pixels += u64::from(w) * u64::from(h);
+                    Some((w, h))
+                }
             },
         }
     };
@@ -780,9 +999,11 @@ pub fn check_clip(
     let Some(d) = c
         .get("durationMs")
         .and_then(Value::as_f64)
-        .filter(|d| d.is_finite() && *d > 0.0)
+        .filter(|d| d.is_finite() && *d > 0.0 && *d <= MAX_CLIP_MS)
     else {
-        errors.push(format!("{path}: durationMs must be a positive number"));
+        errors.push(format!(
+            "{path}: durationMs must be a positive number, at most {MAX_CLIP_MS}"
+        ));
         return;
     };
     let in_clip = |v: Option<&Value>| {
@@ -811,6 +1032,10 @@ pub fn check_clip(
                     errors.push(format!("{at}: must be a non-empty list of keyframes"));
                     continue;
                 };
+                if keys.len() > MAX_KEYFRAMES {
+                    errors.push(format!("{at}: at most {MAX_KEYFRAMES} keyframes"));
+                    continue;
+                }
                 let mut prev = -1.0;
                 for k in keys {
                     let Some(k) = k.as_object().filter(|k| in_clip(k.get("t"))) else {
@@ -830,6 +1055,10 @@ pub fn check_clip(
                             errors.push(format!("{at}: unknown track field {f}"));
                         } else if !is_num(v) {
                             errors.push(format!("{at}: {f} must be a number"));
+                        } else if let Some((lo, hi)) = field_range(f)
+                            && !(lo..=hi).contains(&v.as_f64().unwrap_or(f64::NAN))
+                        {
+                            errors.push(format!("{at}: {f} must be from {lo} to {hi}"));
                         }
                     }
                 }
@@ -840,6 +1069,10 @@ pub fn check_clip(
         errors.push(format!("{path}: swaps must be a list"));
         return;
     };
+    if swaps.len() > MAX_SWAPS {
+        errors.push(format!("{path}: at most {MAX_SWAPS} swaps"));
+        return;
+    }
     for s in swaps {
         let Some(s) = s.as_object() else {
             errors.push(format!("{path}: every swap must be an object"));
