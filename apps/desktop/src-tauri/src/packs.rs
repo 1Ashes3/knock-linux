@@ -49,6 +49,8 @@ pub struct PackSummary {
     /// Why it can't be used; empty when valid.
     pub errors: Vec<String>,
     pub characters: Vec<CharacterInfo>,
+    /// It draws its own overflow den (`den.svg`).
+    pub den: bool,
 }
 
 /// One character of `get_pack`: its rig or sheet as written in the pack.
@@ -72,6 +74,8 @@ pub struct PackData {
     pub characters: Vec<PackCharacter>,
     /// The pack's own clips, by name; they replace the shared ones.
     pub clips: BTreeMap<String, Value>,
+    /// It draws its own overflow den (`den.svg`).
+    pub den: bool,
 }
 
 /// A pack offered for install (step 3): checked, held in memory until the
@@ -143,6 +147,7 @@ impl Packs {
                 valid: p.check.ok(),
                 errors: p.check.errors.iter().take(MAX_ERRORS).cloned().collect(),
                 characters: p.check.characters.clone(),
+                den: p.check.den,
             }
         }));
         out
@@ -164,7 +169,7 @@ impl Packs {
     }
 
     /// An image of a valid pack for `knockpack://`: only a character's
-    /// `.svg` or `.png`, never its JSON or docs. Returns the bytes and their
+    /// `.svg` or `.png`, or the den, never its JSON or docs. Returns the bytes and their
     /// media type.
     pub fn image(&self, pack: &str, path: &str) -> Option<(Vec<u8>, &'static str)> {
         let media = match path.rsplit_once('.')?.1 {
@@ -172,7 +177,7 @@ impl Packs {
             "png" => "image/png",
             _ => return None,
         };
-        if !path.starts_with("characters/") {
+        if !path.starts_with("characters/") && path != "den.svg" {
             return None;
         }
         // An offered pack's previews, by its token.
@@ -233,6 +238,7 @@ impl Packs {
             valid,
             errors: check.errors.iter().take(MAX_ERRORS).cloned().collect(),
             characters: check.characters.clone(),
+            den: check.den,
         };
         let replaces = valid
             && (self.installed.read().unwrap_or_else(|e| e.into_inner()))
@@ -375,6 +381,7 @@ fn data_of(id: &str, check: &PackCheck, files: &PackFiles) -> PackData {
         id: id.to_string(),
         characters,
         clips,
+        den: check.den,
     }
 }
 
@@ -437,6 +444,7 @@ fn classic() -> PackSummary {
         builtin: true,
         valid: true,
         errors: Vec::new(),
+        den: false,
         characters: names
             .iter()
             .map(|(id, name)| CharacterInfo {

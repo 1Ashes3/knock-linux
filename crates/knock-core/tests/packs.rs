@@ -473,6 +473,32 @@ fn clips_have_limits() {
     rejects(&set(swaps), "at most 64 swaps");
 }
 
+/// A pack may draw its own overflow den, checked like a part.
+#[test]
+fn a_den_is_optional_and_checked_like_a_part() {
+    assert!(!check_pack(&builtin()).den);
+    let mut f = builtin();
+    f.insert("den.svg".into(), OK_SVG.as_bytes().to_vec());
+    let c = check_pack(&f);
+    assert!(c.ok() && c.den, "{:?}", c.errors);
+    f.insert(
+        "den.svg".into(),
+        br#"<svg viewBox="0 0 64 64"><script/></svg>"#.to_vec(),
+    );
+    rejects(&f, "den.svg: uses <script>");
+    let many = (0..7)
+        .map(|i| format!(r##"<path fill="#00000{i}"/>"##))
+        .collect::<String>();
+    f.insert(
+        "den.svg".into(),
+        format!(r#"<svg viewBox="0 0 64 64">{many}</svg>"#).into_bytes(),
+    );
+    rejects(&f, "den.svg: uses 7 colors");
+    let mut f = builtin();
+    f.insert("clips/den.svg".into(), OK_SVG.as_bytes().to_vec());
+    rejects(&f, "clips/den.svg: not a file a pack may contain");
+}
+
 #[test]
 fn pack_clips_replace_shared_ones_for_rigs_only() {
     let mut f = builtin();

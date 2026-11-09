@@ -384,6 +384,11 @@ function PackRow({
 							+{p.characters.length - PICTURED}
 						</span>
 					)}
+					{p.den && (
+						<span className="preview den-preview" title="Its den">
+							<img src={packUrl(p.id, "den.svg")} alt="" draggable={false} />
+						</span>
+					)}
 				</span>
 			</label>
 			{!p.builtin && (

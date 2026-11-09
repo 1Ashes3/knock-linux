@@ -10,6 +10,7 @@
 //! clips/<clip>.json             optional: replaces a shared clip for this pack's rigs
 //! characters/<id>/rig.json      a vector rig (§8.7, ADR 0017) and its part SVGs
 //! characters/<id>/sheet.json    or a sprite sheet (Sheet) and its PNG
+//! den.svg                       optional: the overflow den, in the pack's theme
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -151,6 +152,8 @@ pub struct CharacterInfo {
 pub struct PackCheck {
     pub manifest: Option<Manifest>,
     pub characters: Vec<CharacterInfo>,
+    /// The pack draws its own overflow den (`den.svg`), checked like a part.
+    pub den: bool,
     /// Plain-language problems, each naming the file. Never pack content.
     pub errors: Vec<String>,
 }
@@ -187,6 +190,7 @@ fn ext(name: &str) -> &str {
 enum Place<'a> {
     Manifest,
     Doc,
+    Den,
     Clip(&'a str),
     Character(&'a str, &'a str),
 }
@@ -195,6 +199,7 @@ fn place(path: &str) -> Option<Place<'_>> {
     let parts: Vec<&str> = path.split('/').collect();
     match parts.as_slice() {
         ["pack.json"] => Some(Place::Manifest),
+        ["den.svg"] => Some(Place::Den),
         ["README.md" | "LICENSE" | "LICENSE.txt" | "LICENSE.md"] => Some(Place::Doc),
         ["clips", f] if is_file_name(f) && ext(f) == "json" => {
             Some(Place::Clip(f.trim_end_matches(".json")))
@@ -297,6 +302,20 @@ pub fn check_pack(files: &PackFiles) -> PackCheck {
     for path in files.keys() {
         if matches!(place(path), Some(Place::Character(..))) && !used.contains(path) {
             errors.push(format!("{path}: not used by its character; remove it"));
+        }
+    }
+    // The den: one flat SVG on the 64-unit canvas, like a rig part.
+    if let Some(svg) = files.get("den.svg") {
+        match std::str::from_utf8(svg)
+            .map_err(|_| "is not UTF-8 text".to_string())
+            .and_then(check_svg)
+        {
+            Ok(c) if c.iter().collect::<BTreeSet<_>>().len() > MAX_COLORS => errors.push(format!(
+                "den.svg: uses {} colors, at most {MAX_COLORS} allowed",
+                c.iter().collect::<BTreeSet<_>>().len()
+            )),
+            Ok(_) => out.den = true,
+            Err(why) => errors.push(format!("den.svg: {why}")),
         }
     }
     // Finding 4: decoded images take 4 bytes a pixel, whatever the PNG's size.

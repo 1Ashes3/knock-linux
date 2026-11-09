@@ -4,6 +4,7 @@
 // both modes: a pill in plain mode, a burrow mound in animals mode. Not clickable (lead
 // decision, v0.3), so it is never a hit region.
 import type { CSSProperties } from "react";
+import { denUrl } from "./animals/art";
 import type { SessionView } from "./bridge";
 import { GlyphIcon } from "./Glyph";
 import { denCounts, denName, TIER_FILL, tierGlyph } from "./pill";
@@ -33,7 +34,16 @@ export function Den({
 			data-cols={cols}
 			style={{ "--cols": cols } as CSSProperties}
 		>
-			{look === "mound" && (
+			{look === "mound" && denUrl() && (
+				// The active sprite pack's own den (ADR 0038), checked like a part.
+				<img
+					className="den-art"
+					src={denUrl() ?? ""}
+					alt=""
+					draggable={false}
+				/>
+			)}
+			{look === "mound" && !denUrl() && (
 				<svg className="den-art" viewBox="0 0 64 64" aria-hidden="true">
 					<path
 						d="M2 62.5C2 31 14.5 9 32 9C49.5 9 62 31 62 62.5Z"

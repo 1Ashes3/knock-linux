@@ -102,6 +102,8 @@ export interface PackSummary {
 	/** Why the pack can't be used; empty when valid. */
 	errors: string[];
 	characters: PackCharacterInfo[];
+	/** The pack draws its own overflow den (`den.svg`). */
+	den: boolean;
 }
 
 /** ADR 0038: `get_pack`: an installed pack's rigs, sheets and clips, as the pack wrote them. */
@@ -109,6 +111,7 @@ export interface PackData {
 	id: string;
 	characters: (PackCharacterInfo & { rig?: unknown; sheet?: unknown })[];
 	clips: Record<string, unknown>;
+	den: boolean;
 }
 
 /** ADR 0003: logical px from the strip's top-left. */

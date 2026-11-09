@@ -68,6 +68,8 @@ export type Look = { kind: "rig"; rig: Rig } | SheetLook;
 
 interface ActivePack {
 	id: string;
+	/** Its overflow den's URL, or null for Knock's own mound. */
+	den: string | null;
 	rigs: Map<string, Rig>;
 	sheets: Map<string, SheetLook>;
 	clips: Record<ClipName, Clip>;
@@ -109,6 +111,7 @@ export function setActivePack(data: PackData | null): void {
 		}
 		active = {
 			id: data.id,
+			den: data.den ? packUrl(data.id, "den.svg") : null,
 			rigs,
 			sheets,
 			clips: { ...CLIPS, ...(data.clips as Partial<Record<ClipName, Clip>>) },
@@ -126,6 +129,11 @@ export function subscribePack(f: () => void): () => void {
 
 export function packVersion(): number {
 	return version;
+}
+
+/** The active pack's overflow den, or null for Knock's own mound. */
+export function denUrl(): string | null {
+	return active?.den ?? null;
 }
 
 /** The clips every character plays now. */

@@ -499,3 +499,11 @@ input[aria-invalid="true"] {
 	outline: 2px dashed var(--accent);
 	outline-offset: 4px;
 }
+
+/* A pack's own den, after its cast: set apart by a thin line. */
+.den-preview {
+	margin-left: 6px;
+	padding-left: 6px;
+	border-left: 1px solid var(--line);
+	box-sizing: content-box;
+}
