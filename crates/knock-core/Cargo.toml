@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The one disk helper: reading a pack folder safely (packs::read_folder).
+# Off by default, so the engine itself stays free of I/O (§7.1).
+fs = []
+
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

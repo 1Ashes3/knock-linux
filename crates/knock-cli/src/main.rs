@@ -6,6 +6,36 @@ mod sim;
 
 use std::process::ExitCode;
 
+/// `knock pack check <folder>`: the same checks Knock runs before it offers
+/// a pack (ADR 0038), for artists.
+fn pack_check(dir: &std::path::Path) -> Result<(), String> {
+    let files = knock_core::packs::read_folder(dir)?;
+    let check = knock_core::packs::check_pack(&files);
+    if check.ok() {
+        let name = check
+            .manifest
+            .as_ref()
+            .map_or("", |m| m.display_name.as_str());
+        let n = check.characters.len();
+        let s = if n == 1 { "" } else { "s" };
+        println!("{name}: valid, {n} character{s}");
+        for c in &check.characters {
+            let kind = match c.kind {
+                knock_core::packs::Kind::Rig => "vector rig",
+                knock_core::packs::Kind::Sheet => "sprite sheet",
+            };
+            println!("  {} ({}): {kind}", c.display_name, c.id);
+        }
+        return Ok(());
+    }
+    for e in &check.errors {
+        println!("  {e}");
+    }
+    let n = check.errors.len();
+    let s = if n == 1 { "" } else { "s" };
+    Err(format!("{n} problem{s}; the pack can't be used yet"))
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -26,6 +56,7 @@ fn main() -> ExitCode {
                 Ok(())
             }
         }),
+        ["pack", "check", dir] => pack_check(dir.as_ref()),
         ["replay", target] => {
             // A fixture file, a folder of fixtures, or a name in `fixtures/`.
             let path = std::path::Path::new(target);
@@ -51,7 +82,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: knock <sim <scenario> [--speed <factor> | --local] | replay <fixture | dir> | doctor \
                  | fixtures sanitize <recording.jsonl> <out-dir> --map <names-file> \
-                 | fixtures check <dir>>"
+                 | fixtures check <dir> | pack check <folder>>"
             );
             return ExitCode::from(2);
         }
