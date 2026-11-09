@@ -108,7 +108,7 @@ mod sim {
     fn posts_each_event_with_the_token_and_sim_header_and_skips_controls() {
         let (port, rx) = fake_knock(4, "200 OK");
         let dir = appdata("ok", Some(port));
-        let out = knock(&dir, &["sim", "crash", "--speed", "1000"]);
+        let out = knock(&dir, &["sim", "crash", "--speed", "1000", "--keep"]);
         assert_eq!(out.status.code(), Some(0));
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("s41  skipped process_gone"), "{stdout}");
@@ -127,6 +127,63 @@ mod sim {
             assert!(head.contains("\r\nX-Knock-Sim: 1\r\n"));
             assert_eq!(body, want);
         }
+    }
+
+    /// A live run ends the sessions it used, once its hold is over.
+    #[test]
+    fn a_live_run_ends_its_sessions_and_clear_ends_them_all() {
+        // crash: 4 events, then SessionEnd for each of its sessions (1).
+        let (port, rx) = fake_knock(5, "200 OK");
+        let out = knock(
+            &appdata("ends", Some(port)),
+            &["sim", "crash", "--speed", "1000"],
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("Ended the simulated sessions."), "{stdout}");
+        let bodies: Vec<String> = (0..5).map(|_| rx.recv().unwrap().1).collect();
+        let ends: Vec<_> = bodies
+            .iter()
+            .filter(|b| b.contains("\"SessionEnd\""))
+            .collect();
+        assert_eq!(ends.len(), 1, "{bodies:?}");
+        assert!(ends[0].contains("\"session_id\":\"s41\""), "{ends:?}");
+        // clear: one SessionEnd per session id of every scenario.
+        let ids = [
+            include_str!("../scenarios/one-all-states.jsonl"),
+            include_str!("../scenarios/three-knocks.jsonl"),
+            include_str!("../scenarios/eight-den.jsonl"),
+            include_str!("../scenarios/stall.jsonl"),
+            include_str!("../scenarios/crash.jsonl"),
+            include_str!("../scenarios/away.jsonl"),
+            include_str!("../scenarios/demo.jsonl"),
+        ]
+        .iter()
+        .flat_map(|t| t.lines())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| v["payload"]["session_id"].as_str().map(str::to_string))
+        .collect::<std::collections::BTreeSet<_>>();
+        let (port, rx) = fake_knock(ids.len(), "200 OK");
+        let out = knock(&appdata("clear", Some(port)), &["sim", "clear"]);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let got: std::collections::BTreeSet<String> = (0..ids.len())
+            .map(|_| {
+                let v: serde_json::Value = serde_json::from_str(&rx.recv().unwrap().1).unwrap();
+                assert_eq!(v["hook_event_name"], "SessionEnd");
+                v["session_id"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert_eq!(got, ids);
     }
 
     #[test]

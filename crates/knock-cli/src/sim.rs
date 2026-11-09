@@ -10,10 +10,17 @@
 //!
 //! Each scenario uses its own session ids, so scenarios never share a session,
 //! and running one again continues its sessions instead of adding new ones.
+//!
+//! A live run cleans up after itself: sim sessions have no process, so the app
+//! would keep them for hours. After the last event the final state stays up for
+//! [`HOLD`] (so it can be looked at), then the run ends every session it used
+//! (`SessionEnd`). `--keep` skips that; `knock sim clear` ends the sessions of
+//! every scenario, for runs that were interrupted.
 
 use crate::replay::{self, Step};
 use knock_core::Settings;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
@@ -147,9 +154,68 @@ fn post(port: u16, token: &str, body: &[u8]) -> io::Result<u16> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not an HTTP reply"))
 }
 
-/// `knock sim <name> [--speed <factor>]`: posts each event to the running
-/// app, `tMs / speed` after the start.
-pub fn live(name: &str, speed: f64) -> Result<(), String> {
+/// How long a finished live run leaves its sessions on screen before ending
+/// them, at speed 1 (shorter when sped up).
+const HOLD: Duration = Duration::from_secs(20);
+
+/// Every session id the steps use.
+fn session_ids(steps: &[Step]) -> BTreeSet<String> {
+    steps
+        .iter()
+        .map(|s| match s {
+            Step::Hook { session, .. } | Step::ProcessGone { session, .. } => session.clone(),
+        })
+        .collect()
+}
+
+/// A `SessionEnd` for `id`, as the app takes it: the engine drops the session,
+/// or ignores the event if there is no such session.
+fn end_body(id: &str) -> Vec<u8> {
+    let payload = serde_json::json!({
+        "cwd": "C:\\fixture\\sim",
+        "hook_event_name": "SessionEnd",
+        "session_id": id,
+    });
+    serde_json::to_vec(&payload).unwrap_or_default()
+}
+
+/// Ends each of `ids` in the app.
+fn end_sessions(port: u16, token: &str, ids: &BTreeSet<String>) -> Result<(), String> {
+    for id in ids {
+        match post(port, token, &end_body(id)) {
+            Ok(200) => {}
+            Ok(401) => {
+                return Err(
+                    "Knock refused the request: the token in server.json doesn't \
+                            match the running app. Restart Knock, then try again."
+                        .into(),
+                );
+            }
+            Ok(code) => return Err(format!("Knock answered {code} ending {id}")),
+            Err(e) => return Err(format!("lost the connection to Knock: {}", e.kind())),
+        }
+    }
+    Ok(())
+}
+
+/// `knock sim clear`: ends the sessions of every scenario, for a run that was
+/// interrupted (Ctrl-C) before it cleaned up. Sessions the app doesn't have
+/// are ignored.
+pub fn clear() -> Result<(), String> {
+    let (port, token) = server()?;
+    let mut ids = BTreeSet::new();
+    for (name, _) in SCENARIOS {
+        ids.extend(session_ids(&scenario(name)?));
+    }
+    end_sessions(port, &token, &ids)?;
+    println!("Ended the simulated sessions.");
+    Ok(())
+}
+
+/// `knock sim <name> [--speed <factor>] [--keep]`: posts each event to the
+/// running app, `tMs / speed` after the start, then (unless `keep`) leaves the
+/// result up for [`HOLD`] and ends the sessions.
+pub fn live(name: &str, speed: f64, keep: bool) -> Result<(), String> {
     if !(speed.is_finite() && speed > 0.0) {
         return Err("--speed must be a number above 0, like 2 or 0.5".into());
     }
@@ -202,6 +268,19 @@ pub fn live(name: &str, speed: f64) -> Result<(), String> {
         }
     }
     println!("Done.");
+    if keep {
+        println!("Leaving the simulated sessions up (--keep). `knock sim clear` ends them.");
+        return Ok(());
+    }
+    let hold = HOLD.div_f64(speed.max(1.0));
+    println!(
+        "Leaving them up for {} s so you can look, then ending them. \
+         Ctrl-C leaves them; `knock sim clear` ends them later.",
+        hold.as_secs().max(1)
+    );
+    std::thread::sleep(hold);
+    end_sessions(port, &token, &session_ids(&steps))?;
+    println!("Ended the simulated sessions.");
     Ok(())
 }
 
@@ -269,6 +348,23 @@ mod tests {
             }
             fixtures::check_fixture(&hooks).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(scenario(name).is_ok(), "{name}");
+        }
+    }
+
+    #[test]
+    fn every_scenario_session_can_be_ended() {
+        use knock_core::{Adapter, ClaudeCode, Kind};
+        let adapter = ClaudeCode { users: vec![] };
+        for (name, _) in SCENARIOS {
+            let ids = session_ids(&scenario(name).unwrap());
+            assert!(!ids.is_empty(), "{name}");
+            for id in ids {
+                let event = adapter.parse(&end_body(&id), 1).unwrap().unwrap();
+                assert_eq!(
+                    (event.kind, event.session_id.as_str()),
+                    (Kind::SessionEnded, id.as_str())
+                );
+            }
         }
     }
 

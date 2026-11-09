@@ -6,6 +6,27 @@ mod sim;
 
 use std::process::ExitCode;
 
+/// `knock sim <name> [--speed <factor>] [--keep]`.
+fn sim_live(name: &str, flags: &[&str]) -> Result<(), String> {
+    let (mut speed, mut keep) = (1.0, false);
+    let mut flags = flags.iter();
+    while let Some(flag) = flags.next() {
+        match *flag {
+            "--keep" => keep = true,
+            "--speed" => {
+                speed = (flags.next().and_then(|f| f.parse().ok()))
+                    .ok_or("--speed must be a number above 0, like 2 or 0.5")?;
+            }
+            other => {
+                return Err(format!(
+                    "unknown option {other}; try --speed <factor> or --keep"
+                ));
+            }
+        }
+    }
+    sim::live(name, speed, keep)
+}
+
 /// `knock pack check <folder>`: the same checks Knock runs before it offers
 /// a pack (ADR 0038), for artists.
 fn pack_check(dir: &std::path::Path) -> Result<(), String> {
@@ -65,12 +86,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {
-        ["sim", name] => sim::live(name, 1.0),
-        ["sim", name, "--speed", f] => match f.parse() {
-            Ok(f) => sim::live(name, f),
-            Err(_) => Err("--speed must be a number above 0, like 2 or 0.5".into()),
-        },
+        ["sim", "clear"] => sim::clear(),
         ["sim", name, "--local"] => sim::local(name).map(|t| println!("{t}")),
+        ["sim", name, flags @ ..] => sim_live(name, flags),
         ["fixtures", "sanitize", rec, out, "--map", map] => {
             fixtures::run(rec.as_ref(), out.as_ref(), map.as_ref())
         }
@@ -107,7 +125,8 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: knock <sim <scenario> [--speed <factor> | --local] | replay <fixture | dir> | doctor \
+                "usage: knock <sim <scenario> [--speed <factor>] [--keep] | sim <scenario> --local \
+                 | sim clear | replay <fixture | dir> | doctor \
                  | fixtures sanitize <recording.jsonl> <out-dir> --map <names-file> \
                  | fixtures check <dir> | pack check <folder> \
                  | pack build <folder> [-o <file.knockpack>]>"
