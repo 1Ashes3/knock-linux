@@ -39,6 +39,14 @@ pub struct Settings {
     /// fading out (ADR 0037). 0: it goes at once.
     #[serde(default = "default_card_fade")]
     pub card_fade_seconds: u32,
+    /// The sprite pack whose characters sessions get (ADR 0038): an
+    /// installed pack's id, or `classic` for Knock's own animals.
+    #[serde(default = "default_pack")]
+    pub pack: String,
+}
+
+fn default_pack() -> String {
+    crate::packs::CLASSIC.into()
 }
 
 /// Upper bound for `cardFadeSeconds`.
@@ -128,18 +136,21 @@ impl Default for Settings {
             animal_overrides: BTreeMap::new(),
             placement: Placement::os_default(),
             card_fade_seconds: default_card_fade(),
+            pack: default_pack(),
         }
     }
 }
 
 impl Settings {
-    /// What the engine needs (§8.4), with the v1 animals (§8.7, ADR 0030).
-    pub fn engine(&self) -> knock_core::Settings {
+    /// What the engine needs (§8.4). `cast` is the active pack's character
+    /// ids (ADR 0038); `None` (classic, or a pack that's gone or invalid)
+    /// gives the v1 animals (§8.7, ADR 0030).
+    pub fn engine(&self, cast: Option<Vec<String>>) -> knock_core::Settings {
         knock_core::Settings {
             stall_ms: u64::from(self.stall_minutes) * 60_000,
             escalation_ms: u64::from(self.escalation_minutes) * 60_000,
             notify_on_stall: self.notify_on_stall,
-            animals: knock_core::ANIMALS.map(String::from).to_vec(),
+            animals: cast.unwrap_or_else(|| knock_core::ANIMALS.map(String::from).to_vec()),
             animal_overrides: self.animal_overrides.clone().into_iter().collect(),
         }
     }
@@ -181,6 +192,9 @@ impl Settings {
             if !(1..=MAX_MINUTES).contains(&v) {
                 return Err(format!("{name} must be from 1 to {MAX_MINUTES}"));
             }
+        }
+        if self.pack != crate::packs::CLASSIC && !knock_core::packs::is_id(&self.pack) {
+            return Err("pack must be classic or a pack id".into());
         }
         if self.card_fade_seconds > MAX_CARD_FADE {
             return Err(format!("cardFadeSeconds must be from 0 to {MAX_CARD_FADE}"));
@@ -444,6 +458,7 @@ mod tests {
         let placement = if cfg!(windows) { "top" } else { "desktop" };
         spec["placement"] = Value::from(placement);
         spec["cardFadeSeconds"] = Value::from(3);
+        spec["pack"] = Value::from("classic");
         assert_eq!(saved, spec);
         assert!(!dir.join("settings.json.tmp").exists());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -494,6 +509,9 @@ mod tests {
         let s = Settings::default();
         assert!(merged(&s, &serde_json::json!({ "cardFadeSeconds": 10 })).is_ok());
         assert!(merged(&s, &serde_json::json!({ "cardFadeSeconds": 61 })).is_err());
+        assert_eq!(parse(SPEC.as_bytes()).unwrap().pack, "classic");
+        assert!(merged(&s, &serde_json::json!({ "pack": "fairy-folk" })).is_ok());
+        assert!(merged(&s, &serde_json::json!({ "pack": "../x" })).is_err());
     }
 
     #[test]
@@ -608,11 +626,13 @@ mod tests {
         };
         s.animal_overrides
             .insert("0123456789abcdef".into(), "owl".into());
-        let e = s.engine();
+        let e = s.engine(None);
         assert_eq!((e.stall_ms, e.escalation_ms), (600_000, 300_000));
         assert!(e.notify_on_stall);
         assert_eq!(e.animals, ["fox", "rabbit", "cat", "owl"]);
         assert_eq!(e.animal_overrides["0123456789abcdef"], "owl");
+        let e = s.engine(Some(vec!["rose".into()]));
+        assert_eq!(e.animals, ["rose"]);
     }
 
     #[test]

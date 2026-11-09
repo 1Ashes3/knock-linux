@@ -6,6 +6,8 @@ declare var __TAURI__:
 					cmd: string,
 					args?: Record<string, unknown>,
 				) => Promise<unknown>;
+				/** A URL for `path` under a custom protocol, in the platform's form. */
+				convertFileSrc?: (path: string, protocol?: string) => string;
 			};
 			event: {
 				listen: <T>(

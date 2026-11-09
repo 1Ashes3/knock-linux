@@ -16,6 +16,10 @@
 		"allow-setup-remove-hooks",
 		"allow-run-health-check",
 		"allow-play-test-knock",
-		"allow-repair-server"
+		"allow-repair-server",
+		"allow-list-packs",
+		"allow-get-pack",
+		"allow-reload-packs",
+		"allow-open-packs-folder"
 	]
 }

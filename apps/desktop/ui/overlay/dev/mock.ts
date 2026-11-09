@@ -46,6 +46,7 @@ const settings: Settings = {
 	animalOverrides: {},
 	placement: "top",
 	cardFadeSeconds: 3,
+	pack: "classic",
 };
 
 let rev = 1;

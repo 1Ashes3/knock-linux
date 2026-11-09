@@ -79,6 +79,36 @@ export interface Settings {
 	placement: "top" | "desktop" | "hidden";
 	/** ADR 0037: seconds a hover card stays after the mouse leaves, fading out. */
 	cardFadeSeconds: number;
+	/** ADR 0038: the sprite pack sessions get characters from; "classic" is Knock's own. */
+	pack: string;
+}
+
+/** ADR 0038: one character of a pack, as `list_packs` and `get_pack` give it. */
+export interface PackCharacterInfo {
+	id: string;
+	displayName: string;
+	kind: "rig" | "sheet";
+}
+
+/** ADR 0038: one entry of `list_packs`. */
+export interface PackSummary {
+	id: string;
+	displayName: string;
+	author?: string;
+	license?: string;
+	description?: string;
+	builtin: boolean;
+	valid: boolean;
+	/** Why the pack can't be used; empty when valid. */
+	errors: string[];
+	characters: PackCharacterInfo[];
+}
+
+/** ADR 0038: `get_pack`: an installed pack's rigs, sheets and clips, as the pack wrote them. */
+export interface PackData {
+	id: string;
+	characters: (PackCharacterInfo & { rig?: unknown; sheet?: unknown })[];
+	clips: Record<string, unknown>;
 }
 
 /** ADR 0003: logical px from the strip's top-left. */

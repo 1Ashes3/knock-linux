@@ -7,6 +7,7 @@
 mod hooks;
 mod jump;
 mod log;
+mod packs;
 mod pipeline;
 mod platform;
 mod server;
@@ -240,6 +241,82 @@ fn reposition(p: &dyn Platform, strip: &Mutex<Strip>, shared: &Shared) {
 }
 
 /// §8.6.
+/// ADR 0038: every pack, classic first; invalid ones say why.
+#[tauri::command]
+fn list_packs(packs: tauri::State<'_, Arc<packs::Packs>>) -> Vec<packs::PackSummary> {
+    packs.list()
+}
+
+/// ADR 0038: what the overlay needs to draw an installed pack; `null` for
+/// classic or a pack that isn't installed and valid.
+#[tauri::command]
+fn get_pack(id: String, packs: tauri::State<'_, Arc<packs::Packs>>) -> Option<packs::PackData> {
+    packs.get(&id)
+}
+
+/// ADR 0038: reads the packs folder again, re-casts sessions if the active
+/// pack changed, and tells every window (`packs-changed`).
+#[tauri::command]
+fn reload_packs(
+    app: AppHandle,
+    packs: tauri::State<'_, Arc<packs::Packs>>,
+    k: tauri::State<'_, Knock>,
+) -> Vec<packs::PackSummary> {
+    packs.reload();
+    let _ = k.tx.send(Msg::PacksChanged);
+    let _ = app.emit("packs-changed", ());
+    packs.list()
+}
+
+/// ADR 0038: shows the packs folder (created if missing) in the file
+/// manager, for artists. Users add packs with "Add a pack…" instead.
+#[tauri::command]
+fn open_packs_folder(packs: tauri::State<'_, Arc<packs::Packs>>) -> Result<(), String> {
+    let dir = packs.dir().ok_or("Knock has no packs folder here.")?;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("Couldn't create the packs folder ({}).", e.kind()))?;
+    let opener = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "Couldn't open the packs folder.".into())
+}
+
+/// `knockpack://<pack>/<path>` (ADR 0038): a valid pack's images, from
+/// memory. Anything else is a 404. The images may not load anything
+/// themselves (default-src 'none'), and are readable cross-origin so the
+/// overlay can draw them into its canvas.
+fn knockpack(
+    app: &AppHandle,
+    request: &tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    let found = packs::request_path(request.uri().path())
+        .and_then(|(pack, path)| app.try_state::<Arc<packs::Packs>>()?.image(&pack, &path));
+    let builder = tauri::http::Response::builder()
+        .header("Access-Control-Allow-Origin", "*")
+        .header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'",
+        )
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Cache-Control", "no-store");
+    let response = match found {
+        Some((bytes, media)) => builder
+            .status(200)
+            .header("Content-Type", media)
+            .body(bytes),
+        None => builder.status(404).body(Vec::new()),
+    };
+    response.unwrap_or_default()
+}
+
 #[tauri::command]
 fn get_settings(k: tauri::State<'_, Knock>) -> Settings {
     pipeline::read(&k.shared).settings.clone()
@@ -601,13 +678,19 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let first_run = !dir.join(settings::FILE).exists();
     let shared = Shared::default();
     let now = pipeline::now_ms();
-    let core = pipeline::Core::new(
+    let mut core = pipeline::Core::new(
         dir.clone(),
         Some(Arc::clone(&platform)),
         shared.clone(),
         now,
         platform::local_minute(),
     );
+    // Sprite packs (ADR 0038): read and checked once here, then on Reload.
+    let packs = Arc::new(packs::Packs::new(knock_core::paths::packs_dir(
+        &knock_core::paths::process_env,
+    )));
+    core.set_packs(Arc::clone(&packs));
+    app.manage(Arc::clone(&packs));
     let (tx, rx) = std::sync::mpsc::channel();
     let tray = tray::build(app.handle(), tx.clone(), shared.clone())?;
     let listening = Arc::new(Mutex::new(Listening::default()));
@@ -787,6 +870,9 @@ fn main() {
             std::thread::spawn(move || open_settings(&app, ""));
         }))
         .plugin(tauri_plugin_notification::init())
+        .register_uri_scheme_protocol("knockpack", |ctx, request| {
+            knockpack(ctx.app_handle(), &request)
+        })
         .invoke_handler(tauri::generate_handler![
             get_sessions,
             jump_to_session,
@@ -805,6 +891,10 @@ fn main() {
             run_health_check,
             play_test_knock,
             repair_server,
+            list_packs,
+            get_pack,
+            reload_packs,
+            open_packs_folder,
         ])
         .setup(setup)
         .run(tauri::generate_context!())

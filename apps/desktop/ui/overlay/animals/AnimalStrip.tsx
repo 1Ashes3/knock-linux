@@ -7,6 +7,7 @@ import {
 	useLayoutEffect,
 	useRef,
 	useState,
+	useSyncExternalStore,
 } from "react";
 import { useStore } from "zustand";
 import { ZZZ_LETTERS } from "../../gallery/zzz.ts";
@@ -23,7 +24,7 @@ import {
 } from "../placement";
 import { STALL_DEFAULT, useMinuteClock, useSend } from "../Strip";
 import type { StripStore } from "../store";
-import { CLIPS } from "./art";
+import { currentClips, packVersion, subscribePack } from "./art";
 import { endsRaised, frameAt } from "./controller";
 import {
 	CHIP,
@@ -155,6 +156,9 @@ export function AnimalStrip({
 	const [woken, wake] = useState(0);
 	useMinuteClock(hover !== null || sessions.some((s) => s.state === "stalled"));
 
+	// A new sprite pack (ADR 0038) draws the strip again.
+	useSyncExternalStore(subscribePack, packVersion);
+	const clips = currentClips();
 	const memory = useRef(EMPTY_MEMORY);
 	const [measureFor] = useState(createMeasure);
 	const now = Date.now();
@@ -163,7 +167,7 @@ export function AnimalStrip({
 		memory.current,
 		still,
 		now,
-		CLIPS,
+		clips,
 	);
 	memory.current = next;
 
@@ -354,7 +358,7 @@ export function AnimalStrip({
 					rect={characterRect(c.slot, raised(c), chipArea, m)}
 					m={m}
 					still={still}
-					settled={frameAt(c.plan, now, CLIPS).settled}
+					settled={frameAt(c.plan, now, clips).settled}
 					name={accessibleName(c.session, now, stallMinutes)}
 					onHover={onHover}
 				/>

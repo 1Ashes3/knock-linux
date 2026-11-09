@@ -18,6 +18,10 @@ const COMMANDS: &[&str] = &[
     "run_health_check",
     "play_test_knock",
     "repair_server",
+    "list_packs",
+    "get_pack",
+    "reload_packs",
+    "open_packs_folder",
 ];
 
 fn main() {

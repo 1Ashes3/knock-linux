@@ -2,11 +2,13 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useStore } from "zustand";
 import { AnimalStrip } from "./animals/AnimalStrip";
+import { setActivePack } from "./animals/art";
 import { createAwayCard } from "./away";
 import {
 	type AwaySummary,
 	call,
 	listen,
+	type PackData,
 	type SessionsChanged,
 	type Settings,
 } from "./bridge";
@@ -68,3 +70,17 @@ const [sessions, settings] = await Promise.all([
 ]);
 applyInitialSessions(sessions);
 applyInitialSettings(settings);
+
+// ADR 0038: the chosen sprite pack, loaded when the setting changes and when packs are
+// reloaded. Classic, or a pack that isn't installed and valid, draws Knock's own animals.
+let loadedPack: string | null = null;
+async function loadPack(force: boolean): Promise<void> {
+	const id = store.getState().settings?.pack ?? "classic";
+	if (id === loadedPack && !force) return;
+	loadedPack = id;
+	const data = id === "classic" ? null : await call("get_pack", { id });
+	if (loadedPack === id) setActivePack((data as PackData | null) ?? null);
+}
+store.subscribe(() => void loadPack(false));
+await listen<null>("packs-changed", () => void loadPack(true));
+void loadPack(false);

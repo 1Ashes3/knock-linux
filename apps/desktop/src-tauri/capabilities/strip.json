@@ -13,6 +13,7 @@
 		"allow-dismiss-away-summary",
 		"allow-set-hit-regions",
 		"allow-request-strip-size",
-		"allow-get-settings"
+		"allow-get-settings",
+		"allow-get-pack"
 	]
 }

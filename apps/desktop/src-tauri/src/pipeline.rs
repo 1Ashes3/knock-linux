@@ -77,6 +77,9 @@ pub enum Msg {
     },
     /// `dismiss_away_summary()` (§8.5): the card folded away.
     DismissAway,
+    /// The installed packs were read again (ADR 0038): the active one may
+    /// have appeared, changed or gone.
+    PacksChanged,
 }
 
 /// What the effect runner shows or sends.
@@ -222,9 +225,32 @@ pub struct Core {
     dir: PathBuf,
     platform: Option<Arc<dyn Platform>>,
     shared: Shared,
+    /// Installed sprite packs (ADR 0038); `None` in tests: classic only.
+    packs: Option<Arc<crate::packs::Packs>>,
+    /// Every "connection owner not found" warning, by session: what the
+    /// log gets, without depending on `tracing`'s per-thread setup.
+    #[cfg(test)]
+    owner_warnings: Vec<String>,
 }
 
 impl Core {
+    /// Gives the core the installed packs, and casts sessions from the
+    /// chosen one. Call once, before the pipeline runs.
+    pub fn set_packs(&mut self, packs: Arc<crate::packs::Packs>) {
+        self.packs = Some(packs);
+        let cast = self.cast(&self.settings);
+        self.engine.set_settings(self.settings.engine(cast));
+    }
+
+    /// The character ids of `settings.pack`, if it is an installed valid
+    /// pack.
+    fn cast(&self, settings: &Settings) -> Option<Vec<String>> {
+        let packs = self.packs.as_ref()?;
+        (settings.pack != crate::packs::CLASSIC)
+            .then(|| packs.cast(&settings.pack))
+            .flatten()
+    }
+
     /// Loads the settings from `dir` and tells the engine whether
     /// notifications are suppressed before any event (engine module docs).
     pub fn new(
@@ -235,7 +261,7 @@ impl Core {
         local_minute: u32,
     ) -> Self {
         let settings = settings::load(&dir, now);
-        let mut engine = Engine::new(settings.engine());
+        let mut engine = Engine::new(settings.engine(None));
         let suppressed = settings.suppressed(local_minute);
         engine.step(Input::SetSuppressed(suppressed));
         let debug = cfg!(debug_assertions);
@@ -265,6 +291,9 @@ impl Core {
             dir,
             platform,
             shared,
+            packs: None,
+            #[cfg(test)]
+            owner_warnings: Vec::new(),
         };
         core.restore_sign_in();
         core.publish();
@@ -304,6 +333,10 @@ impl Core {
                 if let Some(tx) = reply {
                     let _ = tx.send(r);
                 }
+            }
+            Msg::PacksChanged => {
+                let settings = self.settings.clone();
+                self.apply_settings(settings, local_minute, &mut run);
             }
             Msg::DismissAway => {
                 if self.away_pending.take().is_some() {
@@ -387,6 +420,8 @@ impl Core {
                     None if known.is_none() => {
                         if self.unowned.insert(id.clone()) {
                             tracing::warn!(session = ?id, "connection owner not found");
+                            #[cfg(test)]
+                            self.owner_warnings.push(id.clone());
                         }
                     }
                     Some(p) if Some(p) != known => {
@@ -555,7 +590,7 @@ impl Core {
 
     /// Applies `new` at once and reports it (`settings-changed`, the tray).
     fn apply_settings(&mut self, new: Settings, local_minute: u32, run: &mut Run) {
-        self.engine.set_settings(new.engine());
+        self.engine.set_settings(new.engine(self.cast(&new)));
         self.settings = new;
         self.suppress(local_minute, run);
         run.outs.push(Out::Settings(self.settings.clone()));
@@ -1400,29 +1435,16 @@ mod tests {
 
     #[test]
     fn a_missing_owner_is_logged_once_per_session_until_found() {
-        // Its own folder: `core` empties the one named after the test.
-        let logs = temp_dir("owner-log-logs");
+        // Counted where the warning is logged: checking the log file through
+        // a test-only `tracing` subscriber was flaky under parallel tests.
         let mut t = core("owner-log");
-        let sub = crate::log::FileLog::new(logs.clone());
-        tracing::subscriber::with_default(sub, || {
-            for i in 0..5 {
-                t.hook(i, "a", "PreToolUse", r#","tool_name":"Read""#, None);
-            }
-            t.hook(10, "b", "Stop", "", None);
-            t.hook(20, "a", "UserPromptSubmit", "", Some(P1));
-            t.hook(30, "a", "Stop", "", None);
-        });
-        let text: String = std::fs::read_dir(&logs)
-            .unwrap()
-            .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
-            .collect();
-        let lines: Vec<_> = text
-            .lines()
-            .filter(|l| l.contains("connection owner not found"))
-            .collect();
-        assert_eq!(lines.len(), 2, "{text}");
-        assert!(lines[0].contains(r#"session="a""#) && lines[1].contains(r#"session="b""#));
-        let _ = std::fs::remove_dir_all(&logs);
+        for i in 0..5 {
+            t.hook(i, "a", "PreToolUse", r#","tool_name":"Read""#, None);
+        }
+        t.hook(10, "b", "Stop", "", None);
+        t.hook(20, "a", "UserPromptSubmit", "", Some(P1));
+        t.hook(30, "a", "Stop", "", None);
+        assert_eq!(t.core.owner_warnings, ["a", "b"]);
     }
 
     #[test]

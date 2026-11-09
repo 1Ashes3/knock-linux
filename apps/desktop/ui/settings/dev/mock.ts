@@ -39,6 +39,7 @@ let settings: Settings = {
 	animalOverrides: {},
 	placement: "top",
 	cardFadeSeconds: 3,
+	pack: "classic",
 };
 let installed = q.get("installed") === "1";
 const SERVER_ERROR =

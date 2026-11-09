@@ -21,6 +21,7 @@ import {
 	selectedMonitor,
 } from "./flow";
 import { WORDS } from "./os";
+import { Characters } from "./Packs";
 import { Backup, type Update } from "./Setup";
 
 interface Props {
@@ -144,6 +145,8 @@ export function SettingsPage({
 					onChange={(size) => update({ size: size as Size })}
 				/>
 			</section>
+
+			<Characters value={s.pack} onChoose={(pack) => update({ pack })} />
 
 			<section aria-labelledby="notify">
 				<h2 id="notify">Notifications</h2>

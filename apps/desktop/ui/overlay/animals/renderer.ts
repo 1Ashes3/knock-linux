@@ -19,7 +19,7 @@ import {
 } from "pixi.js";
 import type { Clip, Rig } from "../../gallery/format.ts";
 import { poseAt } from "../../gallery/player.ts";
-import { CLIPS, partUrl, rigFor } from "./art";
+import { currentClips, packOf, partUrl, rigFor } from "./art";
 import {
 	type Animated,
 	anyAnimating,
@@ -68,6 +68,8 @@ interface CharacterView {
 /** Rasterises one part SVG to a canvas of `px` device pixels. */
 async function rasterise(url: string, px: number): Promise<Texture> {
 	const img = new Image();
+	// Pack images come from `knockpack:`, which allows this; the canvas stays usable.
+	img.crossOrigin = "anonymous";
 	img.src = url;
 	await img.decode();
 	const canvas = document.createElement("canvas");
@@ -166,7 +168,7 @@ export class AnimalRenderer {
 	}
 
 	private texKey(rig: Rig, view: View): string {
-		return `${rig.id}@${Math.round(view.s * view.dpr)}`;
+		return `${packOf(rig)}:${rig.id}@${Math.round(view.s * view.dpr)}`;
 	}
 
 	private parts(rig: Rig, view: View): Parts | undefined {
@@ -241,7 +243,8 @@ export class AnimalRenderer {
 		this.lastFrame = now;
 		this.host.dataset.drawn = String(this.chars.size);
 		const pending = this.list.some((c) => !this.chars.has(c.id));
-		if (!pending && anyAnimating(this.list, now, CLIPS)) this.schedule();
+		if (!pending && anyAnimating(this.list, now, currentClips()))
+			this.schedule();
 		else this.stop();
 	};
 
@@ -251,9 +254,10 @@ export class AnimalRenderer {
 		fadeFrom: number | null,
 		now: number,
 	): void {
-		const f = frameAt(plan, now, CLIPS);
+		const clips = currentClips();
+		const f = frameAt(plan, now, clips);
 		const names = [...cv.sprites.keys()];
-		const poses = poseAt(f.clip ? CLIPS[f.clip] : RIG_POSE, names, f.t);
+		const poses = poseAt(f.clip ? clips[f.clip] : RIG_POSE, names, f.t);
 		for (const part of cv.rig.parts) {
 			const sprite = cv.sprites.get(part.name);
 			const p = poses[part.name];

@@ -682,6 +682,37 @@ fn the_v1_animals_are_assigned_fox_rabbit_cat_owl() {
     );
 }
 
+// ADR 0038: switching sprite packs re-casts running sessions at once.
+#[test]
+fn a_new_animal_list_recasts_running_sessions_in_order() {
+    let mut h = H::new();
+    for (i, sid) in ["s1", "s2", "s3"].into_iter().enumerate() {
+        start(&mut h, sid, i as u64);
+    }
+    let pack = |list: &[&str]| Settings {
+        animals: list.iter().map(|a| a.to_string()).collect(),
+        ..Settings::default()
+    };
+    h.0.set_settings(pack(&["rose", "tulip"]));
+    assert_eq!(
+        animals(&h),
+        [("s1", "rose"), ("s2", "tulip"), ("s3", "rose")]
+    );
+    // Other settings changes leave the cast alone.
+    let mut quieter = pack(&["rose", "tulip"]);
+    quieter.stall_ms += MIN;
+    h.0.set_settings(quieter);
+    assert_eq!(
+        animals(&h),
+        [("s1", "rose"), ("s2", "tulip"), ("s3", "rose")]
+    );
+    h.0.set_settings(Settings::default());
+    assert_eq!(
+        animals(&h),
+        [("s1", "fox"), ("s2", "rabbit"), ("s3", "cat")]
+    );
+}
+
 #[test]
 fn a_fifth_session_wraps_around_to_the_fox() {
     let mut h = H::new();

@@ -282,8 +282,22 @@ impl Engine {
         }
     }
 
+    /// A new animal list (another sprite pack, ADR 0038) or new overrides
+    /// re-cast every session in its order, as if it had just started; any
+    /// other change leaves the animals alone.
     pub fn set_settings(&mut self, settings: Settings) {
+        let recast = settings.animals != self.settings.animals
+            || settings.animal_overrides != self.settings.animal_overrides;
         self.settings = settings;
+        if recast {
+            for s in &mut self.sessions {
+                s.animal.clear();
+            }
+            for i in 0..self.sessions.len() {
+                let animal = self.animal_for(&self.sessions[i].project_key, i);
+                self.sessions[i].animal = animal;
+            }
+        }
     }
 
     /// In the order they first appeared.
@@ -328,7 +342,10 @@ impl Engine {
         }
     }
 
-    fn animal_for(&self, key: &str) -> String {
+    /// The animal for a session with project `key` that is the `n`th to
+    /// get one (0-based): its override, else the first one no session has,
+    /// else round-robin by `n`.
+    fn animal_for(&self, key: &str, n: usize) -> String {
         if let Some(a) = self.settings.animal_overrides.get(key) {
             return a.clone();
         }
@@ -336,7 +353,7 @@ impl Engine {
         let free = all
             .iter()
             .find(|a| self.sessions.iter().all(|s| &s.animal != *a));
-        free.or_else(|| all.get(self.sessions.len() % all.len().max(1)))
+        free.or_else(|| all.get(n % all.len().max(1)))
             .cloned()
             .unwrap_or_default()
     }
@@ -357,7 +374,7 @@ impl Engine {
             Some(i) => i,
             None if !restart => return,
             None => {
-                let animal = self.animal_for(&project_key(&e.context.cwd));
+                let animal = self.animal_for(&project_key(&e.context.cwd), self.sessions.len());
                 self.sessions.push(Session::new(&e, simulated, animal));
                 return self.first(self.sessions.len() - 1, e, fx);
             }

@@ -368,3 +368,103 @@ input[aria-invalid="true"] {
 	outline: 2px solid var(--focus);
 	outline-offset: 2px;
 }
+
+/* --- Characters (ADR 0038) --- */
+
+.packs {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+
+.pack {
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 8px 10px;
+}
+
+.pack-choice {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.pack[data-invalid] .pack-choice {
+	opacity: 0.6;
+}
+
+.pack-text {
+	display: flex;
+	flex-direction: column;
+	flex: 1;
+	min-width: 0;
+}
+
+.pack-text .help {
+	margin: 0;
+}
+
+.pack-cast {
+	display: flex;
+	gap: 4px;
+	flex-shrink: 0;
+}
+
+.preview {
+	position: relative;
+	display: inline-block;
+	width: 48px;
+	height: 48px;
+	overflow: hidden;
+}
+
+.preview > img {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+
+.sheet-frame {
+	position: absolute;
+	top: 0;
+	left: 0;
+	overflow: hidden;
+	transform-origin: 0 0;
+}
+
+.sheet-frame img {
+	position: absolute;
+	left: 0;
+	max-width: none;
+}
+
+.pack-errors {
+	margin-top: 6px;
+}
+
+.pack-errors ul {
+	margin: 4px 0 0;
+	color: var(--error);
+	font-size: 0.9em;
+}
+
+/* More characters than pictured: a count, not just color (it reads "+4"). */
+.preview.more {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--ok);
+	font-weight: 700;
+	font-size: 1.1em;
+}
+
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
