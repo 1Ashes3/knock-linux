@@ -2,7 +2,6 @@ import {
 	type CSSProperties,
 	useEffect,
 	useLayoutEffect,
-	useMemo,
 	useRef,
 	useState,
 } from "react";
@@ -22,7 +21,7 @@ import {
 	shortWord,
 	TIER_FILL,
 } from "./pill";
-import { visibleSessions } from "./placement";
+import { useVisibleSessions } from "./placement";
 import type { StripStore } from "./store";
 
 export const STALL_DEFAULT = 10; // §8.6 default, until settings arrive.
@@ -60,10 +59,7 @@ export function Strip({
 }) {
 	const all = useStore(store, (s) => s.sessions);
 	const placement = useStore(store, (s) => s.settings?.placement);
-	const sessions = useMemo(
-		() => visibleSessions(all, placement),
-		[all, placement],
-	);
+	const sessions = useVisibleSessions(all, placement);
 	const size = useStore(store, (s) => s.settings?.size ?? "medium");
 	const stallMinutes = useStore(
 		store,

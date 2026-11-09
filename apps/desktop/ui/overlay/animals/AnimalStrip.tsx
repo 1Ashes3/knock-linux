@@ -5,7 +5,6 @@ import {
 	type CSSProperties,
 	useEffect,
 	useLayoutEffect,
-	useMemo,
 	useRef,
 	useState,
 } from "react";
@@ -17,7 +16,11 @@ import { call, type HitRegion } from "../bridge";
 import { Den } from "../Den";
 import { CloseIcon, GlyphIcon } from "../Glyph";
 import { accessibleName, dismissible, glyph, INK, TIER_FILL } from "../pill";
-import { POINTER_ENTERED, POINTER_LEFT, visibleSessions } from "../placement";
+import {
+	POINTER_ENTERED,
+	POINTER_LEFT,
+	useVisibleSessions,
+} from "../placement";
 import { STALL_DEFAULT, useMinuteClock, useSend } from "../Strip";
 import type { StripStore } from "../store";
 import { CLIPS } from "./art";
@@ -93,10 +96,7 @@ export function AnimalStrip({
 }) {
 	const all = useStore(store, (s) => s.sessions);
 	const placement = useStore(store, (s) => s.settings?.placement);
-	const sessions = useMemo(
-		() => visibleSessions(all, placement),
-		[all, placement],
-	);
+	const sessions = useVisibleSessions(all, placement);
 	const away = useStore(store, (s) => s.away);
 	const size = useStore(store, (s) => s.settings?.size ?? "medium");
 	const stallMinutes = useStore(

@@ -32,6 +32,8 @@ use tauri_plugin_notification::NotificationExt;
 const POLL: Duration = Duration::from_millis(33);
 /// FR-15: the strip is re-placed this often even if no change was heard.
 const FALLBACK: Duration = Duration::from_secs(5);
+/// How often the strip thread re-checks whether the strip should be up.
+const RISE_CHECK: Duration = Duration::from_millis(500);
 /// After a change was heard, placed again this much later, in case the
 /// shell was still settling (the taskbar sliding, a display waking).
 const RECHECK: Duration = Duration::from_millis(500);
@@ -102,9 +104,21 @@ impl StripView {
     }
 }
 
-/// A session has a knock nobody has seen yet (ADR 0016): the strip rises.
-fn knocking(sessions: &SessionsChanged) -> bool {
-    (sessions.sessions.iter()).any(|s| s.needs.as_ref().is_some_and(|n| !n.seen))
+/// How long a finished session keeps the strip up if nobody clicks it.
+const READY_RISE_MS: u64 = 2 * 60_000;
+
+/// The strip rises for a session (ADR 0037): a knock nobody has seen yet
+/// (ADR 0016), or a session that finished under [`READY_RISE_MS`] ago and
+/// hasn't been reviewed (a click turns Ready into Idle). The overlay's
+/// `rises` in placement.ts is the same rule.
+fn rises(s: &pipeline::SessionView, now: u64) -> bool {
+    let knock = s.needs.as_ref().is_some_and(|n| !n.seen);
+    let done = s.state == "ready" && now < s.since_ms.saturating_add(READY_RISE_MS);
+    knock || done
+}
+
+fn knocking(sessions: &SessionsChanged, now: u64) -> bool {
+    sessions.sessions.iter().any(|s| rises(s, now))
 }
 
 /// Locks, ignoring poisoning: every value here stays usable.
@@ -520,7 +534,7 @@ fn apply(
             }
         }
         Out::Sessions(payload) => {
-            let on = knocking(&payload);
+            let on = knocking(&payload, pipeline::now_ms());
             view.update(|_, k| *k = on);
             let _ = app.emit_to("strip", "sessions-changed", payload);
         }
@@ -685,18 +699,27 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // on this (main) thread.
     p.watch_displays(Arc::clone(&k.moved));
 
-    let (p, s, sh, moved) = (
+    let (p, s, sh, moved, v) = (
         Arc::clone(&k.platform),
         Arc::clone(&k.strip),
         k.shared.clone(),
         Arc::clone(&k.moved),
+        Arc::clone(&view),
     );
     std::thread::Builder::new()
         .name("knock-strip".into())
         .spawn(move || {
             let (mut due, mut again) = (Instant::now() + FALLBACK, false);
+            let mut rise_check = Instant::now();
             loop {
                 std::thread::sleep(POLL);
+                // A finished session stops raising the strip after a while
+                // with no new event (ADR 0037); checked twice a second.
+                if rise_check.elapsed() >= RISE_CHECK {
+                    rise_check = Instant::now();
+                    let on = knocking(&pipeline::read(&sh).sessions, pipeline::now_ms());
+                    v.update(|_, k| *k = on);
+                }
                 // FR-15: within one tick of a change, again shortly after,
                 // and every 5 s anyway.
                 let now = Instant::now();
@@ -786,6 +809,41 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn view(state: &'static str, since_ms: u64, seen: Option<bool>) -> pipeline::SessionView {
+        pipeline::SessionView {
+            id: "s".into(),
+            project: "p".into(),
+            tier: "ready",
+            state,
+            since: String::new(),
+            since_ms,
+            activity: None,
+            needs: seen.map(|seen| pipeline::NeedsView {
+                kind: "permission",
+                label: None,
+                seen,
+            }),
+            precision: jump::Precision::None,
+            animal: "fox".into(),
+            simulated: false,
+        }
+    }
+
+    #[test]
+    fn the_strip_rises_for_unseen_knocks_and_fresh_finishes() {
+        let t = 1_000_000;
+        assert!(rises(&view("needs_input", 0, Some(false)), t));
+        assert!(!rises(&view("needs_input", 0, Some(true)), t), "seen");
+        assert!(rises(&view("ready", t - 1000, None), t), "just finished");
+        let old = t - READY_RISE_MS;
+        assert!(!rises(&view("ready", old, None), t), "2 minutes on");
+        assert!(!rises(&view("idle", t, None), t), "clicked: idle");
+        assert!(!rises(&view("working", t, None), t));
+        assert!(!rises(&view("failed", t, None), t));
+    }
+
     #[test]
     fn ago_in_plain_words() {
         let (s, m, h, d) = (1000, 60_000, 3_600_000, 86_400_000);

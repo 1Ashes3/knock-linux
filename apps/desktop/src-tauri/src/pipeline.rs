@@ -111,6 +111,10 @@ pub struct SessionView {
     pub tier: &'static str,
     pub state: &'static str,
     pub since: String,
+    /// `since` in ms since the Unix epoch, for the strip's own timing
+    /// (ADR 0037). Not sent: the UI reads `since`.
+    #[serde(skip)]
+    pub since_ms: u64,
     pub activity: Option<Category>,
     pub needs: Option<NeedsView>,
     pub precision: Precision,
@@ -642,6 +646,7 @@ impl Core {
                 tier: s.state.tier().as_str(),
                 state: s.state.as_str(),
                 since: iso8601(s.since),
+                since_ms: s.since,
                 activity: s.activity,
                 needs: s.needs.as_ref().map(|n| NeedsView {
                     kind: needs_kind(n.kind),
@@ -1005,6 +1010,7 @@ mod tests {
             tier: "needs_you",
             state: "needs_input",
             since: iso8601(T0),
+            since_ms: T0,
             activity: Some(Category::Run),
             needs: Some(NeedsView {
                 kind: "permission",
