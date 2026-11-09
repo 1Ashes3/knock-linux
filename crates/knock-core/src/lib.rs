@@ -15,6 +15,7 @@ pub use adapter::{
 };
 pub use away::{AWAY_MS, Away, AwayItem, AwaySummary, Outcome, summary};
 pub use engine::{
-    ANIMALS, Effect, Engine, Input, Needs, NeedsKind, Reason, Session, Settings, State, Tier,
+    ANIMALS, Effect, Engine, Input, Needs, NeedsKind, Reason, Saved, SavedNeeds, Session, Settings,
+    State, Tier,
 };
 pub use event::{Category, Context, Detail, Event, Kind, Source, iso8601};

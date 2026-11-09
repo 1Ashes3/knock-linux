@@ -3,7 +3,7 @@
 
 use knock_core::{
     ANIMALS, Category, Context, Detail, Effect, Engine, Event, Input, Kind, NeedsKind, Reason,
-    Settings, State, project_key,
+    Saved, SavedNeeds, Settings, State, project_key,
 };
 
 const MIN: u64 = 60_000;
@@ -1273,4 +1273,89 @@ fn suppression_set_before_the_first_event_holds_for_it() {
         assert_eq!(h.kind(Kind::TurnStarted, 700), vec![Persist]);
         assert_eq!(h.send(request("s1", 900)).len(), 2, "{k:?}");
     }
+}
+
+fn saved(id: &str, state: State, animal: &str) -> Saved {
+    Saved {
+        id: id.into(),
+        project: "demo".into(),
+        project_key: project_key(id),
+        state,
+        since: 1_000,
+        last_event: 2_000,
+        activity: Some(Category::Edit),
+        needs: None,
+        animal: animal.into(),
+    }
+}
+
+// FR-13: sessions come back after a restart as they were, and quietly.
+#[test]
+fn restored_sessions_come_back_as_they_were() {
+    let mut h = H::new();
+    let mut asking = saved("s2", State::NeedsInput, "rabbit");
+    asking.needs = Some(SavedNeeds {
+        kind: NeedsKind::Answer,
+        label: None,
+        seen: true,
+        opened: 1_500,
+        escalated: true,
+    });
+    h.0.restore(vec![
+        saved("s1", State::Working, "fox"),
+        asking,
+        saved("s3", State::Ready, "ghost"),
+        saved("s4", State::NeedsInput, "cat"),
+    ]);
+    let s = h.0.sessions();
+    assert_eq!(s.len(), 4);
+    assert_eq!(
+        (s[0].state, s[0].since, s[0].last_event),
+        (State::Working, 1_000, 2_000)
+    );
+    assert_eq!(s[0].activity, Some(Category::Edit));
+    let n = s[1].needs.as_ref().unwrap();
+    assert_eq!(
+        (n.kind, n.seen, n.escalated, n.opened),
+        (NeedsKind::Answer, true, true, 1_500)
+    );
+    // An animal no longer in the cast gets a free one; one in the cast is kept.
+    assert_eq!(
+        animals(&h),
+        [
+            ("s1", "fox"),
+            ("s2", "rabbit"),
+            ("s3", "cat"),
+            ("s4", "owl")
+        ]
+    );
+    // needs_input without its episode comes back idle.
+    assert_eq!(h.0.sessions()[3].state, State::Idle);
+    // Restoring again changes nothing, and a tick doesn't knock or remind.
+    h.0.restore(vec![saved("s1", State::Idle, "fox")]);
+    assert_eq!(h.0.sessions()[0].state, State::Working);
+    let fx = h.0.step(Input::Tick {
+        now: 2_000 + 60 * MIN,
+    });
+    assert!(
+        !fx.iter()
+            .any(|e| matches!(e, Effect::Notify { .. } | Effect::Escalate { .. })),
+        "{fx:?}"
+    );
+}
+
+#[test]
+fn saved_names_parse_back() {
+    for st in [
+        State::NeedsInput,
+        State::Ready,
+        State::EndedUnexpectedly,
+        State::Idle,
+    ] {
+        assert_eq!(State::parse(st.as_str()), Some(st));
+    }
+    assert_eq!(State::parse("bogus"), None);
+    assert_eq!(NeedsKind::parse("answer"), Some(NeedsKind::Answer));
+    assert_eq!(Category::parse("run"), Some(Category::Run));
+    assert_eq!(Category::parse("Run"), None);
 }

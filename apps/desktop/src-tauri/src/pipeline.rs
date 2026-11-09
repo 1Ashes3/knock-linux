@@ -273,7 +273,7 @@ impl Core {
                 "away threshold shortened (debug build)"
             );
         }
-        let core = Core {
+        let mut core = Core {
             engine,
             adapter: ClaudeCode { users: users() },
             settings,
@@ -296,8 +296,41 @@ impl Core {
             owner_warnings: Vec::new(),
         };
         core.restore_sign_in();
+        core.restore_sessions();
         core.publish();
         core
+    }
+
+    /// FR-13: brings back the sessions `sessions.json` saved, keeping only
+    /// those whose process is still running: the same PID with the same
+    /// start time, so a reused PID never brings back a stranger. Without a
+    /// platform (tests) or a recorded process nothing is restored; such a
+    /// session comes back with its next event.
+    fn restore_sessions(&mut self) {
+        let Some(p) = self.platform.clone() else {
+            return;
+        };
+        let Ok(bytes) = std::fs::read(self.dir.join(SNAPSHOT)) else {
+            return;
+        };
+        let (saved, found) = saved_sessions(&bytes, |pid| p.process_start(pid));
+        if saved.is_empty() {
+            return;
+        }
+        tracing::info!(sessions = saved.len(), "sessions restored");
+        self.engine.restore(saved);
+        for (id, f) in found {
+            self.procs.insert(id, f);
+        }
+        let now = now_ms();
+        self.view = SessionsChanged {
+            rev: self.view.rev + 1,
+            sessions: self.views(),
+        };
+        self.needs_you = (self.engine.sessions().iter())
+            .filter(|s| s.state.tier() == knock_core::Tier::NeedsYou)
+            .count();
+        self.persist(now);
     }
 
     /// ADR 0027: while `launchAtSignIn` is on, a missing or stale sign-in
@@ -807,6 +840,75 @@ fn minutes(n: impl Into<u64>) -> String {
     format!("{n} minute{}", if n == 1 { "" } else { "s" })
 }
 
+/// FR-13: the sessions in a `sessions.json`, with their processes, whose
+/// process `start_of(pid)` says still runs with the saved start time. A file
+/// that isn't version 1, or a session missing a field, is skipped.
+fn saved_sessions(
+    bytes: &[u8],
+    start_of: impl Fn(u32) -> Option<u64>,
+) -> (Vec<knock_core::Saved>, Vec<(String, Found)>) {
+    use serde_json::Value;
+    let Ok(snap) = serde_json::from_slice::<Value>(bytes) else {
+        return (Vec::new(), Vec::new());
+    };
+    if snap["version"] != 1 {
+        return (Vec::new(), Vec::new());
+    }
+    let list = snap["sessions"].as_array().cloned().unwrap_or_default();
+    let mut saved = Vec::new();
+    let mut found = Vec::new();
+    for s in &list {
+        let one = || -> Option<(knock_core::Saved, Found)> {
+            let text = |v: &Value| v.as_str().map(str::to_string);
+            let pr = &s["process"];
+            let process = ProcessId {
+                pid: u32::try_from(pr["pid"].as_u64()?).ok()?,
+                start: pr["start"].as_u64()?,
+            };
+            if start_of(process.pid) != Some(process.start) {
+                return None;
+            }
+            let needs = match &s["needs"] {
+                Value::Null => None,
+                n => Some(knock_core::SavedNeeds {
+                    kind: knock_core::NeedsKind::parse(n["kind"].as_str()?)?,
+                    label: text(&n["label"]),
+                    seen: n["seen"].as_bool()?,
+                    opened: n["openedMs"].as_u64()?,
+                    escalated: n["escalated"].as_bool()?,
+                }),
+            };
+            let precision = match pr["precision"].as_str() {
+                Some("exact_window") => Precision::ExactWindow,
+                Some("app_window") => Precision::AppWindow,
+                _ => Precision::None,
+            };
+            let session = knock_core::Saved {
+                id: text(&s["id"])?,
+                project: text(&s["project"])?,
+                project_key: text(&s["projectKey"])?,
+                state: knock_core::State::parse(s["state"].as_str()?)?,
+                since: s["sinceMs"].as_u64()?,
+                last_event: s["lastEventMs"].as_u64()?,
+                activity: s["activity"].as_str().and_then(Category::parse),
+                needs,
+                animal: text(&s["animal"])?,
+            };
+            let f = Found {
+                process,
+                owner: text(&pr["owner"]),
+                precision,
+            };
+            Some((session, f))
+        };
+        if let Some((session, f)) = one() {
+            found.push((session.id.clone(), f));
+            saved.push(session);
+        }
+    }
+    (saved, found)
+}
+
 /// §9.7 liveness: the sessions whose recorded process no longer runs, or
 /// whose PID now belongs to a process with another start time.
 pub fn gone<'a>(
@@ -963,6 +1065,10 @@ mod tests {
     const P1: ProcessId = ProcessId {
         pid: 7596,
         start: 185,
+    };
+    const P2: ProcessId = ProcessId {
+        pid: 5151,
+        start: 77,
     };
     const ASK_WRITE: &str = r#","tool_name":"Write","tool_input":{"content":"secret text"}"#;
 
@@ -1445,6 +1551,71 @@ mod tests {
         t.hook(20, "a", "UserPromptSubmit", "", Some(P1));
         t.hook(30, "a", "Stop", "", None);
         assert_eq!(t.core.owner_warnings, ["a", "b"]);
+    }
+
+    /// FR-13: after a restart, sessions whose process still runs come back
+    /// with their process (so a click still jumps); the rest don't.
+    #[test]
+    fn a_restart_restores_sessions_whose_process_still_runs() {
+        let mut t = core("restore");
+        t.hook(1, "a", "UserPromptSubmit", "", Some(P1));
+        t.hook(
+            2,
+            "a",
+            "PermissionRequest",
+            r#","tool_name":"Bash""#,
+            Some(P1),
+        );
+        t.hook(3, "b", "UserPromptSubmit", "", Some(P2));
+        t.core.flush();
+        let restart = |alive: Vec<ProcessId>| {
+            let fake = Arc::new(FakePlatform::default());
+            *fake.alive.lock().unwrap() = alive;
+            let platform: Arc<dyn Platform> = fake;
+            Core::new(t.dir.clone(), Some(platform), Shared::default(), T0, NOON)
+        };
+        // Only a's process still runs.
+        let c = restart(vec![P1]);
+        let ids: Vec<_> = c
+            .engine
+            .sessions()
+            .iter()
+            .map(|s| (s.id.as_str(), s.state))
+            .collect();
+        assert_eq!(ids, [("a", knock_core::State::NeedsInput)]);
+        assert_eq!(c.procs["a"].process, P1);
+        assert_eq!(c.view.sessions.len(), 1, "published");
+        assert_eq!(c.needs_you, 1);
+        // A reused PID (same number, another start time) brings back nothing.
+        let reused = ProcessId {
+            pid: P1.pid,
+            start: P1.start + 1,
+        };
+        assert!(restart(vec![reused]).engine.sessions().is_empty());
+        // Nothing alive, or no platform: nothing restored.
+        assert!(restart(vec![]).engine.sessions().is_empty());
+        let none = Core::new(t.dir.clone(), None, Shared::default(), T0, NOON);
+        assert!(none.engine.sessions().is_empty());
+    }
+
+    #[test]
+    fn a_damaged_or_old_snapshot_restores_nothing() {
+        let alive = |_| Some(1);
+        for bytes in [
+            &b"{"[..],
+            br#"{"version":2,"sessions":[]}"#,
+            br#"{"version":1}"#,
+        ] {
+            assert!(saved_sessions(bytes, alive).0.is_empty());
+        }
+        // A session missing a field is skipped; the others still come back.
+        let snap = br#"{"version":1,"sessions":[
+            {"id":"x","project":"p","projectKey":"k","state":"working","sinceMs":1,"lastEventMs":1,"animal":"fox","needs":null,"process":{"pid":7,"start":1}},
+            {"id":"y","state":"working","process":{"pid":7,"start":1}}
+        ]}"#;
+        let (saved, found) = saved_sessions(snap, alive);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(found[0].1.precision, Precision::None);
     }
 
     #[test]

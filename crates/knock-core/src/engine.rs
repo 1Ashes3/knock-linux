@@ -135,7 +135,28 @@ pub enum Tier {
     Resting,
 }
 
+/// Every state, for [`State::parse`].
+const STATES: [State; 12] = [
+    State::NeedsInput,
+    State::Failed,
+    State::Stalled,
+    State::BlockedFixable,
+    State::Ready,
+    State::Working,
+    State::WaitingAgent,
+    State::Communicating,
+    State::Idle,
+    State::EndedUnexpectedly,
+    State::Paused,
+    State::Cancelled,
+];
+
 impl State {
+    /// The state named `s` ([`State::as_str`]), as `sessions.json` saves it.
+    pub fn parse(s: &str) -> Option<Self> {
+        STATES.into_iter().find(|st| st.as_str() == s)
+    }
+
     pub fn tier(self) -> Tier {
         use State::*;
         match self {
@@ -179,6 +200,42 @@ impl Tier {
 pub enum NeedsKind {
     Permission,
     Answer,
+}
+
+impl NeedsKind {
+    /// `permission` or `answer`, as `sessions.json` saves it.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "permission" => Some(Self::Permission),
+            "answer" => Some(Self::Answer),
+            _ => None,
+        }
+    }
+}
+
+/// FR-13: a session as `sessions.json` saved it, to bring back after the app
+/// restarts. The app passes only sessions whose process it found still
+/// running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Saved {
+    pub id: String,
+    pub project: String,
+    pub project_key: String,
+    pub state: State,
+    pub since: u64,
+    pub last_event: u64,
+    pub activity: Option<Category>,
+    pub needs: Option<SavedNeeds>,
+    pub animal: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedNeeds {
+    pub kind: NeedsKind,
+    pub label: Option<String>,
+    pub seen: bool,
+    pub opened: u64,
+    pub escalated: bool,
 }
 
 /// The open `needs_input` episode.
@@ -279,6 +336,60 @@ impl Engine {
         Engine {
             settings,
             ..Self::default()
+        }
+    }
+
+    /// FR-13: brings back sessions saved before a restart, as they were:
+    /// state, since, activity, an open episode (seen and escalated as saved,
+    /// so nothing knocks or reminds again) and the animal, if it is still in
+    /// the cast and free. Sessions already known are skipped; a saved
+    /// `needs_input` without its episode comes back idle. Emits nothing:
+    /// nothing new happened. The app's liveness check ends any that stop.
+    pub fn restore(&mut self, saved: Vec<Saved>) {
+        for s in saved {
+            if self.sessions.iter().any(|x| x.id == s.id) {
+                continue;
+            }
+            let (state, needs) = match (s.state, s.needs) {
+                (State::NeedsInput, Some(n)) => (
+                    State::NeedsInput,
+                    Some(Needs {
+                        kind: n.kind,
+                        label: n.label,
+                        seen: n.seen,
+                        opened: n.opened,
+                        escalated: n.escalated,
+                        // The main agent: who asked isn't saved (ADR 0019).
+                        waiting: vec![None],
+                    }),
+                ),
+                (State::NeedsInput, None) => (State::Idle, None),
+                (state, _) => (state, None),
+            };
+            let cast = self.settings.animals.contains(&s.animal)
+                || self.settings.animal_overrides.get(&s.project_key) == Some(&s.animal);
+            let free = self.sessions.iter().all(|x| x.animal != s.animal);
+            let animal = if cast && free {
+                s.animal
+            } else {
+                self.animal_for(&s.project_key, self.sessions.len())
+            };
+            self.sessions.push(Session {
+                id: s.id,
+                project: s.project,
+                project_key: s.project_key,
+                state,
+                since: s.since,
+                activity: s.activity,
+                needs,
+                animal,
+                simulated: false,
+                last_event: s.last_event,
+                gone_at: None,
+                process_known: true,
+                requests: Vec::new(),
+                turn_done: state == State::Ready,
+            });
         }
     }
 

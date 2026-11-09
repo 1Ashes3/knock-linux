@@ -95,6 +95,19 @@ pub enum Category {
 }
 
 impl Category {
+    /// The lower-case name, as `sessions.json` saves it.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "read" => Some(Self::Read),
+            "search" => Some(Self::Search),
+            "edit" => Some(Self::Edit),
+            "run" => Some(Self::Run),
+            "web" => Some(Self::Web),
+            "other" => Some(Self::Other),
+            _ => None,
+        }
+    }
+
     /// §8.3 tool categories.
     pub fn of(tool: &str) -> Self {
         match tool {

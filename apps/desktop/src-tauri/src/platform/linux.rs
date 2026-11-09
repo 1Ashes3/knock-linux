@@ -272,8 +272,31 @@ pub fn parse_stat(stat: &str) -> Option<(u32, u64, String)> {
     Some((parent, start, comm))
 }
 
+/// `/proc/<pid>/stat` with the start time made absolute: clock ticks since
+/// the Unix epoch, not since boot. Saved sessions are matched by PID and
+/// start time after a restart (FR-13); counted from boot, a process after a
+/// reboot could share both with one from before it.
 fn read_stat(pid: u32) -> Option<(u32, u64, String)> {
-    parse_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+    let (parent, start, comm) =
+        parse_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)?;
+    Some((parent, boot_ticks() + start, comm))
+}
+
+/// Clock ticks from the Unix epoch to this boot (`btime` in `/proc/stat`).
+fn boot_ticks() -> u64 {
+    static BOOT: OnceLock<u64> = OnceLock::new();
+    *BOOT.get_or_init(|| {
+        let btime = std::fs::read_to_string("/proc/stat")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("btime ")?.trim().parse::<u64>().ok())
+            })
+            .unwrap_or(0);
+        // SAFETY: sysconf only reads a system constant.
+        let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        btime * u64::try_from(hz).unwrap_or(100).max(1)
+    })
 }
 
 fn process_start(pid: u32) -> Option<u64> {
@@ -1056,6 +1079,13 @@ mod tests {
         let pid = std::process::id();
         let (_, start, _) = read_stat(pid).unwrap();
         assert_eq!(process_start(pid), Some(start));
+        // Absolute: after this boot, in clock ticks since the epoch.
+        let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(start > boot_ticks() && start <= (now + 1) * hz);
     }
 
     const TCP: &str = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
