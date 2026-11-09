@@ -37,6 +37,8 @@ let settings: Settings = {
 	quietHours: { enabled: false, start: "22:00", end: "08:00" },
 	launchAtSignIn: null,
 	animalOverrides: {},
+	placement: "top",
+	cardFadeSeconds: 3,
 };
 let installed = q.get("installed") === "1";
 const SERVER_ERROR =

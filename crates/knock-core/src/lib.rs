@@ -7,6 +7,7 @@ mod adapter;
 mod away;
 mod engine;
 mod event;
+pub mod paths;
 
 pub use adapter::{
     Adapter, Capability, ClaudeCode, HookSpec, ParseError, project_key, project_with,

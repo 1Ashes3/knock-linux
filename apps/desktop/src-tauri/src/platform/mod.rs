@@ -1,13 +1,41 @@
 //! Platform layer (SPEC.md §7.3, §9). Every OS call goes through [`Platform`].
-//! Stage A has only the Windows implementation.
+//! One implementation per OS: Windows, and Linux (ADR 0037).
 
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(windows)]
 mod windows;
 
-pub use self::windows::{WindowsPlatform, fill_random, link_count, local_minute};
+#[cfg(target_os = "linux")]
+pub use self::linux::{LinuxPlatform as NativePlatform, fill_random, link_count, local_minute};
+#[cfg(windows)]
+pub use self::windows::{WindowsPlatform as NativePlatform, fill_random, link_count, local_minute};
 use crate::jump::{ProcessId, Target};
-use crate::strip::Rect;
+use crate::strip::{Rect, Region};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+
+/// Where the strip is drawn right now, from the `placement` setting and
+/// whether a knock is waiting ([`StripLayer::of`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripLayer {
+    Top,
+    Desktop,
+    Hidden,
+}
+
+impl StripLayer {
+    /// `desktop` rises to the top while a knock nobody has seen is waiting.
+    pub fn of(placement: crate::settings::Placement, knocking: bool) -> Self {
+        use crate::settings::Placement;
+        match placement {
+            Placement::Top => Self::Top,
+            Placement::Hidden => Self::Hidden,
+            Placement::Desktop if knocking => Self::Top,
+            Placement::Desktop => Self::Desktop,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Taskbar {
@@ -71,6 +99,14 @@ pub trait Platform: Send + Sync {
     fn cursor_pos(&self) -> Option<(i32, i32)>;
     /// `true`: the strip ignores the mouse (§9.3).
     fn set_click_through(&self, on: bool);
+    /// The UI's new hit regions (§8.5), in logical px from the strip's
+    /// top-left. Where the cursor can't be polled ([`Platform::cursor_pos`]
+    /// is `None`, as on Wayland), the platform makes exactly these regions
+    /// take the mouse and lets every other point through (ADR 0037).
+    fn set_hit_regions(&self, _regions: &[Region]) {}
+    /// Moves the strip to `layer` (ADR 0037): above other windows, behind
+    /// them on the desktop, or hidden. Never activates it.
+    fn set_strip_layer(&self, _layer: StripLayer) {}
     /// §9.4 step 1: the process that owns the client end of the loopback TCP
     /// connection from `client_port` to Knock's `server_port`.
     fn connection_owner(&self, client_port: u16, server_port: u16) -> Option<ProcessId>;
@@ -105,6 +141,7 @@ pub trait Platform: Send + Sync {
 /// last input's tick (`GetLastInputInfo`), which is only 32 bits and wraps
 /// every 49.7 days. The low 32 bits of `now` minus `last_input`, wrapping,
 /// is exact while the idle time is under 49.7 days.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn idle_from_ticks(now: u64, last_input: u32) -> u64 {
     u64::from((now as u32).wrapping_sub(last_input))
 }
@@ -321,6 +358,23 @@ impl Platform for FakePlatform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_placement_rises_only_while_a_knock_is_unseen() {
+        use crate::settings::Placement;
+        for knocking in [false, true] {
+            assert_eq!(StripLayer::of(Placement::Top, knocking), StripLayer::Top);
+            assert_eq!(
+                StripLayer::of(Placement::Hidden, knocking),
+                StripLayer::Hidden
+            );
+        }
+        assert_eq!(
+            StripLayer::of(Placement::Desktop, false),
+            StripLayer::Desktop
+        );
+        assert_eq!(StripLayer::of(Placement::Desktop, true), StripLayer::Top);
+    }
 
     #[test]
     fn the_run_value_is_the_quoted_exe_path() {

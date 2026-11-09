@@ -64,6 +64,17 @@
 	text-overflow: ellipsis;
 }
 
+.tooltip {
+	opacity: 1;
+	transition-property: opacity;
+	transition-timing-function: ease-in;
+}
+
+/* Fading out after the mouse left (ADR 0037); the duration is set inline. */
+.tooltip[data-fading] {
+	opacity: 0;
+}
+
 .tooltip .project {
 	font-weight: 700;
 }

@@ -780,18 +780,10 @@ pub fn gone<'a>(
         .collect()
 }
 
-/// `%USERNAME%` and the last part of `%USERPROFILE%`, for the adapter's
-/// `home` rule (ADR 0020). Process environment, not a Windows API call.
+/// The login name and the last part of the home folder, for the adapter's
+/// `home` rule (ADR 0020). Process environment, not an OS API call.
 fn users() -> Vec<String> {
-    ["USERNAME", "USERPROFILE"]
-        .iter()
-        .filter_map(|k| std::env::var(k).ok())
-        .filter_map(|v| {
-            v.rsplit(['\\', '/'])
-                .find(|s| !s.is_empty())
-                .map(str::to_string)
-        })
-        .collect()
+    knock_core::paths::user_names(&knock_core::paths::process_env)
 }
 
 pub fn now_ms() -> u64 {
@@ -1402,7 +1394,8 @@ mod tests {
 
     #[test]
     fn a_missing_owner_is_logged_once_per_session_until_found() {
-        let logs = temp_dir("owner-log");
+        // Its own folder: `core` empties the one named after the test.
+        let logs = temp_dir("owner-log-logs");
         let mut t = core("owner-log");
         let sub = crate::log::FileLog::new(logs.clone());
         tracing::subscriber::with_default(sub, || {

@@ -20,6 +20,7 @@ import {
 	startRepair,
 	stepOf,
 } from "./flow";
+import { WORDS } from "./os";
 
 export type Update = (patch: Partial<Settings>) => Promise<string | null>;
 
@@ -36,8 +37,7 @@ interface Props {
 }
 
 /** ADR 0023: what the Repair screen says when the core gives no reason. */
-export const REPAIR_FALLBACK =
-	"Another program on this PC is using the connection Knock had. Knock can pick a new one.";
+export const REPAIR_FALLBACK = `Another program on ${WORDS.machine} is using the connection Knock had. Knock can pick a new one.`;
 
 export function Setup({
 	status,
@@ -150,7 +150,7 @@ export function Setup({
 				>
 					<p>{status.serverError || REPAIR_FALLBACK}</p>
 					<p>
-						Until this is fixed, your sessions can't show up on the taskbar.
+						Until this is fixed, your sessions can't show up on {WORDS.where}.
 						Repair picks a new connection. Then Knock shows you the change this
 						needs in your Claude Code settings, and saves it only when you
 						confirm.
@@ -203,11 +203,7 @@ export function Setup({
 						</>
 					}
 				>
-					<p>
-						Knock shows each Claude Code session as a small figure on your
-						taskbar, near the clock. When a session needs you, it knocks and
-						Windows shows one notification. Everything else stays calm.
-					</p>
+					<p>{WORDS.welcome}</p>
 					<p>
 						Setup takes about a minute. You won't need to type any commands or
 						edit any files, and you can change everything later in Settings.
@@ -226,7 +222,7 @@ export function Setup({
 			return (
 				<Screen
 					counter={counter}
-					title="Which taskbar should Knock sit on?"
+					title={WORDS.pickTitle}
 					error={error}
 					actions={
 						<>
@@ -238,11 +234,7 @@ export function Setup({
 					}
 				>
 					<fieldset>
-						<legend>
-							You have more than one display. Knock rests on one taskbar, near
-							the clock. Pick the one you look at most; Knock moves there right
-							away.
-						</legend>
+						<legend>{WORDS.pickLegend}</legend>
 						{monitors.map((m, i) => (
 							<label key={m.id} className="option">
 								<input
@@ -370,7 +362,7 @@ export function Setup({
 			return (
 				<Screen
 					counter={counter}
-					title="Start Knock when you sign in?"
+					title={WORDS.signInTitle}
 					error={error}
 					actions={
 						<>
@@ -386,16 +378,12 @@ export function Setup({
 								className="primary"
 								onClick={() => void choose({ launchAtSignIn: true }, true)}
 							>
-								Yes, start with Windows
+								{WORDS.signInYes}
 							</button>
 						</>
 					}
 				>
-					<p>
-						If Knock starts by itself when you sign in to Windows, you won't
-						miss a knock after restarting your PC. It uses very little memory
-						and stays quiet until a session needs you.
-					</p>
+					<p>{WORDS.signInBody}</p>
 					<p className="help">You can change this later in Settings.</p>
 				</Screen>
 			);
@@ -460,10 +448,9 @@ export function Setup({
 					}
 				>
 					<p>
-						So you know what to look for: press the button, then watch the right
-						end of your taskbar, near the clock. A test figure knocks and
-						Windows shows a notification. It's only a test; none of your
-						sessions are involved.
+						So you know what to look for: press the button, then watch{" "}
+						{WORDS.testLook}. A test figure knocks and {WORDS.notifier} shows a
+						notification. It's only a test; none of your sessions are involved.
 					</p>
 					{flow.test === "played" && (
 						<p className="question" role="status">
@@ -474,11 +461,8 @@ export function Setup({
 						<div role="status">
 							<p>Some things to check:</p>
 							<ul>
-								<li>Look at the taskbar on the display you chose.</li>
-								<li>
-									In Windows Settings, under System, then Notifications, make
-									sure notifications are on for Knock and Do not disturb is off.
-								</li>
+								<li>{WORDS.missedPlace}</li>
+								<li>{WORDS.missedNotifications}</li>
 							</ul>
 						</div>
 					)}
@@ -501,7 +485,7 @@ export function Setup({
 				>
 					<p>
 						Claude Code windows that are already open connect within about 10
-						seconds; no restart needed. New sessions show up on your taskbar as
+						seconds; no restart needed. New sessions show up on {WORDS.where} as
 						soon as they start.
 					</p>
 					<p>
@@ -514,8 +498,7 @@ export function Setup({
 }
 
 /** Settings opens from the tray menu; the icon may sit in the overflow behind the ^ arrow. */
-export const OPEN_SETTINGS =
-	"right-click the fox icon near the clock (you may need the ^ arrow) and choose Settings.";
+export const OPEN_SETTINGS = WORDS.openSettings;
 
 /** Where the core saved the old file. An empty path means there was no file to back up (§8.2). */
 export function Backup({ path }: { path: string }) {

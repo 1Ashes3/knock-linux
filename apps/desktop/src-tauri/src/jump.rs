@@ -1,6 +1,10 @@
 //! Pure session-to-window logic (SPEC.md §9.4, §9.5). No OS calls: the
 //! platform layer takes the snapshots, these functions decide. Unit-tested on
 //! process trees and window lists recorded on the user's machine.
+//!
+//! The window-list and TCP-table parts serve the Windows platform only; they
+//! stay compiled (and tested) everywhere.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 use serde::Serialize;
 use std::net::Ipv4Addr;

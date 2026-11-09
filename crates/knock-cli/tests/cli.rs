@@ -52,10 +52,11 @@ mod sim {
     fn appdata(name: &str, port: Option<u16>) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("knock-sim-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("Knock")).unwrap();
+        let data = knock_core::paths::data_dir(&|k: &str| super::test_env(&dir, k)).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
         if let Some(port) = port {
             let cfg = format!(r#"{{"port":{port},"token":"{TOKEN}"}}"#);
-            std::fs::write(dir.join("Knock").join("server.json"), cfg).unwrap();
+            std::fs::write(data.join("server.json"), cfg).unwrap();
         }
         dir
     }
@@ -64,6 +65,7 @@ mod sim {
         let out = Command::new(env!("CARGO_BIN_EXE_knock"))
             .args(args)
             .env("APPDATA", dir)
+            .env("XDG_CONFIG_HOME", dir)
             .output()
             .unwrap();
         std::fs::remove_dir_all(dir).unwrap();
@@ -157,4 +159,9 @@ mod sim {
         let unknown = knock(&appdata("unknown", None), &["sim", "nope", "--local"]);
         assert!(String::from_utf8_lossy(&unknown.stderr).starts_with("error: no scenario `nope`"));
     }
+}
+
+/// The variables `knock()` sets, as `knock_core::paths` reads them.
+fn test_env(dir: &std::path::Path, key: &str) -> Option<std::ffi::OsString> {
+    matches!(key, "APPDATA" | "XDG_CONFIG_HOME").then(|| dir.as_os_str().to_owned())
 }

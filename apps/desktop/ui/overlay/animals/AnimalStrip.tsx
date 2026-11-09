@@ -5,6 +5,7 @@ import {
 	type CSSProperties,
 	useEffect,
 	useLayoutEffect,
+	useMemo,
 	useRef,
 	useState,
 } from "react";
@@ -16,6 +17,7 @@ import { call, type HitRegion } from "../bridge";
 import { Den } from "../Den";
 import { CloseIcon, GlyphIcon } from "../Glyph";
 import { accessibleName, dismissible, glyph, INK, TIER_FILL } from "../pill";
+import { POINTER_ENTERED, POINTER_LEFT, visibleSessions } from "../placement";
 import { STALL_DEFAULT, useMinuteClock, useSend } from "../Strip";
 import type { StripStore } from "../store";
 import { CLIPS } from "./art";
@@ -89,7 +91,12 @@ export function AnimalStrip({
 	/** A click on the away card (FR-9). */
 	onDismissAway: () => void;
 }) {
-	const sessions = useStore(store, (s) => s.sessions);
+	const all = useStore(store, (s) => s.sessions);
+	const placement = useStore(store, (s) => s.settings?.placement);
+	const sessions = useMemo(
+		() => visibleSessions(all, placement),
+		[all, placement],
+	);
 	const away = useStore(store, (s) => s.away);
 	const size = useStore(store, (s) => s.settings?.size ?? "medium");
 	const stallMinutes = useStore(
@@ -99,7 +106,52 @@ export function AnimalStrip({
 	// §6, §10.1: Windows "Animation effects" off.
 	const still = useMedia("(prefers-reduced-motion: reduce)");
 	const dpr = useDevicePixelRatio();
+	// The card stays while the mouse is on the character or the card itself, then fades
+	// out over `cardFadeSeconds`, like a notification; coming back cancels the fade.
+	const fadeMs = useStore(
+		store,
+		(s) => (s.settings?.cardFadeSeconds ?? CARD_FADE_DEFAULT) * 1000,
+	);
+	const fadeMsRef = useRef(fadeMs);
+	fadeMsRef.current = fadeMs;
 	const [hover, setHover] = useState<string | null>(null);
+	const [fading, setFading] = useState(false);
+	// Linux: hovers count only while the pointer is really in the strip. WebKitGTK replays
+	// the last position as a fake move when the page changes, after the pointer has gone.
+	// Windows sends neither event, so it stays true there.
+	const inside = useRef(true);
+	const fadeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+	const enter = (id: string) => {
+		if (!inside.current) return;
+		clearTimeout(fadeTimer.current);
+		setFading(false);
+		setHover(id);
+	};
+	const leave = useRef(() => {
+		clearTimeout(fadeTimer.current);
+		setFading(true);
+		fadeTimer.current = setTimeout(() => {
+			setHover(null);
+			setFading(false);
+		}, fadeMsRef.current);
+	}).current;
+	useEffect(() => {
+		const left = () => {
+			inside.current = false;
+			leave();
+		};
+		const entered = () => {
+			inside.current = true;
+		};
+		window.addEventListener(POINTER_LEFT, left);
+		window.addEventListener(POINTER_ENTERED, entered);
+		return () => {
+			window.removeEventListener(POINTER_LEFT, left);
+			window.removeEventListener(POINTER_ENTERED, entered);
+			clearTimeout(fadeTimer.current);
+		};
+	}, [leave]);
+	const onHover = (id: string | null) => (id === null ? leave() : enter(id));
 	const [woken, wake] = useState(0);
 	useMinuteClock(hover !== null || sessions.some((s) => s.state === "stalled"));
 
@@ -165,6 +217,21 @@ export function AnimalStrip({
 		m,
 	);
 	if (cardRect) local.push(cardRect);
+	const owner = (id: string) => shown.find((c) => c.session.id === id);
+	const hovered = owner(hover ?? "");
+	const tip =
+		hovered &&
+		tooltipLayout(
+			hovered,
+			now,
+			stallMinutes,
+			characterRect(hovered.slot, raised(hovered), chipArea, m).y,
+			width,
+			m,
+			measureFor,
+		);
+	// The card catches the mouse too, so it can be read with the pointer on it.
+	if (tip) local.push(tip.box);
 	useLayoutEffect(() => {
 		const report = () => {
 			const box = ref.current?.getBoundingClientRect();
@@ -228,8 +295,6 @@ export function AnimalStrip({
 		renderer.current?.sync(draw, view);
 	});
 
-	const owner = (id: string) => shown.find((c) => c.session.id === id);
-	const hovered = owner(hover ?? "");
 	// A character that goes away under the mouse gets no mouseleave.
 	useEffect(() => {
 		if (hover !== null && !hovered) setHover(null);
@@ -291,7 +356,7 @@ export function AnimalStrip({
 					still={still}
 					settled={frameAt(c.plan, now, CLIPS).settled}
 					name={accessibleName(c.session, now, stallMinutes)}
-					onHover={setHover}
+					onHover={onHover}
 				/>
 			))}
 			{shown
@@ -332,15 +397,15 @@ export function AnimalStrip({
 				/>
 			)}
 			<AwayAnnouncer card={card} />
-			{hovered && (
+			{hovered && tip && (
 				<Tooltip
-					c={hovered}
-					now={now}
-					stallMinutes={stallMinutes}
-					bottom={characterRect(hovered.slot, raised(hovered), chipArea, m).y}
-					width={width}
+					tip={tip}
 					m={m}
-					measureFor={measureFor}
+					fading={fading}
+					fadeMs={fadeMs}
+					still={still}
+					onEnter={() => enter(hovered.session.id)}
+					onLeave={leave}
 				/>
 			)}
 		</div>
@@ -381,6 +446,9 @@ function CharacterButton({
 			}}
 			onClick={() => void call("jump_to_session", { id })}
 			onMouseEnter={() => onHover(id)}
+			// A real move after the pointer came back: the enter may have been ignored
+			// while the core's "pointer-entered" was still on its way.
+			onMouseMove={() => onHover(id)}
 			onMouseLeave={() => onHover(null)}
 		>
 			{s.state === "idle" && (
@@ -486,24 +554,19 @@ function Leaders({
 	);
 }
 
-/** FR-7: project, state label, time in state and, for Needs you, the decision type. */
-function Tooltip({
-	c,
-	now,
-	stallMinutes,
-	bottom,
-	width,
-	m,
-	measureFor,
-}: {
-	c: Character;
-	now: number;
-	stallMinutes: number;
-	bottom: number;
-	width: number;
-	m: Metrics;
-	measureFor: (font: string) => (text: string) => number;
-}) {
+/** `cardFadeSeconds` until settings arrive (ADR 0037). */
+const CARD_FADE_DEFAULT = 3;
+
+/** FR-7: the card's lines and where it goes, above the character's top at `bottom`. */
+function tooltipLayout(
+	c: Character,
+	now: number,
+	stallMinutes: number,
+	bottom: number,
+	width: number,
+	m: Metrics,
+	measureFor: (font: string) => (text: string) => number,
+) {
 	const lines = tooltipLines(c.session, now, stallMinutes);
 	const bold = measureFor(`700 ${m.font}px ${FONT}`);
 	const regular = measureFor(`400 ${m.font}px ${FONT}`);
@@ -514,11 +577,37 @@ function Tooltip({
 		width,
 		m,
 	);
+	return { lines, box };
+}
+
+/** FR-7: project, state label, time in state and, for Needs you, the decision type. */
+function Tooltip({
+	tip: { lines, box },
+	m,
+	fading,
+	fadeMs,
+	still,
+	onEnter,
+	onLeave,
+}: {
+	tip: ReturnType<typeof tooltipLayout>;
+	m: Metrics;
+	fading: boolean;
+	fadeMs: number;
+	still: boolean;
+	onEnter: () => void;
+	onLeave: () => void;
+}) {
 	return (
 		<div
 			className="tooltip"
 			aria-hidden="true"
+			data-fading={fading && !still ? "" : undefined}
+			onMouseEnter={onEnter}
+			onMouseLeave={onLeave}
 			style={{
+				// Fades out slowly; comes back at once.
+				transitionDuration: fading ? `${fadeMs}ms` : "0ms",
 				left: box.x,
 				top: box.y,
 				width: box.width,

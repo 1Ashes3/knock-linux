@@ -75,6 +75,10 @@ export interface Settings {
 	quietHours: { enabled: boolean; start: string; end: string };
 	launchAtSignIn: boolean | null;
 	animalOverrides: Record<string, string>;
+	/** ADR 0037: where the strip lives. */
+	placement: "top" | "desktop" | "hidden";
+	/** ADR 0037: seconds a hover card stays after the mouse leaves, fading out. */
+	cardFadeSeconds: number;
 }
 
 /** ADR 0003: logical px from the strip's top-left. */

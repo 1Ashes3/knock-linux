@@ -743,10 +743,15 @@ impl Setup {
 
 /// The Claude Code settings files for `env`, the one Claude Code reads
 /// first (§8.2, ADR 0022): `<CLAUDE_CONFIG_DIR>\settings.json` if that
-/// variable is non-empty, then `%USERPROFILE%\.claude\settings.json`.
+/// variable is non-empty, then `~/.claude/settings.json` (`%USERPROFILE%`
+/// on Windows, `$HOME` elsewhere).
 fn claude_files(env: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    claude_files_for(cfg!(windows), env)
+}
+
+fn claude_files_for(windows: bool, env: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
     let config = env("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty());
-    let home = env("USERPROFILE").map(|h| PathBuf::from(h).join(".claude"));
+    let home = knock_core::paths::home_dir_for(windows, &env).map(|h| h.join(".claude"));
     (config.map(PathBuf::from).into_iter())
         .chain(home)
         .map(|d| d.join("settings.json"))
@@ -1344,6 +1349,15 @@ mod tests {
         assert_eq!(indent(Some("{\n \t\"a\": 1\n}")), "  ", "mixed");
     }
 
+    /// A symbolic link to a file. On Windows it needs Developer Mode or
+    /// admin rights, so callers skip their link case when it fails.
+    fn symlink_file(real: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(windows)]
+        return std::os::windows::fs::symlink_file(real, link);
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(real, link);
+    }
+
     #[test]
     fn a_symlinked_file_is_read_backed_up_and_written_at_its_target() {
         let d = Dir::new();
@@ -1351,7 +1365,7 @@ mod tests {
         std::fs::create_dir_all(real.parent().unwrap()).unwrap();
         std::fs::create_dir_all(d.file().parent().unwrap()).unwrap();
         std::fs::write(&real, REAL).unwrap();
-        if let Err(e) = std::os::windows::fs::symlink_file(&real, d.file()) {
+        if let Err(e) = symlink_file(&real, &d.file()) {
             // Needs Developer Mode or admin rights; `target` is still
             // covered by the hard-link and missing-file tests.
             eprintln!("skipped: can't create a symlink here ({:?})", e.kind());
@@ -1367,7 +1381,7 @@ mod tests {
         let p = s.preview().unwrap();
         assert_eq!(p.path, shown(&std::fs::canonicalize(&real).unwrap()));
         assert!(
-            p.path.ends_with(r"dotfiles\claude-settings.json"),
+            Path::new(&p.path).ends_with(Path::new("dotfiles").join("claude-settings.json")),
             "{}",
             p.path
         );
@@ -1645,29 +1659,42 @@ mod tests {
         }
         let home = [("USERPROFILE", r"C:\Users\A")];
         assert_eq!(
-            claude_files(env(&home)),
-            [PathBuf::from(r"C:\Users\A\.claude\settings.json")]
+            claude_files_for(true, env(&home)),
+            [PathBuf::from(r"C:\Users\A")
+                .join(".claude")
+                .join("settings.json")]
         );
         let both = [
             ("USERPROFILE", r"C:\Users\A"),
             ("CLAUDE_CONFIG_DIR", r"D:\cfg\claude"),
         ];
         assert_eq!(
-            claude_files(env(&both)),
+            claude_files_for(true, env(&both)),
             [
-                PathBuf::from(r"D:\cfg\claude\settings.json"),
-                PathBuf::from(r"C:\Users\A\.claude\settings.json"),
+                PathBuf::from(r"D:\cfg\claude").join("settings.json"),
+                PathBuf::from(r"C:\Users\A")
+                    .join(".claude")
+                    .join("settings.json"),
             ],
             "Claude Code's own first; both are guarded"
         );
         let empty = [("USERPROFILE", r"C:\Users\A"), ("CLAUDE_CONFIG_DIR", "")];
-        assert_eq!(claude_files(env(&empty)), claude_files(env(&home)));
+        assert_eq!(
+            claude_files_for(true, env(&empty)),
+            claude_files_for(true, env(&home))
+        );
         let only = [("CLAUDE_CONFIG_DIR", r"D:\cfg")];
         assert_eq!(
-            claude_files(env(&only)),
-            [PathBuf::from(r"D:\cfg\settings.json")]
+            claude_files_for(true, env(&only)),
+            [PathBuf::from(r"D:\cfg").join("settings.json")]
         );
-        assert!(claude_files(env(&[])).is_empty());
+        assert!(claude_files_for(true, env(&[])).is_empty());
+        // Linux: $HOME, not %USERPROFILE%.
+        let linux = [("HOME", "/home/a"), ("USERPROFILE", r"C:\Users\A")];
+        assert_eq!(
+            claude_files_for(false, env(&linux)),
+            [PathBuf::from("/home/a/.claude/settings.json")]
+        );
     }
 
     #[test]
@@ -1699,7 +1726,7 @@ mod tests {
         refused(&guarded(upper));
         // Through a symbolic link (needs Developer Mode or admin rights).
         let link = d.0.join("scratch-settings.json");
-        match std::os::windows::fs::symlink_file(&real, &link) {
+        match symlink_file(&real, &link) {
             Ok(()) => refused(&guarded(link)),
             Err(e) => eprintln!("link case skipped: can't create a symlink ({:?})", e.kind()),
         }

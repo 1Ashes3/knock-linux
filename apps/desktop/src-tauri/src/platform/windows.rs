@@ -1,6 +1,6 @@
 //! Windows implementation of [`Platform`]. All Win32 calls live here.
 
-use super::{Display, Monitor, Platform, RunOp, SignInChange, Taskbar, monitor_id};
+use super::{Display, Monitor, Platform, RunOp, SignInChange, StripLayer, Taskbar, monitor_id};
 use crate::jump::{self, Proc, ProcessId, Target, TcpRow, Win};
 use crate::strip::Rect;
 use windows::Win32::Foundation::{
@@ -37,11 +37,12 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     EDD_GET_DEVICE_INTERFACE_NAME, EnumWindows, FLASHW_ALL, FLASHW_TIMERNOFG, FLASHWINFO,
     FlashWindowEx, GA_ROOTOWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetCursorPos,
-    GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, HWND_TOPMOST,
-    IsIconic, IsWindow, IsWindowVisible, MONITORINFOF_PRIMARY, RegisterWindowMessageW, SW_RESTORE,
-    SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, ShowWindowAsync, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_SETTINGCHANGE,
-    WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, HWND_BOTTOM,
+    HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible, MONITORINFOF_PRIMARY,
+    RegisterWindowMessageW, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    ShowWindowAsync, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_SETTINGCHANGE, WS_EX_APPWINDOW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -49,17 +50,31 @@ pub struct WindowsPlatform {
     // HWND is !Send; the raw value is safe to use from any thread for the
     // style and position calls below.
     strip: isize,
+    /// [`StripLayer`] as 0 top, 1 desktop, 2 hidden (ADR 0037).
+    layer: std::sync::atomic::AtomicU8,
+    /// `show_strip` ran: from then on a layer change may show the window.
+    shown: std::sync::atomic::AtomicBool,
 }
 
 impl WindowsPlatform {
     pub fn new(strip: &tauri::WebviewWindow) -> tauri::Result<Self> {
         Ok(Self {
             strip: strip.hwnd()?.0 as isize,
+            layer: std::sync::atomic::AtomicU8::new(0),
+            shown: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
     fn hwnd(&self) -> HWND {
         HWND(self.strip as _)
+    }
+
+    fn layer(&self) -> StripLayer {
+        match self.layer.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => StripLayer::Desktop,
+            2 => StripLayer::Hidden,
+            _ => StripLayer::Top,
+        }
     }
 }
 
@@ -525,11 +540,17 @@ impl Platform for WindowsPlatform {
 
     fn place_strip(&self, r: Rect) -> std::io::Result<()> {
         self.set_click_through(true);
+        // Desktop and hidden: at the bottom of the z-order, which also drops
+        // the topmost style (ADR 0037).
+        let after = match self.layer() {
+            StripLayer::Top => HWND_TOPMOST,
+            _ => HWND_BOTTOM,
+        };
         // SAFETY: valid window handle owned by this process.
         unsafe {
             SetWindowPos(
                 self.hwnd(),
-                Some(HWND_TOPMOST),
+                Some(after),
                 r.left,
                 r.top,
                 r.right - r.left,
@@ -542,6 +563,10 @@ impl Platform for WindowsPlatform {
     }
 
     fn show_strip(&self) {
+        self.shown.store(true, std::sync::atomic::Ordering::Relaxed);
+        if self.layer() == StripLayer::Hidden {
+            return;
+        }
         // Not tao's `set_visible`: it rewrites the styles. tao keeps thinking
         // the strip is hidden, so any tao setter on it would hide it again
         // (tao `apply_diff`); ADR 0001 already rules those out.
@@ -550,6 +575,35 @@ impl Platform for WindowsPlatform {
             let _ = ShowWindow(self.hwnd(), SW_SHOWNOACTIVATE);
         }
         self.set_click_through(true);
+    }
+
+    fn set_strip_layer(&self, layer: StripLayer) {
+        let n = match layer {
+            StripLayer::Top => 0,
+            StripLayer::Desktop => 1,
+            StripLayer::Hidden => 2,
+        };
+        self.layer.store(n, std::sync::atomic::Ordering::Relaxed);
+        let shown = self.shown.load(std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: valid window handle owned by this process. Async, so the
+        // caller (any thread) never waits on the strip's thread.
+        unsafe {
+            if layer == StripLayer::Hidden {
+                let _ = ShowWindowAsync(self.hwnd(), SW_HIDE);
+                return;
+            }
+        }
+        if let Some(r) = self.strip_rect()
+            && let Err(e) = self.place_strip(r)
+        {
+            tracing::warn!(kind = ?e.kind(), "strip layer not changed");
+        }
+        if shown {
+            // SAFETY: as above.
+            unsafe {
+                let _ = ShowWindowAsync(self.hwnd(), SW_SHOWNOACTIVATE);
+            }
+        }
     }
 
     fn cursor_pos(&self) -> Option<(i32, i32)> {

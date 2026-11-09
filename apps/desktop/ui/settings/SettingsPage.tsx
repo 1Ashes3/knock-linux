@@ -20,6 +20,7 @@ import {
 	quietHoursPatch,
 	selectedMonitor,
 } from "./flow";
+import { WORDS } from "./os";
 import { Backup, type Update } from "./Setup";
 
 interface Props {
@@ -72,11 +73,11 @@ export function SettingsPage({
 			)}
 
 			<section aria-labelledby="look">
-				<h2 id="look">On the taskbar</h2>
+				<h2 id="look">{WORDS.lookHeading}</h2>
 				{monitors && monitors.length > 1 ? (
 					<Choice
-						legend="Which taskbar"
-						help="Knock rests on one display's taskbar, near the clock. It moves as soon as you pick."
+						legend={WORDS.pickLabel}
+						help={WORDS.pickHelp}
 						note={
 							chosen
 								? undefined
@@ -90,12 +91,37 @@ export function SettingsPage({
 						onChange={(monitor) => update({ monitor })}
 					/>
 				) : (
-					monitors?.length === 1 && (
-						<p className="field">
-							Only one display is connected, so Knock uses its taskbar.
-						</p>
-					)
+					monitors?.length === 1 && <p className="field">{WORDS.oneDisplay}</p>
 				)}
+				<Choice
+					legend="Where the animals live"
+					help="On the desktop, Knock stays behind your windows and comes to the front only to show the sessions that need you."
+					options={[
+						{
+							value: "desktop",
+							label: "On the desktop, up front when needed",
+						},
+						{ value: "top", label: "Always on top of windows" },
+						{
+							value: "hidden",
+							label: "Hidden: tray icon and notifications only",
+						},
+					]}
+					value={s.placement}
+					onChange={(placement) =>
+						update({ placement: placement as Settings["placement"] })
+					}
+				/>
+				<Choice
+					legend="Hover card fades after"
+					help="How long a figure's card stays once the mouse moves away from it."
+					options={[1, 3, 5, 10].map((n) => ({
+						value: String(n),
+						label: `${n} second${n === 1 ? "" : "s"}`,
+					}))}
+					value={String(s.cardFadeSeconds)}
+					onChange={(v) => update({ cardFadeSeconds: Number(v) })}
+				/>
 				<Choice
 					legend="Show sessions as"
 					help="An animal that knocks when the session needs you, or a colored label with words."
@@ -108,7 +134,7 @@ export function SettingsPage({
 				/>
 				<Choice
 					legend="Size"
-					help="How big Knock's figures are on the taskbar."
+					help={`How big Knock's figures are on ${WORDS.where}.`}
 					options={[
 						{ value: "small", label: "Small" },
 						{ value: "medium", label: "Medium" },
@@ -123,7 +149,7 @@ export function SettingsPage({
 				<h2 id="notify">Notifications</h2>
 				<Toggle
 					label="Pause notifications"
-					help="Stops all Windows notifications from Knock. The taskbar still shows everything."
+					help={`Stops all ${WORDS.notifications} from Knock. Its figures still show everything.`}
 					checked={s.pauseNotifications}
 					onChange={(pauseNotifications) => update({ pauseNotifications })}
 				/>
@@ -151,7 +177,7 @@ export function SettingsPage({
 				/>
 				<Toggle
 					label="Quiet hours"
-					help="No notifications between the times below, every day. The taskbar still shows everything."
+					help="No notifications between the times below, every day. Knock's figures still show everything."
 					checked={s.quietHours.enabled}
 					onChange={(enabled) =>
 						update(quietHoursPatch(s.quietHours, { enabled }))
@@ -182,8 +208,8 @@ export function SettingsPage({
 			<section aria-labelledby="start">
 				<h2 id="start">Starting Knock</h2>
 				<Toggle
-					label="Start Knock when I sign in to Windows"
-					help="So you don't miss a knock after restarting your PC."
+					label={WORDS.signInToggle}
+					help={WORDS.signInHelp}
 					checked={s.launchAtSignIn === true}
 					onChange={(launchAtSignIn) => update({ launchAtSignIn })}
 				/>

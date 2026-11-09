@@ -241,8 +241,9 @@ impl Adapter for ClaudeCode {
 }
 
 /// `project` (§8.3): the last part of `cwd`, with `.` dropped and `..`
-/// applied, or `home` for a home folder (directly under `Users`, or named
-/// like a `users` entry), so a user name is never shown as a project.
+/// applied, or `home` for a home folder (directly under `Users` or, on
+/// Linux, `home`, or named like a `users` entry), so a user name is never
+/// shown as a project.
 /// Same rule as `apps/desktop/src-tauri/src/jump.rs`.
 pub fn project_with<'a>(cwd: &'a str, users: &[String]) -> &'a str {
     let mut parts = Vec::new();
@@ -258,7 +259,8 @@ pub fn project_with<'a>(cwd: &'a str, users: &[String]) -> &'a str {
     let last = parts.last().copied().unwrap_or("");
     let parent = parts.len().checked_sub(2).map_or("", |i| parts[i]);
     let lower = last.to_lowercase();
-    if parent.eq_ignore_ascii_case("users") || users.iter().any(|u| u.to_lowercase() == lower) {
+    let home_parent = parent.eq_ignore_ascii_case("users") || parent == "home";
+    if home_parent || users.iter().any(|u| u.to_lowercase() == lower) {
         "home"
     } else {
         last

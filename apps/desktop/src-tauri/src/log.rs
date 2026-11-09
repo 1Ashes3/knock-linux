@@ -1,4 +1,5 @@
-//! File logging (SPEC.md §11.5): `%LOCALAPPDATA%\Knock\logs\knock.YYYY-MM-DD.log`,
+//! File logging (SPEC.md §11.5): `knock.YYYY-MM-DD.log` in
+//! `%LOCALAPPDATA%\Knock\logs` (Linux: `~/.local/state/knock/logs`),
 //! one file per UTC day, newest 7 kept. A minimal `tracing` subscriber, so no
 //! extra logging crates. Only this crate's events are written; dependency logs
 //! never reach the file. Callers log event names, session ids and timings
@@ -17,10 +18,9 @@ const KEEP: usize = 7;
 
 /// Installs the file logger. Logging is best-effort: failures are ignored.
 pub fn init() {
-    let Some(base) = std::env::var_os("LOCALAPPDATA") else {
+    let Some(dir) = knock_core::paths::log_dir(&knock_core::paths::process_env) else {
         return;
     };
-    let dir = PathBuf::from(base).join("Knock").join("logs");
     if fs::create_dir_all(&dir).is_ok() {
         let _ = tracing::subscriber::set_global_default(FileLog::new(dir));
     }

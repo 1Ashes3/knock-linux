@@ -15,9 +15,9 @@ mod strip;
 mod tray;
 
 use pipeline::{Msg, Out, SessionsChanged, Shared};
-use platform::{Monitor, Platform, WindowsPlatform};
+use platform::{Monitor, NativePlatform, Platform, StripLayer};
 use serde_json::{Value, json};
-use settings::Settings;
+use settings::{Placement, Settings};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,6 +66,45 @@ struct Knock {
     dir: PathBuf,
     /// No Knock `settings.json` existed when the app started.
     first_run: bool,
+}
+
+/// ADR 0037: which layer the strip is on, from the `placement` setting and
+/// whether a knock nobody has seen is waiting. The platform is told only
+/// when the layer changes.
+struct StripView {
+    platform: Arc<dyn Platform>,
+    /// (placement, knocking, the layer last set)
+    state: Mutex<(Placement, bool, Option<StripLayer>)>,
+}
+
+impl StripView {
+    fn new(platform: Arc<dyn Platform>, placement: Placement) -> Self {
+        Self {
+            platform,
+            state: Mutex::new((placement, false, None)),
+        }
+    }
+
+    fn update(&self, change: impl FnOnce(&mut Placement, &mut bool)) {
+        let layer = {
+            let mut s = lock(&self.state);
+            let (placement, knocking, last) = &mut *s;
+            change(placement, knocking);
+            let layer = StripLayer::of(*placement, *knocking);
+            if *last == Some(layer) {
+                return;
+            }
+            *last = Some(layer);
+            layer
+        };
+        // Outside the lock: the platform may wait for the main thread.
+        self.platform.set_strip_layer(layer);
+    }
+}
+
+/// A session has a knock nobody has seen yet (ADR 0016): the strip rises.
+fn knocking(sessions: &SessionsChanged) -> bool {
+    (sessions.sessions.iter()).any(|s| s.needs.as_ref().is_some_and(|n| !n.seen))
 }
 
 /// Locks, ignoring poisoning: every value here stays usable.
@@ -142,6 +181,7 @@ fn dismiss_away_summary(k: tauri::State<'_, Knock>) {
 /// click-through.
 #[tauri::command]
 fn set_hit_regions(regions: Vec<Region>, k: tauri::State<'_, Knock>) {
+    k.platform.set_hit_regions(&regions);
     lock(&k.strip).regions = regions;
 }
 
@@ -465,6 +505,7 @@ fn apply(
     server: &Arc<Mutex<Listening>>,
     shared: &Shared,
     moved: &AtomicBool,
+    view: &StripView,
 ) {
     match out {
         Out::Toast {
@@ -479,6 +520,8 @@ fn apply(
             }
         }
         Out::Sessions(payload) => {
+            let on = knocking(&payload);
+            view.update(|_, k| *k = on);
             let _ = app.emit_to("strip", "sessions-changed", payload);
         }
         Out::Away(payload) => {
@@ -487,9 +530,19 @@ fn apply(
         Out::Settings(settings) => {
             // A new `monitor` or `size` moves the strip at once.
             moved.store(true, Ordering::Relaxed);
+            view.update(|p, _| *p = settings.placement);
             let (item, on) = (tray.pause.clone(), settings.pause_notifications);
+            let places = tray.placement.clone();
+            let fades = tray.fade.clone();
+            let (placement, fade) = (settings.placement, settings.card_fade_seconds);
             let _ = app.run_on_main_thread(move || {
                 let _ = item.set_checked(on);
+                for (p, item) in places {
+                    let _ = item.set_checked(p == placement);
+                }
+                for (n, item) in fades {
+                    let _ = item.set_checked(n == fade);
+                }
             });
             let _ = app.emit(
                 "settings-changed",
@@ -510,7 +563,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // Created hidden; shown by the platform layer only once its §9.1 styles
     // and position are applied (below). Never call anything that focuses it.
     let url = WebviewUrl::App("/overlay/index.html".into());
-    let window = WebviewWindowBuilder::new(app, "strip", url)
+    let builder = WebviewWindowBuilder::new(app, "strip", url)
         .title("Knock")
         .visible(false)
         .transparent(true)
@@ -520,10 +573,11 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .focusable(false)
         .focused(false)
         .resizable(false)
-        .shadow(false)
-        .no_redirection_bitmap(true)
-        .build()?;
-    let platform: Arc<dyn Platform> = Arc::new(WindowsPlatform::new(&window)?);
+        .shadow(false);
+    #[cfg(windows)]
+    let builder = builder.no_redirection_bitmap(true);
+    let window = builder.build()?;
+    let platform: Arc<dyn Platform> = Arc::new(NativePlatform::new(&window)?);
 
     let dir = settings::data_dir()?;
     let first_run = !dir.join(settings::FILE).exists();
@@ -541,10 +595,19 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let listening = Arc::new(Mutex::new(Listening::default()));
     let moved = Arc::new(AtomicBool::new(false));
     let handle = app.handle().clone();
-    let (l, sh, m) = (Arc::clone(&listening), shared.clone(), Arc::clone(&moved));
+    let placement = pipeline::read(&shared).settings.placement;
+    let view = Arc::new(StripView::new(Arc::clone(&platform), placement));
+    let (l, sh, m, v) = (
+        Arc::clone(&listening),
+        shared.clone(),
+        Arc::clone(&moved),
+        Arc::clone(&view),
+    );
     std::thread::Builder::new()
         .name("knock-pipeline".into())
-        .spawn(move || pipeline::run(core, rx, |out| apply(&handle, &tray, out, &l, &sh, &m)))?;
+        .spawn(move || {
+            pipeline::run(core, rx, |out| apply(&handle, &tray, out, &l, &sh, &m, &v))
+        })?;
 
     // A click on the on-screen toast jumps to its session (ADR 0015). The
     // handler runs on the plugin's thread; the jump runs on the main one.
@@ -615,6 +678,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let (p, s, sh) = (&*k.platform, &*k.strip, &k.shared);
     tracing::info!(displays = ?p.displays(), taskbar = ?p.taskbar(), "displays");
     reposition(p, s, sh);
+    // The layer before the first show, so a hidden strip never flashes.
+    view.update(|_, _| {});
     p.show_strip();
     // Display, DPI, work-area and taskbar messages reach the strip's window
     // on this (main) thread.
@@ -647,13 +712,17 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     };
                     due = now + wait;
                 }
-                let inside = p.cursor_pos().is_some_and(|c| {
-                    let s = lock(&s);
-                    strip::hit(&s.regions, s.rect, s.scale, c)
-                });
-                // Every tick, so styles tao rewrites are repaired within one
-                // tick (ADR 0001). It writes only when they differ.
-                p.set_click_through(!inside);
+                // Where the cursor can't be read (Wayland), the platform
+                // applies the hit regions itself (ADR 0037).
+                if cfg!(windows) {
+                    let inside = p.cursor_pos().is_some_and(|c| {
+                        let s = lock(&s);
+                        strip::hit(&s.regions, s.rect, s.scale, c)
+                    });
+                    // Every tick, so styles tao rewrites are repaired within
+                    // one tick (ADR 0001). It writes only when they differ.
+                    p.set_click_through(!inside);
+                }
             }
         })?;
 

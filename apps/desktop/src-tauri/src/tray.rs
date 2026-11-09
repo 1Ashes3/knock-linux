@@ -1,12 +1,13 @@
 //! The notification-area icon (SPEC.md §9.7): the Needs-you count as a
 //! badge (0-9, then 9+) and in the tooltip, and a menu with Pause
-//! notifications, Settings and Quit. The badges are 32 px PNGs made from
+//! notifications, where the animals live (ADR 0037), Settings and Quit. The badges are 32 px PNGs made from
 //! `art/icon/tray-*.svg` with `pnpm tauri icon <svg> --png 32`.
 
 use crate::pipeline::{self, Msg, Shared};
+use crate::settings::Placement;
 use std::sync::mpsc::Sender;
 use tauri::image::Image;
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Wry};
 
@@ -34,10 +35,62 @@ pub struct Tray {
     pub icon: TrayIcon,
     /// Bound to `pauseNotifications`.
     pub pause: CheckMenuItem<Wry>,
+    /// Bound to `placement`: exactly one is checked.
+    pub placement: Vec<(Placement, CheckMenuItem<Wry>)>,
+    /// Bound to `cardFadeSeconds`: the one matching is checked.
+    pub fade: Vec<(u32, CheckMenuItem<Wry>)>,
 }
 
+/// The tray's hover-card fade choices, in seconds.
+const FADES: [u32; 4] = [1, 3, 5, 10];
+
+/// The tray's placement items: menu id, setting value, label.
+const PLACES: [(&str, Placement, &str, &str); 3] = [
+    ("place-top", Placement::Top, "top", "On top of windows"),
+    (
+        "place-desktop",
+        Placement::Desktop,
+        "desktop",
+        "On the desktop, up front when needed",
+    ),
+    (
+        "place-hidden",
+        Placement::Hidden,
+        "hidden",
+        "Hidden (tray only)",
+    ),
+];
+
 pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<Tray> {
-    let paused = pipeline::read(&shared).settings.pause_notifications;
+    let (paused, placed, faded) = {
+        let s = &pipeline::read(&shared).settings;
+        (s.pause_notifications, s.placement, s.card_fade_seconds)
+    };
+    let fade = FADES
+        .iter()
+        .map(|&n| {
+            let (id, label) = (format!("fade-{n}"), format!("{n} seconds"));
+            CheckMenuItem::with_id(app, id, label, true, n == faded, None::<&str>)
+                .map(|item| (n, item))
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let fade_items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = fade
+        .iter()
+        .map(|(_, i)| i as &dyn tauri::menu::IsMenuItem<Wry>)
+        .collect();
+    let fades = Submenu::with_items(app, "Card fades after", true, &fade_items)?;
+    let placement = PLACES
+        .iter()
+        .map(|(id, p, _, label)| {
+            CheckMenuItem::with_id(app, *id, *label, true, *p == placed, None::<&str>)
+                .map(|item| (*p, item))
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = placement
+        .iter()
+        .map(|(_, i)| i as &dyn tauri::menu::IsMenuItem<Wry>)
+        .collect();
+    let animals = Submenu::with_items(app, "Animals", true, &items)?;
     let pause = CheckMenuItem::with_id(
         app,
         "pause",
@@ -49,7 +102,7 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let line = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&pause, &settings, &line, &quit])?;
+    let menu = Menu::with_items(app, &[&pause, &animals, &fades, &settings, &line, &quit])?;
     let mut icon = TrayIconBuilder::with_id("knock")
         .tooltip(tooltip(0, false))
         .menu(&menu)
@@ -66,7 +119,19 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
                 std::thread::spawn(move || crate::open_settings(&app, ""));
             }
             "quit" => app.exit(0),
-            _ => {}
+            // Saved like any setting; `settings-changed` then sets the
+            // check marks to what was saved.
+            id => {
+                let patch = if let Some((_, _, value, _)) = PLACES.iter().find(|(i, ..)| *i == id) {
+                    serde_json::json!({ "placement": value })
+                } else if let Some(n) = id.strip_prefix("fade-").and_then(|n| n.parse::<u32>().ok())
+                {
+                    serde_json::json!({ "cardFadeSeconds": n })
+                } else {
+                    return;
+                };
+                let _ = tx.send(Msg::Settings { patch, reply: None });
+            }
         });
     if let Some(i) = badge(0).or_else(|| app.default_window_icon().cloned()) {
         icon = icon.icon(i);
@@ -74,6 +139,8 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
     Ok(Tray {
         icon: icon.build(app)?,
         pause,
+        placement,
+        fade,
     })
 }
 

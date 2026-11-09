@@ -16,7 +16,6 @@ use knock_core::Settings;
 use serde_json::Value;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub const SCENARIOS: [(&str, &str); 7] = [
@@ -97,10 +96,10 @@ pub fn local(name: &str) -> Result<String, String> {
 /// Port and token from `server.json` (§8.1). The token never leaves this
 /// process except in the `X-Knock-Token` header.
 fn server() -> Result<(u16, String), String> {
-    let not_running = "Knock doesn't seem to be running: %APPDATA%\\Knock\\server.json \
-                       was not found. Start Knock, then run this again.";
-    let dir = std::env::var_os("APPDATA").ok_or(not_running)?;
-    let path = PathBuf::from(dir).join("Knock").join("server.json");
+    let not_running = "Knock doesn't seem to be running: its server.json was not found. \
+                       Start Knock, then run this again.";
+    let dir = knock_core::paths::data_dir(&knock_core::paths::process_env).ok_or(not_running)?;
+    let path = dir.join("server.json");
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(not_running.into()),

@@ -80,23 +80,21 @@ fn parts(cwd: &str) -> Vec<&str> {
     v
 }
 
-/// `%USERNAME%` and the last part of `%USERPROFILE%`, read once per run.
+/// The login name and the last part of the home folder, read once per run.
 fn env_users() -> Vec<String> {
-    ["USERNAME", "USERPROFILE"]
-        .iter()
-        .filter_map(|k| std::env::var(k).ok())
-        .filter_map(|v| parts(&v).last().map(|s| s.to_string()))
-        .collect()
+    knock_core::paths::user_names(&knock_core::paths::process_env)
 }
 
 /// Last `cwd` part; `home` for a user's home folder (directly under `Users`,
-/// or named like a `users` entry); `project` when the part isn't safe.
+/// or `home` on Linux, or named like a `users` entry); `project` when the
+/// part isn't safe.
 fn project_name<'a>(cwd: &'a str, users: &[String]) -> &'a str {
     let p = parts(cwd);
     let last = p.last().copied().unwrap_or("");
     let parent = p.len().checked_sub(2).map_or("", |i| p[i]);
     let lower = last.to_lowercase();
-    if parent.eq_ignore_ascii_case("users") || users.iter().any(|u| u.to_lowercase() == lower) {
+    let home_parent = parent.eq_ignore_ascii_case("users") || parent == "home";
+    if home_parent || users.iter().any(|u| u.to_lowercase() == lower) {
         "home"
     } else if safe(last, is_project) {
         last

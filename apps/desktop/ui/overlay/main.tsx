@@ -10,6 +10,7 @@ import {
 	type SessionsChanged,
 	type Settings,
 } from "./bridge";
+import { POINTER_ENTERED, POINTER_LEFT } from "./placement";
 import { Strip } from "./Strip";
 import { createStripStore, type StripStore } from "./store";
 import "./strip.css";
@@ -53,6 +54,13 @@ await Promise.all([
 		applySettings(p.settings),
 	),
 	listen<AwaySummary>("away-summary", (p) => applyAway(p)),
+	// Linux only (ADR 0037): the pointer left the strip's input region.
+	listen<null>("pointer-left", () =>
+		window.dispatchEvent(new Event(POINTER_LEFT)),
+	),
+	listen<null>("pointer-entered", () =>
+		window.dispatchEvent(new Event(POINTER_ENTERED)),
+	),
 ]);
 const [sessions, settings] = await Promise.all([
 	call("get_sessions"),

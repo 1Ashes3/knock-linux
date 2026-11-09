@@ -31,6 +31,45 @@ pub struct Settings {
     pub launch_at_sign_in: Option<bool>,
     /// `knock_core::project_key` → animal id.
     pub animal_overrides: BTreeMap<String, String>,
+    /// Where the strip lives (ADR 0037). Missing from files written before
+    /// it existed, so it has a default.
+    #[serde(default = "Placement::os_default")]
+    pub placement: Placement,
+    /// How long a character's hover card stays after the mouse leaves it,
+    /// fading out (ADR 0037). 0: it goes at once.
+    #[serde(default = "default_card_fade")]
+    pub card_fade_seconds: u32,
+}
+
+/// Upper bound for `cardFadeSeconds`.
+pub const MAX_CARD_FADE: u32 = 60;
+
+fn default_card_fade() -> u32 {
+    3
+}
+
+/// Where the strip lives relative to other windows (ADR 0037).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Placement {
+    /// Always above other windows (§9.1).
+    Top,
+    /// Behind other windows, on the desktop; above them while a session
+    /// has a knock nobody has seen yet.
+    Desktop,
+    /// No strip: the tray icon and notifications only.
+    Hidden,
+}
+
+impl Placement {
+    /// Windows keeps the §9.1 always-on-top strip; Linux starts calm.
+    pub fn os_default() -> Self {
+        if cfg!(windows) {
+            Self::Top
+        } else {
+            Self::Desktop
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +126,8 @@ impl Default for Settings {
             },
             launch_at_sign_in: None,
             animal_overrides: BTreeMap::new(),
+            placement: Placement::os_default(),
+            card_fade_seconds: default_card_fade(),
         }
     }
 }
@@ -141,6 +182,9 @@ impl Settings {
                 return Err(format!("{name} must be from 1 to {MAX_MINUTES}"));
             }
         }
+        if self.card_fade_seconds > MAX_CARD_FADE {
+            return Err(format!("cardFadeSeconds must be from 0 to {MAX_CARD_FADE}"));
+        }
         if minutes(&self.quiet_hours.start).is_none() || minutes(&self.quiet_hours.end).is_none() {
             return Err("quiet hours must be times like 22:00".into());
         }
@@ -173,11 +217,12 @@ fn parse(bytes: &[u8]) -> Result<Settings, String> {
     Ok(s)
 }
 
-/// `%APPDATA%\Knock`, where `server.json`, `settings.json` and
-/// `sessions.json` live.
+/// Where `server.json`, `settings.json` and `sessions.json` live:
+/// `%APPDATA%\Knock`, or `~/.config/knock` on Linux
+/// ([`knock_core::paths`]).
 pub fn data_dir() -> io::Result<PathBuf> {
-    let base = std::env::var_os("APPDATA").ok_or_else(|| io::Error::other("APPDATA not set"))?;
-    Ok(PathBuf::from(base).join("Knock"))
+    knock_core::paths::data_dir(&knock_core::paths::process_env)
+        .ok_or_else(|| io::Error::other("no APPDATA or HOME set"))
 }
 
 /// Reads `settings.json` from `dir`. No file: defaults, saved. An invalid
@@ -321,9 +366,29 @@ mod tests {
         let dir = temp_dir("first-run");
         assert_eq!(load(&dir, 1), Settings::default());
         let saved: Value = serde_json::from_slice(&std::fs::read(dir.join(FILE)).unwrap()).unwrap();
-        assert_eq!(saved, serde_json::from_str::<Value>(SPEC).unwrap());
+        let mut spec = serde_json::from_str::<Value>(SPEC).unwrap();
+        let placement = if cfg!(windows) { "top" } else { "desktop" };
+        spec["placement"] = Value::from(placement);
+        spec["cardFadeSeconds"] = Value::from(3);
+        assert_eq!(saved, spec);
         assert!(!dir.join("settings.json.tmp").exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_from_before_placement_loads_with_the_os_default() {
+        let s = parse(SPEC.as_bytes()).unwrap();
+        assert_eq!(s.placement, Placement::os_default());
+        let mut v = serde_json::from_str::<Value>(SPEC).unwrap();
+        v["placement"] = Value::from("hidden");
+        let s = parse(v.to_string().as_bytes()).unwrap();
+        assert_eq!(s.placement, Placement::Hidden);
+        v["placement"] = Value::from("floating");
+        assert!(parse(v.to_string().as_bytes()).is_err());
+        assert_eq!(parse(SPEC.as_bytes()).unwrap().card_fade_seconds, 3);
+        let s = Settings::default();
+        assert!(merged(&s, &serde_json::json!({ "cardFadeSeconds": 10 })).is_ok());
+        assert!(merged(&s, &serde_json::json!({ "cardFadeSeconds": 61 })).is_err());
     }
 
     #[test]

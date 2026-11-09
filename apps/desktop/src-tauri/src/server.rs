@@ -192,6 +192,14 @@ pub fn spawn(
 fn ready(listener: TcpListener) -> io::Result<(u16, tokio::net::TcpListener)> {
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
+    // An unbound socket has no address on Windows, but port 0 on Linux; the
+    // hooks could never reach either.
+    if port == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::AddrNotAvailable,
+            "listener has no port",
+        ));
+    }
     Ok((port, tokio::net::TcpListener::from_std(listener)?))
 }
 
@@ -518,7 +526,10 @@ mod tests {
     fn spawn_fails_at_once_for_a_listener_it_cannot_use() {
         // A TCP socket never bound: it has no port.
         let unbound = tokio::net::TcpSocket::new_v4().unwrap();
+        #[cfg(windows)]
         let socket = std::os::windows::io::AsSocket::as_socket(&unbound);
+        #[cfg(unix)]
+        let socket = std::os::fd::AsFd::as_fd(&unbound);
         let listener = TcpListener::from(socket.try_clone_to_owned().unwrap());
         let cfg = ServerConfig {
             port: 49152,
