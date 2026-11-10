@@ -476,9 +476,75 @@ pub fn read(path: &Path) -> Result<Option<Vec<u8>>, Problem> {
     }
 }
 
+/// How many backups [`backup`] keeps in a folder (one folder per file).
+pub const KEEP_BACKUPS: usize = 5;
+
 /// Copies `original` to `backups\settings.<UTC time>.json`, never over an
-/// existing backup.
+/// existing backup, then [`prune`]s the folder to [`KEEP_BACKUPS`].
 pub fn backup(dir: &Path, original: &[u8], now_ms: u64) -> io::Result<PathBuf> {
+    let path = write_backup(dir, original, now_ms)?;
+    prune(dir, &path, KEEP_BACKUPS, |p| std::fs::remove_file(p));
+    Ok(path)
+}
+
+/// The sort key of a name [`backup`] writes, `settings.<stamp>.json` or
+/// `settings.<stamp>-<1..=99>.json` with `<stamp>` exactly like
+/// `2026-10-16T16-00-00-000Z`; `None` for any other name.
+fn backup_key(name: &str) -> Option<(&str, u8)> {
+    let mid = name.strip_prefix("settings.")?.strip_suffix(".json")?;
+    let (stamp, n) = match mid.get(24..) {
+        Some("") => (mid, 0),
+        Some(rest) => {
+            let n = rest.strip_prefix('-')?;
+            let ok = matches!(n.len(), 1 | 2)
+                && !n.starts_with('0')
+                && n.bytes().all(|b| b.is_ascii_digit());
+            if !ok {
+                return None;
+            }
+            (&mid[..24], n.parse().ok()?)
+        }
+        None => return None,
+    };
+    let shape = stamp.bytes().enumerate().all(|(i, b)| match i {
+        4 | 7 | 13 | 16 | 19 => b == b'-',
+        10 => b == b'T',
+        23 => b == b'Z',
+        _ => b.is_ascii_digit(),
+    });
+    shape.then_some((stamp, n))
+}
+
+/// Deletes the oldest backups in `dir` so at most `keep` remain, always
+/// keeping `fresh` (the one just written, even if the clock went back).
+/// Only regular files named exactly as [`backup`] names them are touched;
+/// links and anything else are skipped. Errors are logged and ignored.
+fn prune(dir: &Path, fresh: &Path, keep: usize, mut remove: impl FnMut(&Path) -> io::Result<()>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        tracing::warn!("backups folder unreadable; old backups kept");
+        return;
+    };
+    let fresh = fresh.file_name();
+    let mut old: Vec<_> = rd
+        .filter_map(Result::ok)
+        // `file_type` does not follow links: a link is never a file here.
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter(|e| Some(e.file_name().as_os_str()) != fresh)
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let key = backup_key(&name).map(|(s, n)| (s.to_owned(), n))?;
+            Some((key, e.path()))
+        })
+        .collect();
+    old.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in old.iter().skip(keep.saturating_sub(1)) {
+        if let Err(e) = remove(path) {
+            tracing::warn!(kind = ?e.kind(), "old backup not deleted");
+        }
+    }
+}
+
+fn write_backup(dir: &Path, original: &[u8], now_ms: u64) -> io::Result<PathBuf> {
     use std::io::Write;
     std::fs::create_dir_all(dir)?;
     let stamp =
@@ -1579,6 +1645,185 @@ mod tests {
             .unwrap()
             .collect();
         assert_eq!(left.len(), 1);
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn backup_names_match_only_the_exact_pattern() {
+        let s = "2026-10-16T16-00-00-000Z";
+        assert_eq!(backup_key(&format!("settings.{s}.json")), Some((s, 0)));
+        assert_eq!(backup_key(&format!("settings.{s}-1.json")), Some((s, 1)));
+        assert_eq!(backup_key(&format!("settings.{s}-99.json")), Some((s, 99)));
+        for bad in [
+            format!("settings.{s}-0.json"),
+            format!("settings.{s}-01.json"),
+            format!("settings.{s}-100.json"),
+            format!("settings.{s}-.json"),
+            format!("settings.{s}-x.json"),
+            format!("settings.{s}.json.bak"),
+            format!("settings.{s}.jsonx"),
+            format!("Settings.{s}.json"),
+            format!("config.{s}.json"),
+            format!("settings.{s}"),
+            "settings.json".into(),
+            "settings.2026-10-16T16:00:00.000Z.json".into(),
+            "settings.2026-10-16T16-00-00-000.json".into(),
+            "settings.2026-10-16X16-00-00-000Z.json".into(),
+            "settings.2026-10-16T16-00-00-0000Z.json".into(),
+            "settings.é026-10-16T16-00-00-000Z.json".into(),
+        ] {
+            assert_eq!(backup_key(&bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn backups_are_pruned_to_the_newest_five() {
+        let d = Dir::new();
+        let dir = d.0.join("backups");
+        for i in 0..8u64 {
+            backup(&dir, b"{}", T + i * 60_000).unwrap();
+            assert_eq!(names(&dir).len(), (i as usize + 1).min(KEEP_BACKUPS));
+        }
+        // Same millisecond: the `-1` name is newer than the plain one.
+        let last = backup(&dir, b"{}", T + 7 * 60_000).unwrap();
+        assert!(last.ends_with("settings.2026-10-16T16-07-00-000Z-1.json"));
+        assert_eq!(
+            names(&dir),
+            [
+                "settings.2026-10-16T16-04-00-000Z.json",
+                "settings.2026-10-16T16-05-00-000Z.json",
+                "settings.2026-10-16T16-06-00-000Z.json",
+                "settings.2026-10-16T16-07-00-000Z-1.json",
+                "settings.2026-10-16T16-07-00-000Z.json",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_new_backup_is_kept_even_when_the_clock_went_back() {
+        let d = Dir::new();
+        let dir = d.0.join("backups");
+        for i in 0..5u64 {
+            backup(&dir, b"{}", T + i * 60_000).unwrap();
+        }
+        let early = backup(&dir, b"{}", T - 60_000).unwrap();
+        assert!(early.exists());
+        let left = names(&dir);
+        assert_eq!(left.len(), KEEP_BACKUPS);
+        assert!(!left.contains(&"settings.2026-10-16T16-00-00-000Z.json".to_owned()));
+    }
+
+    #[test]
+    fn pruning_leaves_other_files_and_folders_alone() {
+        let d = Dir::new();
+        let root = d.0.join("backups");
+        let agent = root.join("gemini");
+        std::fs::create_dir_all(&agent).unwrap();
+        // Another file's backups, in its own folder: never counted or touched.
+        for i in 0..3u64 {
+            backup(&agent, b"{}", T + i).unwrap();
+        }
+        let s = "2026-10-01T00-00-00-000Z";
+        let others = [
+            format!("settings.{s}.json.bak"),
+            format!("settings.{s}-0.json"),
+            format!("config.{s}.json"),
+            "notes.txt".to_owned(),
+            "settings.json".to_owned(),
+        ];
+        for o in &others {
+            std::fs::write(root.join(o), b"keep").unwrap();
+        }
+        // A folder with a backup's name is not a file: skipped.
+        std::fs::create_dir(root.join(format!("settings.{s}-1.json"))).unwrap();
+        // A link with a backup's name, to a file outside: never deleted
+        // or followed.
+        #[cfg(unix)]
+        {
+            let outside = d.0.join("outside.json");
+            std::fs::write(&outside, b"keep").unwrap();
+            std::os::unix::fs::symlink(&outside, root.join(format!("settings.{s}-2.json")))
+                .unwrap();
+        }
+        for i in 0..7u64 {
+            backup(&root, b"{}", T + i * 1000).unwrap();
+        }
+        let left = names(&root);
+        for o in &others {
+            assert!(left.contains(o), "{o}");
+            assert_eq!(std::fs::read(root.join(o)).unwrap(), b"keep");
+        }
+        assert!(root.join(format!("settings.{s}-1.json")).is_dir());
+        #[cfg(unix)]
+        {
+            let link = root.join(format!("settings.{s}-2.json"));
+            assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+            assert_eq!(std::fs::read(d.0.join("outside.json")).unwrap(), b"keep");
+        }
+        let real = left
+            .iter()
+            .filter(|n| n.starts_with("settings.2026-10-16"))
+            .count();
+        assert_eq!(real, KEEP_BACKUPS);
+        assert_eq!(names(&agent).len(), 3);
+    }
+
+    #[test]
+    fn a_failed_delete_is_ignored() {
+        let d = Dir::new();
+        let dir = d.0.join("backups");
+        let mut made = vec![];
+        for i in 0..5u64 {
+            made.push(backup(&dir, b"{}", T + i * 1000).unwrap());
+        }
+        let fresh = write_backup(&dir, b"{}", T + 9000).unwrap();
+        // Two too many; the first delete fails, the second still happens.
+        std::fs::write(dir.join("settings.2026-10-16T15-00-00-000Z.json"), b"{}").unwrap();
+        let mut tried = vec![];
+        prune(&dir, &fresh, KEEP_BACKUPS, |p| {
+            tried.push(p.to_owned());
+            match tried.len() {
+                1 => Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+                _ => std::fs::remove_file(p),
+            }
+        });
+        assert_eq!(
+            tried,
+            [
+                made[0].clone(),
+                dir.join("settings.2026-10-16T15-00-00-000Z.json")
+            ]
+        );
+        assert!(made[0].exists());
+        assert!(fresh.exists());
+        assert_eq!(names(&dir).len(), KEEP_BACKUPS + 1);
+    }
+
+    #[test]
+    fn setup_prunes_old_backups_and_ignores_an_unreadable_folder() {
+        let d = Dir::new();
+        d.write(REAL.as_bytes());
+        let dir = d.0.join("backups");
+        for i in 0..6u64 {
+            write_backup(&dir, b"{}", T - 3_600_000 + i).unwrap();
+        }
+        let s = d.setup();
+        s.preview().unwrap();
+        let b = s.apply(T).unwrap();
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), REAL);
+        assert_eq!(d.backups().len(), KEEP_BACKUPS);
+        // A folder that can't be listed: nothing pruned, no panic.
+        prune(&d.0.join("missing"), Path::new(&b), KEEP_BACKUPS, |_| {
+            panic!("nothing to delete")
+        });
     }
 
     #[test]
