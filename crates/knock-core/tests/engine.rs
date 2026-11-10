@@ -1278,6 +1278,7 @@ fn suppression_set_before_the_first_event_holds_for_it() {
 fn saved(id: &str, state: State, animal: &str) -> Saved {
     Saved {
         id: id.into(),
+        agent: "codex".into(),
         project: "demo".into(),
         project_key: project_key(id),
         state,
@@ -1309,6 +1310,7 @@ fn restored_sessions_come_back_as_they_were() {
     ]);
     let s = h.0.sessions();
     assert_eq!(s.len(), 4);
+    assert_eq!(s[0].agent, "codex");
     assert_eq!(
         (s[0].state, s[0].since, s[0].last_event),
         (State::Working, 1_000, 2_000)

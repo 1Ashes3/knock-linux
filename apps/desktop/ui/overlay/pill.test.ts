@@ -88,6 +88,9 @@ test("stalled minutes: stallMinutes plus whole minutes in the state", () => {
 	expect(accessibleName({ ...s, since: at(61) }, NOW, 5)).toBe(
 		"data, No progress for 66 min",
 	);
+	expect(accessibleName({ ...s, agent: "copilot" }, NOW, 10)).toBe(
+		"data (GitHub Copilot), No progress for 10 min",
+	);
 	expect(accessibleName({ ...s, since: "bad" }, NOW, 10)).toBe(
 		"data, No progress for 10 min",
 	);

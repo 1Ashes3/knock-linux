@@ -11,7 +11,8 @@ pub mod packs;
 pub mod paths;
 
 pub use adapter::{
-    Adapter, Capability, ClaudeCode, HookSpec, ParseError, project_key, project_with,
+    AGENTS, Adapter, Agy, Capability, ClaudeCode, Codex, Copilot, HookSpec, ParseError, adapter,
+    project_key, project_with,
 };
 pub use away::{AWAY_MS, Away, AwayItem, AwaySummary, Outcome, summary};
 pub use engine::{

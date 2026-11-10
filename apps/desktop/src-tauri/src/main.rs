@@ -4,6 +4,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod helper;
 mod hooks;
 mod jump;
 mod log;
@@ -961,6 +962,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
+    // `knock-desktop hook <agent>`: another agent's hook command (ADR 0039).
+    // Before anything else starts, and it never returns to the app.
+    helper::run_if_asked();
     log::init();
     tauri::Builder::default()
         // First, so a second launch exits before anything else starts (§9.7).
@@ -1023,6 +1027,7 @@ mod tests {
     fn view(state: &'static str, since_ms: u64, seen: Option<bool>) -> pipeline::SessionView {
         pipeline::SessionView {
             id: "s".into(),
+            agent: "claude-code",
             project: "p".into(),
             tier: "ready",
             state,

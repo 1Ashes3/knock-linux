@@ -1012,6 +1012,10 @@ impl Platform for LinuxPlatform {
         process_start(pid)
     }
 
+    fn agent_process(&self, helper: ProcessId) -> Option<ProcessId> {
+        jump::agent_of(&processes(), helper)
+    }
+
     fn monitors(&self) -> Vec<Monitor> {
         self.on_main(|| screens().into_iter().map(|(m, _, _)| m).collect())
             .unwrap_or_default()

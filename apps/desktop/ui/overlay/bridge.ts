@@ -28,6 +28,8 @@ export interface Needs {
 
 export interface SessionView {
 	id: string;
+	/** ADR 0039: which agent's hooks reported it: "claude-code", "codex" or "copilot". */
+	agent: string;
 	project: string;
 	tier: Tier;
 	state: State;

@@ -89,6 +89,46 @@ pub fn chain(procs: &[Proc], of: ProcessId) -> Vec<&Proc> {
     out
 }
 
+/// Processes that only pass a command on, never the agent: shells and the
+/// like (names without `.exe`, lower case).
+const WRAPPERS: [&str; 17] = [
+    "sh",
+    "bash",
+    "dash",
+    "zsh",
+    "fish",
+    "ash",
+    "ksh",
+    "tcsh",
+    "csh",
+    "env",
+    "timeout",
+    "busybox",
+    "cmd",
+    "powershell",
+    "pwsh",
+    "conhost",
+    "nohup",
+];
+
+/// The process that runs an agent's hook helper (ADR 0039): the nearest
+/// ancestor of `helper` that isn't a shell or similar wrapper. A hook command
+/// is started by the agent, directly or through `sh -c`; either way this is the
+/// agent, which lives as long as the session. `None` if there is none or its
+/// start time can't be read.
+pub fn agent_of(procs: &[Proc], helper: ProcessId) -> Option<ProcessId> {
+    let is_wrapper = |p: &Proc| {
+        let name = p.exe.to_ascii_lowercase();
+        WRAPPERS.contains(&name.trim_end_matches(".exe"))
+    };
+    let chain = chain(procs, helper);
+    let agent = chain.iter().skip(1).find(|p| !is_wrapper(p))?;
+    Some(ProcessId {
+        pid: agent.pid,
+        start: agent.start?,
+    })
+}
+
 /// §9.4 step 2 and §9.5: the first process in `chain` that owns a visible
 /// top-level window (through its root owner) gives the target. Among several,
 /// one whose title contains the project wins, else the first (topmost).
@@ -240,6 +280,37 @@ mod tests {
 
     fn resolve(procs: &[Proc], wins: &[Win], of: ProcessId) -> Option<Target> {
         pick(procs, &chain(procs, of), wins)
+    }
+
+    #[test]
+    fn a_hook_helper_belongs_to_the_agent_above_it() {
+        let procs = [
+            proc(900, 800, Some(300), "knock-desktop"),
+            proc(800, 700, Some(290), "sh"),
+            proc(700, 600, Some(100), "codex"),
+            proc(600, 500, Some(90), "bash"),
+            proc(500, 1, Some(80), "konsole"),
+        ];
+        let helper = id(900, 300);
+        // Through `sh -c`: the shell is skipped, the agent is found.
+        assert_eq!(agent_of(&procs, helper), Some(id(700, 100)));
+        // Started directly by the agent.
+        let direct = [proc(900, 700, Some(300), "knock-desktop"), procs[2].clone()];
+        assert_eq!(agent_of(&direct, helper), Some(id(700, 100)));
+        // Windows names, and wrappers stacked on top of each other.
+        let win = [
+            proc(900, 800, Some(300), "knock-desktop.exe"),
+            proc(800, 750, Some(290), "CMD.EXE"),
+            proc(750, 700, Some(280), "conhost.exe"),
+            proc(700, 1, Some(100), "node.exe"),
+        ];
+        assert_eq!(agent_of(&win, helper), Some(id(700, 100)));
+        // Only shells above it, an unknown helper, or an unreadable start: none.
+        assert_eq!(agent_of(&procs[..2], helper), None);
+        assert_eq!(agent_of(&procs, id(901, 300)), None);
+        let mut blind = procs.to_vec();
+        blind[2].start = None;
+        assert_eq!(agent_of(&blind, helper), None);
     }
 
     #[test]

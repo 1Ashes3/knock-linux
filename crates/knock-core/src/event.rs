@@ -116,6 +116,11 @@ impl Category {
             "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => Self::Edit,
             "Bash" | "PowerShell" => Self::Run,
             "WebFetch" | "WebSearch" => Self::Web,
+            // Antigravity CLI's tools (ADR 0039).
+            "read_file" => Self::Read,
+            "write_file" | "edit_file" => Self::Edit,
+            "run_command" => Self::Run,
+            t if t.starts_with("browser_") => Self::Web,
             _ => Self::Other,
         }
     }

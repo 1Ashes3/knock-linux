@@ -219,6 +219,8 @@ impl NeedsKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Saved {
     pub id: String,
+    /// One of [`crate::AGENTS`]; a name no longer known comes back as Claude Code.
+    pub agent: String,
     pub project: String,
     pub project_key: String,
     pub state: State,
@@ -265,6 +267,8 @@ impl Needs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub id: String,
+    /// The agent whose hooks reported it (`claude-code`, `codex`, `copilot`).
+    pub agent: &'static str,
     pub project: String,
     /// [`project_key`] of the first event's `cwd`; the `cwd` itself is not kept (§11.4).
     pub project_key: String,
@@ -295,6 +299,7 @@ impl Session {
     fn new(e: &Event, simulated: bool, animal: String) -> Self {
         Session {
             id: e.session_id.clone(),
+            agent: e.agent,
             project: e.context.project.clone(),
             project_key: project_key(&e.context.cwd),
             state: State::Idle,
@@ -374,8 +379,14 @@ impl Engine {
             } else {
                 self.animal_for(&s.project_key, self.sessions.len())
             };
+            let agent = crate::AGENTS
+                .iter()
+                .find(|a| **a == s.agent)
+                .copied()
+                .unwrap_or("claude-code");
             self.sessions.push(Session {
                 id: s.id,
+                agent,
                 project: s.project,
                 project_key: s.project_key,
                 state,

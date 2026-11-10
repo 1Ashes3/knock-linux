@@ -61,6 +61,16 @@ test("tooltip: project, state label, time in state, and the decision type for Ne
 		"For 3 min",
 		"Decision: permission to use PowerShell",
 	]);
+	// Another agent's name shows under the project; Claude Code's cards stay as they were.
+	expect(
+		tooltipLines({ ...at3(SAMPLES.permission), agent: "codex" }, NOW, 10),
+	).toEqual([
+		"knock",
+		"Codex",
+		"Needs permission: PowerShell",
+		"For 3 min",
+		"Decision: permission to use PowerShell",
+	]);
 	expect(tooltipLines(at3(SAMPLES.permission_no_tool), NOW, 10)).toEqual([
 		"api",
 		"Needs permission",
@@ -102,6 +112,7 @@ test("the tooltip never shows anything but those fields (FR-7)", () => {
 		...at3(SAMPLES.working),
 		activity: "edit",
 		precision: "exact_window",
+		agent: "claude-code",
 		simulated: true,
 		animal: "owl",
 		id: "a-session-id",

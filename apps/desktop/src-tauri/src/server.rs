@@ -9,7 +9,7 @@ use crate::pipeline::{self, Msg, Shared};
 use crate::platform::{Platform, fill_random};
 use axum::Router;
 use axum::body::{Body, HttpBody};
-use axum::extract::{ConnectInfo, Request, State};
+use axum::extract::{ConnectInfo, Path as UrlPath, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
@@ -30,6 +30,9 @@ pub const PORTS: RangeInclusive<u16> = 49152..=65535;
 const TOKEN_HEADER: &str = "x-knock-token";
 /// `X-Knock-Sim: 1` marks a request from `knock sim` (§8.1).
 const SIM_HEADER: &str = "x-knock-sim";
+/// `X-Knock-Via: hook` marks a request from `knock-desktop hook <agent>`
+/// (ADR 0039): the connecting process is a helper, not the agent.
+pub const VIA_HEADER: &str = "x-knock-via";
 
 /// `%APPDATA%\Knock\server.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -136,7 +139,7 @@ fn save(dir: &Path, cfg: &ServerConfig) -> io::Result<()> {
 /// Parses `server.json` and rejects anything `generate` could not have made:
 /// a port outside 49152-65535 or a token that isn't 43 base64url characters
 /// (32 bytes, §8.1).
-fn parse_config(bytes: &[u8]) -> io::Result<ServerConfig> {
+pub fn parse_config(bytes: &[u8]) -> io::Result<ServerConfig> {
     let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_owned());
     let cfg: ServerConfig =
         serde_json::from_slice(bytes).map_err(|_| bad("server.json is not valid"))?;
@@ -288,7 +291,7 @@ pub async fn serve(
         tx: Mutex::new((0, tx)),
     });
     let app = Router::new()
-        .route("/v1/hooks/claude-code", post(hook))
+        .route("/v1/hooks/{agent}", post(hook))
         .route("/v1/health", get(health));
     #[cfg(debug_assertions)]
     let app = app.route("/v1/debug/snapshot", get(snapshot));
@@ -337,9 +340,18 @@ fn json(body: String) -> Response {
 async fn hook(
     State(s): State<Arc<Server>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    UrlPath(agent): UrlPath<String>,
     req: Request,
 ) -> Response {
+    // Only the agents Knock has an adapter for (ADR 0039).
+    let Some(agent) = knock_core::AGENTS.iter().find(|a| **a == agent) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     let sim = req.headers().get(SIM_HEADER).is_some_and(|v| v == "1");
+    // `knock-desktop hook <agent>` (ADR 0039) is a short-lived process the
+    // agent started for this one event: the session belongs to the agent
+    // above it, which lives as long as the session does.
+    let via_helper = req.headers().get(VIA_HEADER).is_some_and(|v| v == "hook");
     // Queued before any further await: if the client gives up, the event is
     // still processed.
     match read_capped(req.into_body()).await {
@@ -348,10 +360,15 @@ async fn hook(
             // pipeline uses the result on a session's first request and on
             // prompts (§9.4, ADR 0014). A simulated session has no real
             // process: no lookup (§8.1).
-            let owner = (s.platform.as_ref())
-                .filter(|_| !sim)
-                .and_then(|p| p.connection_owner(peer.port(), s.port));
-            enqueue(&s, body, sim, owner);
+            let owner = (s.platform.as_ref()).filter(|_| !sim).and_then(|p| {
+                let owner = p.connection_owner(peer.port(), s.port)?;
+                if via_helper {
+                    p.agent_process(owner)
+                } else {
+                    Some(owner)
+                }
+            });
+            enqueue(&s, agent, body, sim, owner);
         }
         // Never an error status for a request with a valid token (ADR 0011).
         _ => tracing::warn!("hook dropped: body over 16 MB or unreadable"),
@@ -386,12 +403,13 @@ async fn read_capped(mut body: Body) -> Result<Option<Vec<u8>>, axum::Error> {
 
 /// Queues a hook with its receive time (§8.3 `ts`), which never decreases
 /// in queue order.
-fn enqueue(s: &Server, body: Vec<u8>, sim: bool, owner: Option<ProcessId>) {
+fn enqueue(s: &Server, agent: &'static str, body: Vec<u8>, sim: bool, owner: Option<ProcessId>) {
     let mut tx = s.tx.lock().unwrap_or_else(|e| e.into_inner());
     let ts = pipeline::now_ms().max(tx.0);
     tx.0 = ts;
     let _ = tx.1.send(Msg::Hook {
         ts,
+        agent,
         body,
         sim,
         owner,
@@ -646,6 +664,73 @@ mod tests {
     }
 
     const HOOK: &str = "/v1/hooks/claude-code";
+
+    /// ADR 0039: each agent posts to its own route; a hook helper's session
+    /// belongs to the agent above it, not to the helper.
+    #[test]
+    fn other_agents_have_their_own_routes_and_helpers_resolve_to_the_agent() {
+        let (addr, published, fake) = with_fake();
+        let codex = |id: &str, hook: &str| {
+            format!(r#"{{"session_id":"{id}","hook_event_name":"{hook}","cwd":"/w/repo"}}"#)
+        };
+        // A helper's request: owner = the agent process the platform found.
+        *fake.agent.lock().unwrap() = Some(ProcessId {
+            pid: 4242,
+            start: 9,
+        });
+        let via = "X-Knock-Via: hook\r\n";
+        let r = request_with(
+            addr,
+            "POST",
+            "/v1/hooks/codex",
+            Some(TOKEN),
+            via,
+            codex("c1", "UserPromptSubmit").as_bytes(),
+        );
+        assert_eq!(r, (200, "{}".into()));
+        // The same route without the helper header: the connection's owner.
+        let r = request(
+            addr,
+            "POST",
+            "/v1/hooks/copilot",
+            Some(TOKEN),
+            codex("p1", "Stop").as_bytes(),
+        );
+        assert_eq!(r, (200, "{}".into()));
+        // No such agent: 404 with a token, 401 without, like any other path.
+        let nope = codex("x", "Stop");
+        assert_eq!(
+            request(
+                addr,
+                "POST",
+                "/v1/hooks/gemini",
+                Some(TOKEN),
+                nope.as_bytes()
+            )
+            .0,
+            404
+        );
+        assert_eq!(
+            request(addr, "POST", "/v1/hooks/codex", None, nope.as_bytes()).0,
+            401
+        );
+        let mut markers = 0;
+        mark(addr, &mut markers);
+        wait_for_sessions(addr, 3);
+        let walks = fake.walks.lock().unwrap().clone();
+        assert_eq!(walks.len(), 2, "{walks:?}");
+        assert_eq!(walks[0], 4242, "the helper's session walks from the agent");
+        assert_ne!(
+            walks[1], 4242,
+            "a direct request keeps the connection's owner"
+        );
+        let p = pipeline::read(&published);
+        let seen: Vec<_> = (p.sessions.sessions.iter())
+            .map(|s| (s.id.as_str(), s.agent))
+            .collect();
+        assert!(seen.contains(&("codex-c1", "codex")), "{seen:?}");
+        assert!(seen.contains(&("copilot-p1", "copilot")), "{seen:?}");
+    }
 
     #[test]
     fn real_requests_are_looked_up_with_the_peer_port_and_walked_once_per_session() {
@@ -1158,7 +1243,7 @@ mod tests {
                 let s = Arc::clone(&s);
                 std::thread::spawn(move || {
                     for _ in 0..500 {
-                        enqueue(&s, Vec::new(), false, None);
+                        enqueue(&s, "claude-code", Vec::new(), false, None);
                     }
                 })
             })

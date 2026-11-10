@@ -1,5 +1,6 @@
 // What a plain-strip pill shows (SPEC.md §10.1, §10.3, §10.5). Pure: everything comes
 // from the SessionView the core sent (§7.3).
+import { shownAgent } from "./agents";
 import type { SessionView, Size, State, Tier } from "./bridge";
 
 /** §9.2: strip height, and slot width, in logical px. */
@@ -84,7 +85,8 @@ export function accessibleName(
 	now: number,
 	stallMinutes: number,
 ): string {
-	return `${s.project}, ${stateLabel(s, now, stallMinutes)}`;
+	const agent = shownAgent(s);
+	return `${s.project}${agent ? ` (${agent})` : ""}, ${stateLabel(s, now, stallMinutes)}`;
 }
 
 const WORD: Record<Exclude<State, "needs_input">, string> = {

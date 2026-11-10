@@ -8,6 +8,7 @@ const base = {
 	needs: null,
 	precision: "app_window",
 	animal: "fox",
+	agent: "claude-code",
 	simulated: true,
 } as const;
 

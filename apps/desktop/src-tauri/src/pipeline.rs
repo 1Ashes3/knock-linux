@@ -19,8 +19,8 @@ use crate::jump::{Precision, ProcessId};
 use crate::platform::{self, Platform};
 use crate::settings::{self, Settings};
 use knock_core::{
-    AWAY_MS, Adapter, Away, AwaySummary, Category, ClaudeCode, Effect, Engine, Event, Input, Kind,
-    NeedsKind, Reason, Tier, iso8601,
+    AWAY_MS, Adapter, Away, AwaySummary, Category, Effect, Engine, Event, Input, Kind, NeedsKind,
+    Reason, Tier, iso8601,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -54,11 +54,13 @@ pub fn away_threshold(debug: bool, var: Option<&OsStr>) -> u64 {
 }
 
 pub enum Msg {
-    /// A hook request (§8.1), received at `ts` (ms since the Unix epoch).
+    /// A hook request (§8.1), received at `ts` (ms since the Unix epoch), from
+    /// `agent`'s route (one of [`knock_core::AGENTS`]).
     /// `owner` is the connection's process (§9.4 step 1), looked up before
     /// the reply; `None` if it wasn't found or `sim` is set.
     Hook {
         ts: u64,
+        agent: &'static str,
         body: Vec<u8>,
         sim: bool,
         owner: Option<ProcessId>,
@@ -110,6 +112,8 @@ pub struct SessionsChanged {
 #[serde(rename_all = "camelCase")]
 pub struct SessionView {
     pub id: String,
+    /// The agent whose hooks reported it (ADR 0039): `claude-code`, `codex`, `copilot`.
+    pub agent: &'static str,
     pub project: String,
     pub tier: &'static str,
     pub state: &'static str,
@@ -199,7 +203,8 @@ struct Run {
 
 pub struct Core {
     engine: Engine,
-    adapter: ClaudeCode,
+    /// One adapter per agent (ADR 0039), by id.
+    adapters: HashMap<&'static str, Box<dyn Adapter + Send>>,
     settings: Settings,
     /// Last value sent as `SetSuppressed`.
     suppressed: bool,
@@ -276,7 +281,10 @@ impl Core {
         }
         let mut core = Core {
             engine,
-            adapter: ClaudeCode { users: users() },
+            adapters: knock_core::AGENTS
+                .iter()
+                .filter_map(|id| Some((*id, knock_core::adapter(id, users())?)))
+                .collect(),
             settings,
             suppressed,
             procs: HashMap::new(),
@@ -354,10 +362,11 @@ impl Core {
         match msg {
             Msg::Hook {
                 ts,
+                agent,
                 body,
                 sim,
                 owner,
-            } => self.hook(ts, &body, sim, owner, &mut run),
+            } => self.hook(ts, agent, &body, sim, owner, &mut run),
             Msg::Ack(id) => self.user(Kind::UserAck, &id, now, &mut run),
             Msg::Dismiss(id) => self.user(Kind::UserDismiss, &id, now, &mut run),
             Msg::TogglePause => self.toggle_pause(local_minute, &mut run),
@@ -434,9 +443,20 @@ impl Core {
         }
     }
 
-    fn hook(&mut self, ts: u64, body: &[u8], sim: bool, owner: Option<ProcessId>, run: &mut Run) {
+    fn hook(
+        &mut self,
+        ts: u64,
+        agent: &str,
+        body: &[u8],
+        sim: bool,
+        owner: Option<ProcessId>,
+        run: &mut Run,
+    ) {
         self.last_event_at = Some(ts);
-        let mut event = match self.adapter.parse(body, ts) {
+        let Some(adapter) = self.adapters.get(agent) else {
+            return tracing::warn!("hook for an unknown agent");
+        };
+        let mut event = match adapter.parse(body, ts) {
             Ok(Some(e)) => e,
             Ok(None) => return,
             // ParseError carries no payload content.
@@ -512,7 +532,14 @@ impl Core {
             "cwd": TEST_PROJECT,
         });
         let last = self.last_event_at;
-        self.hook(now, body.to_string().as_bytes(), true, None, run);
+        self.hook(
+            now,
+            "claude-code",
+            body.to_string().as_bytes(),
+            true,
+            None,
+            run,
+        );
         self.last_event_at = last;
     }
 
@@ -711,6 +738,7 @@ impl Core {
         sessions
             .map(|s| SessionView {
                 id: s.id.clone(),
+                agent: s.agent,
                 project: s.project.clone(),
                 tier: s.state.tier().as_str(),
                 state: s.state.as_str(),
@@ -743,6 +771,7 @@ impl Core {
                 let found = self.procs.get(&s.id);
                 serde_json::json!({
                     "id": s.id,
+                    "agent": s.agent,
                     "project": s.project,
                     "projectKey": s.project_key,
                     "state": s.state.as_str(),
@@ -886,6 +915,7 @@ fn saved_sessions(
             };
             let session = knock_core::Saved {
                 id: text(&s["id"])?,
+                agent: text(&s["agent"]).unwrap_or_else(|| "claude-code".into()),
                 project: text(&s["project"])?,
                 project_key: text(&s["projectKey"])?,
                 state: knock_core::State::parse(s["state"].as_str()?)?,
@@ -1029,6 +1059,7 @@ mod tests {
         ) -> Vec<Out> {
             let msg = Msg::Hook {
                 ts: T0 + t,
+                agent: "claude-code",
                 body: body(session, hook, extra),
                 sim: false,
                 owner,
@@ -1038,6 +1069,7 @@ mod tests {
         fn sim(&mut self, t: u64, session: &str, hook: &str, extra: &str) -> Vec<Out> {
             let msg = Msg::Hook {
                 ts: T0 + t,
+                agent: "claude-code",
                 body: body(session, hook, extra),
                 sim: true,
                 owner: None,
@@ -1148,6 +1180,7 @@ mod tests {
     fn session_view_uses_the_exact_spec_field_names() {
         let v = SessionView {
             id: "s1".into(),
+            agent: "claude-code",
             project: "repo-name".into(),
             tier: "needs_you",
             state: "needs_input",
@@ -1170,7 +1203,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&payload).unwrap(),
             concat!(
-                r#"{"rev":3,"sessions":[{"id":"s1","project":"repo-name","tier":"needs_you","#,
+                r#"{"rev":3,"sessions":[{"id":"s1","agent":"claude-code","project":"repo-name","tier":"needs_you","#,
                 r#""state":"needs_input","since":"2026-10-16T16:00:00.000Z","activity":"run","#,
                 r#""needs":{"kind":"permission","label":"PowerShell","seen":false},"#,
                 r#""precision":"app_window","animal":"fox","simulated":false}]}"#
@@ -1869,6 +1902,7 @@ mod tests {
             r#","agent_id":"agentsecret123","tool_name":"Bash","tool_input":{"command":"secret"}"#;
         let msg = Msg::Hook {
             ts: T0,
+            agent: "claude-code",
             body: format!(
                 r#"{{"session_id":"a","hook_event_name":"PermissionRequest"{cwd}{sub}}}"#
             )
@@ -1897,6 +1931,7 @@ mod tests {
             knock_core::project_key(r"C:\Users\someone\secret-folder\repo")
         );
         assert_eq!(s["state"], "needs_input");
+        assert_eq!(s["agent"], "claude-code");
         assert_eq!(s["needs"]["label"], "Bash");
         assert_eq!(s["process"]["pid"], P1.pid);
         assert_eq!(s["process"]["owner"], "WindowsTerminal.exe");
@@ -1906,6 +1941,7 @@ mod tests {
             keys,
             [
                 "activity",
+                "agent",
                 "animal",
                 "id",
                 "lastEventMs",

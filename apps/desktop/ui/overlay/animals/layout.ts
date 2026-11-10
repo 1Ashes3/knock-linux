@@ -9,6 +9,7 @@
 //   slots         the characters, first session nearest the clock, then the den
 //
 // Only characters and buttons are hit regions; everything else is click-through.
+import { shownAgent } from "../agents";
 import type { HitRegion, SessionView, Size } from "../bridge";
 import { SLOT_PX, stateLabel } from "../pill";
 import { LIFT_UNITS } from "./controller";
@@ -303,8 +304,10 @@ export function tooltipLines(
 	now: number,
 	stallMinutes: number,
 ): string[] {
+	const agent = shownAgent(s);
 	const lines = [
 		s.project,
+		...(agent ? [agent] : []),
 		stateLabel(s, now, stallMinutes),
 		timeInState(s.since, now),
 	];

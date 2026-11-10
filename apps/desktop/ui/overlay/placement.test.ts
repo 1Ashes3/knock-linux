@@ -19,6 +19,7 @@ function session(id: string, needs: SessionView["needs"]): SessionView {
 		needs,
 		precision: "none",
 		animal: "fox",
+		agent: "claude-code",
 		simulated: true,
 	};
 }

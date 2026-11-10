@@ -682,6 +682,10 @@ impl Platform for WindowsPlatform {
         process_start(pid)
     }
 
+    fn agent_process(&self, helper: ProcessId) -> Option<ProcessId> {
+        jump::agent_of(&processes(), helper)
+    }
+
     fn monitors(&self) -> Vec<Monitor> {
         monitors()
     }

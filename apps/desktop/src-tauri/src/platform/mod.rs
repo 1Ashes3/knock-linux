@@ -116,6 +116,11 @@ pub trait Platform: Send + Sync {
     /// If Windows refuses, flashes its taskbar button instead. Returns
     /// whether `SetForegroundWindow` succeeded. Never blocks or sleeps.
     fn focus_window(&self, window: isize) -> bool;
+    /// ADR 0039: the agent that started the hook helper `helper` (see
+    /// [`crate::jump::agent_of`]), or `None` where that can't be told.
+    fn agent_process(&self, _helper: ProcessId) -> Option<ProcessId> {
+        None
+    }
     /// §9.7 liveness: the start time of `pid` if a process with that PID is
     /// still running, else `None`.
     fn process_start(&self, pid: u32) -> Option<u64>;
@@ -267,6 +272,8 @@ pub struct FakePlatform {
     pub approved: std::sync::Mutex<Option<Vec<u8>>>,
     /// What `idle_ms` returns.
     pub idle: std::sync::Mutex<Option<u64>>,
+    /// What `agent_process` returns (the agent above a hook helper).
+    pub agent: std::sync::Mutex<Option<ProcessId>>,
 }
 
 /// The fake's own `Run\Knock` value: the installed app (`mainBinaryName`
@@ -352,6 +359,9 @@ impl Platform for FakePlatform {
     }
     fn idle_ms(&self) -> Option<u64> {
         *self.idle.lock().unwrap()
+    }
+    fn agent_process(&self, _: ProcessId) -> Option<ProcessId> {
+        *self.agent.lock().unwrap()
     }
 }
 
