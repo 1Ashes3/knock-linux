@@ -2,12 +2,13 @@
 
 <img src="docs/images/logo.svg" alt="Knock" width="300">
 
-<p><b>Your Claude Code sessions, living on your Windows taskbar.</b><br>
+<p><b>Your Claude Code sessions, living on your taskbar, on Windows and Linux.</b><br>
 When a session needs you, its animal knocks. Click it to jump straight there.</p>
 
 <p>
 <a href="https://github.com/bandaranayake/knock/releases"><img src="https://img.shields.io/github/v/release/bandaranayake/knock?include_prereleases&label=beta&color=e0702a" alt="Latest beta release"></a>
 <img src="https://img.shields.io/badge/Windows-11-0078D4?logo=windows11&logoColor=white" alt="Windows 11">
+<img src="https://img.shields.io/badge/Linux-KDE%20Plasma-1D99F3?logo=linux&logoColor=white" alt="Linux, KDE Plasma">
 <a href="https://docs.claude.com/en/docs/claude-code/overview"><img src="https://img.shields.io/badge/for-Claude%20Code-D97757?logo=claude&logoColor=white" alt="For Claude Code"></a>
 <a href="https://v2.tauri.app/"><img src="https://img.shields.io/badge/built%20with-Tauri%202-24C8DB?logo=tauri&logoColor=white" alt="Built with Tauri 2"></a>
 <a href="LICENSE"><img src="https://img.shields.io/github/license/bandaranayake/knock?color=6fcf87" alt="MIT license"></a>
@@ -49,7 +50,17 @@ When a session needs you, its animal knocks. Click it to jump straight there.</p
 
 ## Linux
 
-Knock on Linux shows each Claude Code session as an animal that knocks when it needs you. What you get depends on your desktop: on KDE Plasma it is a strip above the panel, on GNOME it is a tray icon and notifications.
+Knock on Linux shows each Claude Code session as a character that knocks when it needs you. What you get depends on your desktop: on KDE Plasma it is a strip above the panel, on GNOME it is a tray icon and notifications.
+
+<p align="center">
+<img src="docs/images/linux-taskbar.png" alt="Five sprites above the KDE Plasma panel: one stopped with an error, one done and ready to review, three asleep" width="640">
+</p>
+
+Sprite packs change the whole cast. This is a pack of fairies, with one asking a question:
+
+<p align="center">
+<img src="docs/images/linux-fairies.png" alt="Three fairy sprites: one asleep, one working, one with a Has a question label" width="420">
+</p>
 
 ### Install on Arch or CachyOS
 
@@ -59,7 +70,7 @@ Knock is not in the AUR yet (planned). For now, from the `packaging/aur` folder 
 makepkg -si
 ```
 
-The package is named `knock-claude-git`. An AppImage is planned, not available yet.
+The package is named `knock-claude-git`. An AppImage builds with `pnpm tauri build --bundles appimage`; a download is coming with the first release.
 
 ### Desktops
 
@@ -78,7 +89,7 @@ The package is named `knock-claude-git`. An AppImage is planned, not available y
 
 ### Sprite packs
 
-Pick a pack in **Settings → Characters**. A pack is one `.knockpack` file. To add one, double-click the file, or use **Add a pack…**.
+Pick a pack in **Settings → Characters**. A pack is one `.knockpack` file. To add one, double-click the file, or use **Add a pack…**. To see the pack in action, choose **Introduce sprites** in the tray menu: every character appears, then four act out the states for about 18 seconds. To make your own pack, read [art/PACKS.md](art/PACKS.md).
 
 ### Known limits
 
