@@ -63,7 +63,7 @@ Knock is not in the AUR yet (planned). For now, from the `packaging/aur` folder 
 makepkg -si
 ```
 
-The package is named `knock-claude-git`. An AppImage builds with `pnpm tauri build --bundles appimage`; a download is coming with the first release.
+The package is named `knock-claude-git`. An AppImage is on the [Releases page](https://github.com/1Ashes3/knock-linux/releases/tag/Beta): download it, make it executable (`chmod +x`) and run it. You can also build it yourself with `pnpm tauri build --bundles appimage`.
 
 ### Desktops
 
