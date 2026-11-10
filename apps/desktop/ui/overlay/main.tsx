@@ -2,7 +2,7 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useStore } from "zustand";
 import { AnimalStrip } from "./animals/AnimalStrip";
-import { setActivePack } from "./animals/art";
+import { packCharacters, setActivePack } from "./animals/art";
 import { createAwayCard } from "./away";
 import {
 	type AwaySummary,
@@ -62,6 +62,10 @@ await Promise.all([
 	),
 	listen<null>("pointer-entered", () =>
 		window.dispatchEvent(new Event(POINTER_ENTERED)),
+	),
+	// ADR 0040: tray "Introduce sprites", with the characters sessions get now.
+	listen<Record<string, never>>("intro-demo", () =>
+		store.getState().startDemo(packCharacters()),
 	),
 ]);
 const [sessions, settings] = await Promise.all([

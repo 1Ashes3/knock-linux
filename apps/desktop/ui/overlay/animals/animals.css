@@ -148,3 +148,9 @@
 	position: absolute;
 	bottom: auto;
 }
+
+/* "Introduce sprites" (ADR 0040): the demo's sprites take no clicks. */
+.character.demo {
+	pointer-events: none;
+	cursor: default;
+}

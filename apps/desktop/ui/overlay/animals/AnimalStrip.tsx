@@ -16,7 +16,15 @@ import { cardOffset, withCard } from "../away";
 import { call, type HitRegion } from "../bridge";
 import { Den } from "../Den";
 import { CloseIcon, GlyphIcon } from "../Glyph";
-import { accessibleName, dismissible, glyph, INK, TIER_FILL } from "../pill";
+import { demoAt } from "../introDemo";
+import {
+	accessibleName,
+	dismissible,
+	glyph,
+	INK,
+	MAX_VISIBLE,
+	TIER_FILL,
+} from "../pill";
 import {
 	POINTER_ENTERED,
 	POINTER_LEFT,
@@ -34,9 +42,11 @@ import {
 	chipText,
 	dismissRect,
 	hitRegions,
+	introMetrics,
 	layoutChips,
 	type Metrics,
 	metrics,
+	rowHeight,
 	slotTop,
 	slotX,
 	stripWidth,
@@ -99,7 +109,13 @@ export function AnimalStrip({
 }) {
 	const all = useStore(store, (s) => s.sessions);
 	const placement = useStore(store, (s) => s.settings?.placement);
-	const sessions = useVisibleSessions(all, placement);
+	const real = useVisibleSessions(all, placement);
+	// ADR 0040: "Introduce sprites" draws its own made-up sprites instead of the real ones,
+	// which stay in the store untouched. They take no clicks and send nothing to the core.
+	const demo = useStore(store, (s) => s.demo);
+	const frame = demo && demoAt(demo, Date.now());
+	const demoOn = frame !== null && frame.phase !== "over";
+	const sessions = demoOn ? frame.sessions : real;
 	const away = useStore(store, (s) => s.away);
 	const hiddenTags = useStore(store, (s) => s.hiddenTags);
 	const size = useStore(store, (s) => s.settings?.size ?? "medium");
@@ -163,19 +179,29 @@ export function AnimalStrip({
 	// A new sprite pack (ADR 0038) draws the strip again.
 	useSyncExternalStore(subscribePack, packVersion);
 	const memory = useRef(EMPTY_MEMORY);
+	// The demo's own memory, fresh for each of its phases: the real characters keep
+	// theirs, so they come back as they were, and a demo sprite never fades into them.
+	const demoMemory = useRef({ key: "", memory: EMPTY_MEMORY });
 	const [measureFor] = useState(createMeasure);
 	const now = Date.now();
+	const demoKey = demoOn ? `${demo?.startedAt}:${frame.phase}` : "";
+	if (demoKey !== demoMemory.current.key)
+		demoMemory.current = { key: demoKey, memory: EMPTY_MEMORY };
 	const { model, memory: next } = step(
 		sessions,
-		memory.current,
+		demoOn ? demoMemory.current.memory : memory.current,
 		still,
 		now,
 		clipsFor,
 		idleMotion,
+		demoOn ? Number.POSITIVE_INFINITY : MAX_VISIBLE,
 	);
-	memory.current = next;
+	if (demoOn) demoMemory.current.memory = next;
+	else memory.current = next;
 
-	const m = metrics(size);
+	const m = demoOn
+		? introMetrics(size, model.characters.length)
+		: metrics(size);
 	const width = stripWidth(model.slots, m);
 	const chipFont = measureFor(`600 ${m.font}px ${FONT}`);
 	const shown = model.characters.filter(
@@ -196,13 +222,14 @@ export function AnimalStrip({
 	const chips = layoutChips(chipInputs, width, chipFont, m);
 	const chipArea = Math.max(chips.height, tooltipReserve(m));
 	const chipShift = chipArea - chips.height;
-	const height = model.slots ? chipArea + m.headroom + m.s : m.s;
+	const stageHeight = m.rows * rowHeight(m);
+	const height = model.slots ? chipArea + stageHeight : m.s;
 	const raised = (c: Character) => !still && endsRaised(c.plan);
 	const owner = (id: string) => shown.find((c) => c.session.id === id);
 	// A stalled session's chip gets an "x" that hides only the chip.
 	const tagButtons = chips.chips.flatMap((chip) => {
 		const c = owner(chip.id);
-		return c?.session.state === "stalled"
+		return !demoOn && c?.session.state === "stalled"
 			? [
 					{
 						session: c.session,
@@ -224,24 +251,29 @@ export function AnimalStrip({
 
 	// §9.2: the core places the window; it grows up and left from the corner.
 	const sendSize = useSend("request_strip_size");
-	useEffect(() => sendSize(withCard({ width, height }, card, m.s)));
+	// The window's cap is 6 usual slots, also while the demo shrinks its characters.
+	const slotPx = metrics(size).s;
+	useEffect(() => sendSize(withCard({ width, height }, card, slotPx)));
 
 	// §9.3: only characters, buttons and the away card catch the mouse. Sent only when
 	// they change.
 	const ref = useRef<HTMLDivElement>(null);
 	const sendRegions = useSend("set_hit_regions");
-	const local = hitRegions(
-		shown.map((c) => ({
-			slot: c.slot,
-			raised: raised(c),
-			dismiss: dismissible(c.session),
-		})),
-		chipArea,
-		m,
-	);
+	// Demo sprites take no clicks: the mouse goes through them.
+	const local = demoOn
+		? []
+		: hitRegions(
+				shown.map((c) => ({
+					slot: c.slot,
+					raised: raised(c),
+					dismiss: dismissible(c.session),
+				})),
+				chipArea,
+				m,
+			);
 	for (const b of tagButtons) local.push(b.rect);
 	if (cardRect) local.push(cardRect);
-	const hovered = owner(hover ?? "");
+	const hovered = demoOn ? undefined : owner(hover ?? "");
 	const tip =
 		hovered &&
 		tooltipLayout(
@@ -271,26 +303,31 @@ export function AnimalStrip({
 	});
 
 	// Wake up when something changes on its own: a calm animal settles, an ended one fades.
-	// Re-armed after every wake, in case a timer fires a millisecond early.
+	// Re-armed after every wake, in case a timer fires a millisecond early. The demo's
+	// next step wakes it too.
+	const wakeAt = Math.min(
+		model.wakeAt,
+		demoOn ? frame.nextAt : Number.POSITIVE_INFINITY,
+	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `woken` re-arms the timer
 	useEffect(() => {
-		if (!Number.isFinite(model.wakeAt)) return;
+		if (!Number.isFinite(wakeAt)) return;
 		const t = setTimeout(
 			() => wake((n) => n + 1),
-			Math.max(0, model.wakeAt - Date.now()) + 1,
+			Math.max(0, wakeAt - Date.now()) + 1,
 		);
 		return () => clearTimeout(t);
-	}, [model.wakeAt, woken]);
+	}, [wakeAt, woken]);
 
 	// The canvas covers the headroom and the slots.
 	const host = useRef<HTMLDivElement>(null);
 	const renderer = useRef<AnimalRenderer | null>(null);
-	const view = { width, height: m.headroom + m.s, s: m.s, dpr };
+	const view = { width, height: stageHeight, s: m.s, dpr };
 	const draw: DrawCharacter[] = model.characters.map((c) => ({
 		id: c.session.id,
 		animal: c.session.animal,
 		x: slotX(c.slot, m),
-		y: m.headroom,
+		y: slotTop(0, m, c.slot),
 		plan: c.plan,
 		fadeFrom: c.fadeFrom,
 	}));
@@ -327,13 +364,13 @@ export function AnimalStrip({
 			ref={ref}
 			className="animals"
 			role="group"
-			aria-label="Claude Code sessions"
+			aria-label={demoOn ? "Introducing sprites" : "Claude Code sessions"}
 			style={{ "--s": `${m.s}px`, width, height } as CSSProperties}
 		>
 			<div
 				ref={host}
 				className="stage"
-				style={{ top: chipArea, width, height: m.headroom + m.s }}
+				style={{ top: chipArea, width, height: stageHeight }}
 			/>
 			<Leaders
 				chips={chips.chips}
@@ -380,10 +417,11 @@ export function AnimalStrip({
 					settled={frameAt(c.plan, now, clipsFor(c.session.animal)).settled}
 					name={accessibleName(c.session, now, stallMinutes)}
 					onHover={onHover}
+					demo={demoOn}
 				/>
 			))}
 			{shown
-				.filter((c) => dismissible(c.session))
+				.filter((c) => !demoOn && dismissible(c.session))
 				.map((c) => {
 					const r = dismissRect(c.slot, chipArea, m);
 					return (
@@ -417,7 +455,7 @@ export function AnimalStrip({
 					className="den-slot"
 					style={{
 						left: slotX(model.slots - 1, m),
-						top: slotTop(chipArea, m),
+						top: slotTop(chipArea, m, model.slots - 1),
 						width: m.s,
 						height: m.s,
 					}}
@@ -457,6 +495,7 @@ function CharacterButton({
 	settled,
 	name,
 	onHover,
+	demo,
 }: {
 	c: Character;
 	rect: HitRegion;
@@ -465,21 +504,37 @@ function CharacterButton({
 	settled: boolean;
 	name: string;
 	onHover: (id: string | null) => void;
+	/** A sprite of "Introduce sprites" (ADR 0040): named, but not a button. */
+	demo: boolean;
 }) {
 	const s = c.session;
 	const id = s.id;
+	const style = {
+		left: rect.x,
+		top: rect.y,
+		width: rect.width,
+		height: rect.height,
+	};
+	const marks = <Marks s={s} m={m} still={still} settled={settled} />;
+	if (demo)
+		return (
+			<div
+				className="character demo"
+				role="img"
+				aria-label={name}
+				data-state={s.state}
+				style={style}
+			>
+				{marks}
+			</div>
+		);
 	return (
 		<div
 			className="character"
 			role="button"
 			aria-label={name}
 			data-state={s.state}
-			style={{
-				left: rect.x,
-				top: rect.y,
-				width: rect.width,
-				height: rect.height,
-			}}
+			style={style}
 			onClick={() => void call("jump_to_session", { id })}
 			onMouseEnter={() => onHover(id)}
 			// A real move after the pointer came back: the enter may have been ignored
@@ -487,6 +542,25 @@ function CharacterButton({
 			onMouseMove={() => onHover(id)}
 			onMouseLeave={() => onHover(null)}
 		>
+			{marks}
+		</div>
+	);
+}
+
+/** The shared marks on a character: the "z", the red failure marker, the badges. */
+function Marks({
+	s,
+	m,
+	still,
+	settled,
+}: {
+	s: Character["session"];
+	m: Metrics;
+	still: boolean;
+	settled: boolean;
+}) {
+	return (
+		<>
 			{s.state === "idle" && (
 				<svg className="zzz" viewBox="0 0 64 64" aria-hidden="true">
 					<g className={settled || still ? "knock-zzz settled" : "knock-zzz"}>
@@ -514,7 +588,7 @@ function CharacterButton({
 					</div>
 				)
 			)}
-		</div>
+		</>
 	);
 }
 

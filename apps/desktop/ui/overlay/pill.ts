@@ -144,16 +144,20 @@ export function knocks(s: SessionView): boolean {
  * the den, and they swap back once it leaves Needs you. A session that becomes Ready,
  * Working or Resting never moves between a slot and the den.
  */
-export function layout(sessions: SessionView[]): {
+export function layout(
+	sessions: SessionView[],
+	/** Slots for sessions; only the sprite introduction (ADR 0040) shows more. */
+	cap = MAX_VISIBLE,
+): {
 	visible: SessionView[];
 	hidden: SessionView[];
 } {
-	if (sessions.length <= MAX_VISIBLE) return { visible: sessions, hidden: [] };
+	if (sessions.length <= cap) return { visible: sessions, hidden: [] };
 	const keep = new Set(
 		sessions
 			.map((s, i) => ({ s, i }))
 			.sort((a, b) => calm(a.s) - calm(b.s) || a.i - b.i)
-			.slice(0, MAX_VISIBLE)
+			.slice(0, cap)
 			.map(({ s }) => s),
 	);
 	return {

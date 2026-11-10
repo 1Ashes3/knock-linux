@@ -26,10 +26,17 @@ export interface Metrics {
 	unit: number;
 	font: number;
 	lineHeight: number;
+	/** Slots in a row: always MAX_SLOTS, except in the sprite introduction. */
+	cols: number;
+	/** Rows of slots: 1, except in the sprite introduction. */
+	rows: number;
 }
 
 export function metrics(size: Size): Metrics {
-	const s = SLOT_PX[size];
+	return scaled(size, SLOT_PX[size], MAX_SLOTS, 1);
+}
+
+function scaled(size: Size, s: number, cols: number, rows: number): Metrics {
 	const font = { small: 11, medium: 12, large: 13 }[size];
 	return {
 		s,
@@ -37,8 +44,32 @@ export function metrics(size: Size): Metrics {
 		unit: s / 64,
 		font,
 		lineHeight: Math.round(font * 1.35),
+		cols,
+		rows,
 	};
 }
+
+/** The smallest the sprite introduction shrinks a character, as a share of a slot. */
+export const INTRO_MIN_SCALE = 0.6;
+
+/**
+ * ADR 0040: room for `n` demo characters in the window's 6 slots of width (§9.2). Up to
+ * 6 they get the usual slots; more shrink to share the width, down to INTRO_MIN_SCALE;
+ * beyond that they wrap into rows at that size, and the window grows up instead.
+ */
+export function introMetrics(size: Size, n: number): Metrics {
+	const base = metrics(size);
+	if (n <= MAX_SLOTS) return base;
+	const width = MAX_SLOTS * base.s;
+	const fit = Math.floor(width / n);
+	const min = Math.floor(base.s * INTRO_MIN_SCALE);
+	if (fit >= min) return scaled(size, fit, n, 1);
+	const cols = Math.floor(width / min);
+	return scaled(size, min, cols, Math.ceil(n / cols));
+}
+
+/** One row: headroom for step_up and the "z", then the slot. */
+export const rowHeight = (m: Metrics) => m.headroom + m.s;
 
 /** Chip and tooltip box details, in px. */
 export const CHIP = {
@@ -58,13 +89,16 @@ export const TOOLTIP = { padX: 8, padY: 5, border: 1, lines: 4 } as const;
 
 export type Measure = (text: string) => number;
 
-/** Left edge of slot `i`; slot 0 is nearest the clock (the right edge). */
+/**
+ * Left edge of slot `i`; slot 0 is nearest the clock (the right edge). A row holds
+ * `m.cols` slots; the next row goes above it.
+ */
 export function slotX(i: number, m: Metrics): number {
-	return (MAX_SLOTS - 1 - i) * m.s;
+	return (m.cols - 1 - (i % m.cols)) * m.s;
 }
 
 export function stripWidth(slots: number, m: Metrics): number {
-	return slots > 0 ? MAX_SLOTS * m.s : 0;
+	return slots > 0 ? m.cols * m.s : 0;
 }
 
 /** The space the tooltip always has: it never makes the window jump on hover. */
@@ -72,8 +106,12 @@ export function tooltipReserve(m: Metrics): number {
 	return TOOLTIP.lines * m.lineHeight + 2 * (TOOLTIP.padY + TOOLTIP.border);
 }
 
-/** Top of the character box (slot), from the top of the strip. */
-export const slotTop = (chipArea: number, m: Metrics) => chipArea + m.headroom;
+/**
+ * Top of slot `i`'s character box, from the top of the strip; slot 0's row (the bottom
+ * one) by default.
+ */
+export const slotTop = (chipArea: number, m: Metrics, i = 0) =>
+	chipArea + (m.rows - 1 - Math.floor(i / m.cols)) * rowHeight(m) + m.headroom;
 
 /** A character's rectangle, raised by `step_up` while it knocks. */
 export function characterRect(
@@ -84,7 +122,7 @@ export function characterRect(
 ): HitRegion {
 	return {
 		x: slotX(i, m),
-		y: slotTop(chipArea, m) - (raised ? LIFT_UNITS * m.unit : 0),
+		y: slotTop(chipArea, m, i) - (raised ? LIFT_UNITS * m.unit : 0),
 		width: m.s,
 		height: m.s,
 	};
@@ -99,7 +137,7 @@ export function dismissRect(
 	const d = Math.round(m.s * 0.3);
 	return {
 		x: slotX(i, m) + m.s - d,
-		y: slotTop(chipArea, m),
+		y: slotTop(chipArea, m, i),
 		width: d,
 		height: d,
 	};
