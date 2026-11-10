@@ -29,19 +29,25 @@ const MAX_BODY: u64 = 16 * 1024 * 1024;
 /// helper and exits; otherwise returns and the app starts.
 pub fn run_if_asked() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (agent, event) = match args.as_slice() {
-        [command, agent] if command == "hook" => (agent, None),
-        [command, agent, event] if command == "hook" => (agent, Some(event.as_str())),
-        _ => return,
+    if args.first().map(String::as_str) != Some("hook") {
+        return;
+    }
+    // Any `hook ...` is the helper, however odd the rest: it never starts the app.
+    let (agent, event) = match &args[1..] {
+        [agent] => (agent.as_str(), None),
+        [agent, event] => (agent.as_str(), Some(event.as_str())),
+        _ => std::process::exit(0),
     };
-    if knock_core::AGENTS.contains(&agent.as_str())
+    if knock_core::AGENTS.contains(&agent)
         && let Some(body) = read_stdin()
     {
         let body = event.map_or(body.clone(), |e| with_event(&body, e));
         let _ = send(agent, &body);
     }
-    print!("{}", reply(agent));
-    let _ = std::io::stdout().flush();
+    // `print!` would panic (exit 101) on a closed pipe; this must always exit 0.
+    let mut out = std::io::stdout();
+    let _ = out.write_all(reply(agent).as_bytes());
+    let _ = out.flush();
     std::process::exit(0);
 }
 

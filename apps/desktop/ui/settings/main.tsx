@@ -35,6 +35,7 @@ const loadStatus = () =>
 			serverOk: true,
 			serverError: null,
 			monitorCount: 1,
+			stripAvailable: true,
 		}),
 	);
 

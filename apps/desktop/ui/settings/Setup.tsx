@@ -452,6 +452,12 @@ export function Setup({
 						{WORDS.testLook}. A test figure knocks and {WORDS.notifier} shows a
 						notification. It's only a test; none of your sessions are involved.
 					</p>
+					{!status.stripAvailable && (
+						<p className="help">
+							This desktop can't show Knock's figures on screen, so you'll get
+							the tray icon and notifications only.
+						</p>
+					)}
 					{flow.test === "played" && (
 						<p className="question" role="status">
 							Did you see it knock?

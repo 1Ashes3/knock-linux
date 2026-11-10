@@ -33,6 +33,8 @@ use tauri_plugin_notification::NotificationExt;
 
 /// About 30 cursor reads a second (§9.3).
 const POLL: Duration = Duration::from_millis(33);
+/// Where the cursor isn't polled (Linux), the strip thread only checks for changes.
+const IDLE_POLL: Duration = Duration::from_millis(250);
 /// FR-15: the strip is re-placed this often even if no change was heard.
 const FALLBACK: Duration = Duration::from_secs(5);
 /// How often the strip thread re-checks whether the strip should be up.
@@ -481,6 +483,7 @@ async fn setup_status(k: tauri::State<'_, Knock>) -> Result<Value, String> {
         "serverOk": server_ok(&k).await,
         "serverError": lock(&k.server).error,
         "monitorCount": k.platform.monitors().len(),
+        "stripAvailable": k.platform.strip_available(),
     }))
 }
 
@@ -955,8 +958,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .spawn(move || {
             let (mut due, mut again) = (Instant::now() + FALLBACK, false);
             let mut rise_check = Instant::now();
+            // 33 ms is for tracking the cursor, which only Windows does here.
+            let poll = if cfg!(windows) { POLL } else { IDLE_POLL };
             loop {
-                std::thread::sleep(POLL);
+                std::thread::sleep(poll);
                 // A finished session stops raising the strip after a while
                 // with no new event (ADR 0037); checked twice a second.
                 if rise_check.elapsed() >= RISE_CHECK {

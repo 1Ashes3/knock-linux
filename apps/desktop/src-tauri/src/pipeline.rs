@@ -534,9 +534,10 @@ impl Core {
             session_id: id.clone(),
             reason: Reason::NeedsAnswer,
         };
-        if let (false, Some((title, body))) =
-            (shown, toast_text(&fx, TEST_PROJECT, None, &self.settings))
-        {
+        if let (false, Some((title, body))) = (
+            shown,
+            toast_text(&fx, TEST_PROJECT, None, "Claude Code", &self.settings),
+        ) {
             tracing::info!(session = ?id, "notify (test knock)");
             run.outs.push(Out::Toast {
                 session: id.clone(),
@@ -707,7 +708,13 @@ impl Core {
                         continue;
                     };
                     let tool = s.needs.as_ref().and_then(|n| n.label.as_deref());
-                    if let Some((title, body)) = toast_text(&fx, &s.project, tool, &self.settings) {
+                    if let Some((title, body)) = toast_text(
+                        &fx,
+                        &s.project,
+                        tool,
+                        crate::agents::display_name(s.agent),
+                        &self.settings,
+                    ) {
                         tracing::info!(session = ?session_id, effect = ?fx, "notify");
                         run.outs.push(Out::Toast {
                             session: session_id.clone(),
@@ -856,6 +863,7 @@ pub fn toast_text(
     fx: &Effect,
     project: &str,
     tool: Option<&str>,
+    agent: &str,
     s: &Settings,
 ) -> Option<(String, String)> {
     let needs = format!("{project} needs you");
@@ -864,14 +872,14 @@ pub fn toast_text(
             Reason::NeedsPermission => (
                 needs,
                 match tool {
-                    Some(t) => format!("Claude Code is asking for permission to use {t}."),
-                    None => "Claude Code is asking for permission.".into(),
+                    Some(t) => format!("{agent} is asking for permission to use {t}."),
+                    None => format!("{agent} is asking for permission."),
                 },
             ),
-            Reason::NeedsAnswer => (needs, "Claude Code has a question for you.".into()),
+            Reason::NeedsAnswer => (needs, format!("{agent} has a question for you.")),
             Reason::Failed => (
                 format!("{project} stopped"),
-                "Claude Code stopped with an error.".into(),
+                format!("{agent} stopped with an error."),
             ),
             Reason::Stalled => (
                 format!("{project} may be stuck"),
@@ -881,7 +889,7 @@ pub fn toast_text(
         Effect::Escalate { .. } => (
             format!("{project} is still waiting"),
             format!(
-                "Claude Code has been waiting for you for {}.",
+                "{agent} has been waiting for you for {}.",
                 minutes(s.escalation_minutes)
             ),
         ),
@@ -1137,7 +1145,7 @@ mod tests {
             session_id: "s".into(),
             reason,
         };
-        let t = |fx: &Effect, tool| toast_text(fx, "repo", tool, &s).unwrap();
+        let t = |fx: &Effect, tool| toast_text(fx, "repo", tool, "Claude Code", &s).unwrap();
         let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
         assert_eq!(
             t(&n(Reason::NeedsPermission), Some("PowerShell")),
@@ -1183,13 +1191,13 @@ mod tests {
             session_id: "s".into(),
         };
         assert!(
-            toast_text(&esc, "p", None, &s)
+            toast_text(&esc, "p", None, "Claude Code", &s)
                 .unwrap()
                 .1
                 .contains("for 2 minutes.")
         );
         assert!(
-            toast_text(&n(Reason::Stalled), "p", None, &s)
+            toast_text(&n(Reason::Stalled), "p", None, "Claude Code", &s)
                 .unwrap()
                 .1
                 .contains("for 15 minutes.")
@@ -1197,8 +1205,25 @@ mod tests {
         let ready = Effect::ReadyBatchAdd {
             session_id: "s".into(),
         };
-        assert_eq!(toast_text(&ready, "p", None, &s), None);
-        assert_eq!(toast_text(&Effect::Persist, "p", None, &s), None);
+        // Another agent's notifications name that agent, not Claude Code.
+        let failed = toast_text(&n(Reason::Failed), "p", None, "Antigravity", &s).unwrap();
+        assert_eq!(failed.1, "Antigravity stopped with an error.");
+        let ask = toast_text(
+            &n(Reason::NeedsPermission),
+            "p",
+            Some("Bash"),
+            "GitHub Copilot",
+            &s,
+        );
+        assert_eq!(
+            ask.unwrap().1,
+            "GitHub Copilot is asking for permission to use Bash."
+        );
+        assert_eq!(toast_text(&ready, "p", None, "Claude Code", &s), None);
+        assert_eq!(
+            toast_text(&Effect::Persist, "p", None, "Claude Code", &s),
+            None
+        );
     }
 
     #[test]

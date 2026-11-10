@@ -69,7 +69,10 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
     let fade = FADES
         .iter()
         .map(|&n| {
-            let (id, label) = (format!("fade-{n}"), format!("{n} seconds"));
+            let (id, label) = (
+                format!("fade-{n}"),
+                format!("{n} second{}", if n == 1 { "" } else { "s" }),
+            );
             CheckMenuItem::with_id(app, id, label, true, n == faded, None::<&str>)
                 .map(|item| (n, item))
         })

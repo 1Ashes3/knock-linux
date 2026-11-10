@@ -1016,6 +1016,10 @@ impl Platform for LinuxPlatform {
         jump::agent_of(&processes(), helper)
     }
 
+    fn strip_available(&self) -> bool {
+        self.backend != Backend::None
+    }
+
     fn monitors(&self) -> Vec<Monitor> {
         self.on_main(|| screens().into_iter().map(|(m, _, _)| m).collect())
             .unwrap_or_default()

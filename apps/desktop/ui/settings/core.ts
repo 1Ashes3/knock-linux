@@ -8,6 +8,8 @@ export interface SetupStatus {
 	/** Why the server can't start, in plain words; null when it's fine (ADR 0023). */
 	serverError: string | null;
 	monitorCount: number;
+	/** False where this desktop can't show the strip (GNOME on Wayland): only the tray and notifications work. */
+	stripAvailable: boolean;
 }
 
 export interface Monitor {

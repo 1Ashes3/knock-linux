@@ -386,6 +386,7 @@ input[aria-invalid="true"] {
 
 .pack-choice {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 10px;
 }
@@ -397,7 +398,7 @@ input[aria-invalid="true"] {
 .pack-text {
 	display: flex;
 	flex-direction: column;
-	flex: 1;
+	flex: 1 1 14rem;
 	min-width: 0;
 }
 
@@ -540,10 +541,6 @@ button.link.back {
 	padding: 8px 10px;
 }
 
-.agent:not([data-found]) {
-	opacity: 0.8;
-}
-
 .agent-text {
 	display: flex;
 	flex-direction: column;
@@ -556,7 +553,7 @@ button.link.back {
 	flex-shrink: 0;
 }
 
-.agent[data-held] {
+.agent[data-held] .agent-actions {
 	opacity: 0.5;
 }
 

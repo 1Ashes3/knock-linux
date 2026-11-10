@@ -120,6 +120,11 @@ pub trait Platform: Send + Sync {
     /// If Windows refuses, flashes its taskbar button instead. Returns
     /// whether `SetForegroundWindow` succeeded. Never blocks or sleeps.
     fn focus_window(&self, window: isize) -> bool;
+    /// Whether this desktop can show the strip at all. False on GNOME Wayland,
+    /// where only the tray and notifications work.
+    fn strip_available(&self) -> bool {
+        true
+    }
     /// ADR 0039: the agent that started the hook helper `helper` (see
     /// [`crate::jump::agent_of`]), or `None` where that can't be told.
     fn agent_process(&self, _helper: ProcessId) -> Option<ProcessId> {

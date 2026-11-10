@@ -47,6 +47,7 @@ pub fn display_name(agent: &str) -> &'static str {
         "codex" => "Codex",
         "copilot" => "GitHub Copilot",
         "agy" => "Antigravity",
+        "claude-code" => "Claude Code",
         _ => "this agent",
     }
 }
@@ -57,9 +58,10 @@ fn command(exe: &Path, agent: &str, event: Option<&str>) -> String {
     crate::helper::command(exe, agent, event)
 }
 
-/// A command that starts Knock's hook helper for `agent`: a program whose file
-/// name starts with "knock" (any folder, quoted or not, any case, so an older copy
-/// of Knock counts too), then `hook <agent>`, then at most the event.
+/// A command that starts Knock's hook helper for `agent`: Knock's own program (any
+/// folder, quoted or not, any case, so an older copy counts too: `knock`,
+/// `knock-desktop` or `Knock*.AppImage`, with `.exe` on Windows), then
+/// `hook <agent>`, then at most the event. A user's own `knock-notify` is not Knock's.
 pub fn is_knock_command(cmd: &str, agent: &str) -> bool {
     let cmd = cmd.trim_start();
     let (program, rest) = match cmd.strip_prefix('"') {
@@ -74,7 +76,11 @@ pub fn is_knock_command(cmd: &str, agent: &str) -> bool {
         .next()
         .unwrap_or("")
         .to_lowercase();
-    if !name.starts_with("knock") {
+    let stem = name.strip_suffix(".exe").unwrap_or(&name);
+    let ours = stem == "knock"
+        || stem == "knock-desktop"
+        || (name.starts_with("knock") && name.ends_with(".appimage"));
+    if !ours {
         return false;
     }
     let mut words = rest.split_whitespace();
@@ -723,6 +729,8 @@ mod tests {
             r#""/opt/knock-desktop" hook codex ev;ent"#,
             r#""/opt/knock-desktop" run codex"#,
             r#"python3 "/opt/knock-desktop" hook codex"#,
+            r#""/home/a/bin/knock-notify" hook codex"#,
+            r#""/opt/knock-desktop.sh" hook codex"#,
             r#""/opt/knock-desktop hook codex"#,
             "",
         ] {

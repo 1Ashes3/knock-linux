@@ -60,7 +60,7 @@ const WINDOWS: Words = {
 	signInTitle: "Start Knock when you sign in?",
 	signInYes: "Yes, start with Windows",
 	signInBody:
-		"If Knock starts by itself when you sign in to Windows, you won't miss a knock after restarting your PC. It uses very little memory and stays quiet until a session needs you.",
+		"If Knock starts by itself when you sign in to Windows, you won't miss a knock after restarting your PC. It stays quiet until a session needs you.",
 	signInToggle: "Start Knock when I sign in to Windows",
 	signInHelp: "So you don't miss a knock after restarting your PC.",
 	testLook: "the right end of your taskbar, near the clock",
@@ -89,7 +89,7 @@ const LINUX: Words = {
 	signInTitle: "Start Knock when you log in?",
 	signInYes: "Yes, start when I log in",
 	signInBody:
-		"If Knock starts by itself when you log in, you won't miss a knock after restarting your computer. It uses very little memory and stays quiet until a session needs you.",
+		"If Knock starts by itself when you log in, you won't miss a knock after restarting your computer. It stays quiet until a session needs you.",
 	signInToggle: "Start Knock when I log in",
 	signInHelp: "So you don't miss a knock after restarting your computer.",
 	testLook: "the bottom-right corner of your screen, just above your panel",

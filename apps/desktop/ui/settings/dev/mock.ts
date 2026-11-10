@@ -192,6 +192,7 @@ const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
 		serverOk: serverError === null,
 		serverError,
 		monitorCount: monitors.length,
+		stripAvailable: true,
 	}),
 	repair_server: () => {
 		if (q.get("fix") === "fail")
