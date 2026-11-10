@@ -87,7 +87,7 @@ The package is named `knock-claude-git`. An AppImage builds with `pnpm tauri bui
 
 Windows is not supported in this fork. For Windows, use the [original Knock](https://github.com/bandaranayake/knock).
 
-Report Linux issues at [github.com/1Ashes3/knock/issues](https://github.com/1Ashes3/knock/issues).
+Report Linux issues at [github.com/1Ashes3/knock-linux/issues](https://github.com/1Ashes3/knock-linux/issues).
 
 ## Sprite packs
 
@@ -129,8 +129,8 @@ Knock never reads your conversations, prompts or code. No telemetry, no accounts
 
 ## Feedback
 
-- **[Send a setup report](https://github.com/1Ashes3/knock/issues/new?template=setup-report.yml)**, even if everything went fine.
-- **[Report a bug](https://github.com/1Ashes3/knock/issues/new?template=bug-report.yml)**.
+- **[Send a setup report](https://github.com/1Ashes3/knock-linux/issues/new?template=setup-report.yml)**, even if everything went fine.
+- **[Report a bug](https://github.com/1Ashes3/knock-linux/issues/new?template=bug-report.yml)**.
 
 ## Build from source
 
