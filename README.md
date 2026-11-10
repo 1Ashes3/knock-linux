@@ -20,7 +20,8 @@ When a session needs you, its animal knocks. Click it to jump straight there.</p
 
 <p>
 <a href="#linux"><b>Linux</b></a> ·
-<a href="#install"><b>Install</b></a> ·
+<a href="#install-on-arch-or-cachyos"><b>Install</b></a> ·
+<a href="#sprite-packs"><b>Sprite packs</b></a> ·
 <a href="#what-it-does"><b>Features</b></a> ·
 <a href="#privacy"><b>Privacy</b></a> ·
 <a href="#feedback"><b>Feedback</b></a>
@@ -47,12 +48,6 @@ Knock on Linux shows each Claude Code session as a character that knocks when it
 
 <p align="center">
 <img src="docs/images/linux-taskbar.png" alt="Five sprites above the KDE Plasma panel: one stopped with an error, one done and ready to review, three asleep" width="640">
-</p>
-
-Sprite packs change the whole cast. This is a pack of fairies, with one asking a question:
-
-<p align="center">
-<img src="docs/images/linux-fairies.png" alt="Three fairy sprites: one asleep, one working, one with a Has a question label" width="420">
 </p>
 
 ### Requirements
@@ -85,10 +80,6 @@ The package is named `knock-claude-git`. An AppImage builds with `pnpm tauri bui
 - **Antigravity CLI (`agy`)**: beta, partly working. It cannot show permission knocks.
 - **Codex CLI and Copilot CLI**: not available yet (untested).
 
-### Sprite packs
-
-Pick a pack in **Settings → Characters**. A pack is one `.knockpack` file. To add one, double-click the file, or use **Add a pack…**. To see the pack in action, choose **Introduce sprites** in the tray menu: every character appears, then four act out the states for about 18 seconds. To make your own pack, read [art/PACKS.md](art/PACKS.md).
-
 ### Known limits
 
 - On NVIDIA graphics under Wayland, a possible workaround is to start Knock with `WEBKIT_DISABLE_DMABUF_RENDERER=1` set. This is not confirmed.
@@ -97,6 +88,19 @@ Pick a pack in **Settings → Characters**. A pack is one `.knockpack` file. To 
 Windows is not supported in this fork. For Windows, use the [original Knock](https://github.com/bandaranayake/knock).
 
 Report Linux issues at [github.com/1Ashes3/knock/issues](https://github.com/1Ashes3/knock/issues).
+
+## Sprite packs
+
+A sprite pack changes the whole cast of characters. Knock ships with a few built-in packs, and you can add your own.
+
+<p align="center">
+<img src="docs/images/linux-fairies.png" alt="Three fairy sprites: one asleep, one working, one with a Has a question label" width="420">
+</p>
+
+- **Choose a pack:** open **Settings → Characters**.
+- **Add a pack:** a pack is one `.knockpack` file. Double-click it, drop it on the Settings window, or use **Add a pack…**.
+- **See a pack in action:** choose **Introduce sprites** in the tray menu. Every character appears asleep, then four act out the states (sleeping, working, knocking, failed, done) for about 18 seconds.
+- **Make your own:** the exact formats, file names, size limits and checks are in **[art/PACKS.md](art/PACKS.md)**. It covers drawn (SVG) characters, sprite-sheet (PNG) characters, custom animations, and how to check and build a `.knockpack` file with `knock pack check` and `knock pack build`.
 
 ## What setup changes
 
