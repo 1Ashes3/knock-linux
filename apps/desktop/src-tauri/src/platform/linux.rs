@@ -732,6 +732,26 @@ pub fn own_exe() -> std::io::Result<PathBuf> {
     }
 }
 
+/// The path as a desktop-entry `Exec` program: quoted, with `"`, `` ` ``, `$`
+/// and `\` escaped (the spec's rule inside quotes), and `%` doubled so it is
+/// not read as a field code.
+pub fn exec_value(exe: &std::path::Path) -> String {
+    let mut out = String::from("\"");
+    for c in exe.display().to_string().chars() {
+        match c {
+            '"' | '`' | '$' => {
+                out.push_str("\\\\");
+                out.push(c);
+            }
+            '\\' => out.push_str("\\\\\\\\"),
+            '%' => out.push_str("%%"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// The `Exec=` value of an autostart file's text.
 pub fn exec_line(desktop: &str) -> Option<&str> {
     desktop
@@ -1030,7 +1050,7 @@ impl Platform for LinuxPlatform {
             tracing::info!(on, "debug build: autostart entry not changed");
             return Ok(SignInChange::default());
         }
-        let own = super::run_value(&own_exe()?);
+        let own = exec_value(&own_exe()?);
         let current = if on { None } else { current_exec()? };
         let change = super::sign_in_change(on, current.as_deref(), &own);
         apply_run_ops(change.now, &own)?;
@@ -1041,14 +1061,14 @@ impl Platform for LinuxPlatform {
         if ops.is_empty() || !sign_in_allowed() {
             return Ok(());
         }
-        apply_run_ops(ops, &super::run_value(&own_exe()?))
+        apply_run_ops(ops, &exec_value(&own_exe()?))
     }
 
     fn restore_launch_at_sign_in(&self, setting: Option<bool>) -> std::io::Result<bool> {
         if !sign_in_allowed() {
             return Ok(false);
         }
-        let own = super::run_value(&own_exe()?);
+        let own = exec_value(&own_exe()?);
         let ops = super::start_ops(setting, current_exec()?.as_deref(), &own);
         apply_run_ops(ops, &own)?;
         Ok(!ops.is_empty())
@@ -1185,6 +1205,17 @@ mod tests {
             r#""/usr/bin/knock-desktop""#,
         );
         assert_eq!(c.now, [RunOp::Delete]);
+    }
+
+    #[test]
+    fn exec_value_escapes_what_a_desktop_entry_would_misread() {
+        let p = std::path::Path::new("/home/a b/50%/x\"y$z`w\\v.AppImage");
+        assert_eq!(
+            exec_value(p),
+            "\"/home/a b/50%%/x\\\\\"y\\\\$z\\\\`w\\\\\\\\v.AppImage\""
+        );
+        let plain = std::path::Path::new("/usr/bin/knock-desktop");
+        assert_eq!(exec_value(plain), "\"/usr/bin/knock-desktop\"");
     }
 
     #[test]

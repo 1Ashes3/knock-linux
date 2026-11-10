@@ -162,6 +162,7 @@ pub fn idle_from_ticks(now: u64, last_input: u32) -> u64 {
 
 /// The `Run\Knock` value: the exe's path, quoted, so a path with spaces
 /// can't be read as a shorter program plus arguments.
+#[cfg_attr(not(windows), allow(dead_code))] // Linux builds its own `Exec` value
 pub fn run_value(exe: &std::path::Path) -> String {
     format!("\"{}\"", exe.display())
 }
