@@ -13,9 +13,14 @@ When a session needs you, its animal knocks. Click it to jump straight there.</p
 <a href="LICENSE"><img src="https://img.shields.io/github/license/bandaranayake/knock?color=6fcf87" alt="MIT license"></a>
 </p>
 
+<p>
+<sub>Linux port of <a href="https://github.com/bandaranayake/knock">Knock</a> by Isuru Bandaranayake. The license stays MIT, with the original copyright. Windows downloads and the original release notes live in the <a href="https://github.com/bandaranayake/knock">original repo</a>.</sub>
+</p>
+
 <img src="docs/images/hero.svg" alt="Four sessions on a dark taskbar: a sleeping fox, a rabbit holding up a done card, an owl that stopped with an error, and a cat knocking because it needs permission" width="640">
 
 <p>
+<a href="#linux"><b>Linux</b></a> ·
 <a href="#install"><b>Install</b></a> ·
 <a href="#what-it-does"><b>Features</b></a> ·
 <a href="#privacy"><b>Privacy</b></a> ·
@@ -41,6 +46,46 @@ When a session needs you, its animal knocks. Click it to jump straight there.</p
 <p align="center">
 <img src="docs/images/away.png" alt="The &quot;While you were away&quot; card above the strip">
 </p>
+
+## Linux
+
+Knock on Linux shows each Claude Code session as an animal that knocks when it needs you. What you get depends on your desktop: on KDE Plasma it is a strip above the panel, on GNOME it is a tray icon and notifications.
+
+### Install on Arch or CachyOS
+
+Knock is not in the AUR yet (planned). For now, from the `packaging/aur` folder of this repo, run:
+
+```
+makepkg -si
+```
+
+The package is named `knock-claude-git`. An AppImage is planned, not available yet.
+
+### Desktops
+
+| Desktop | What works |
+|---|---|
+| KDE Plasma on Wayland | **Verified.** Strip above the panel. Click an animal to jump to its terminal window. |
+| Hyprland, Sway | Code written, not tested yet. |
+| X11 | Code written, not tested yet. |
+| GNOME on Wayland | Tray icon and notifications only. No strip. |
+
+### Agents
+
+- **Claude Code**: supported.
+- **Antigravity CLI (`agy`)**: beta, partly working. It cannot show permission knocks.
+- **Codex CLI and Copilot CLI**: not available yet (untested).
+
+### Sprite packs
+
+Pick a pack in **Settings → Characters**. A pack is one `.knockpack` file. To add one, double-click the file, or use **Add a pack…**.
+
+### Known limits
+
+- The Windows build has only been type-checked in this port. It has not been run.
+- On NVIDIA graphics under Wayland, a possible workaround is to start Knock with `WEBKIT_DISABLE_DMABUF_RENDERER=1` set. This is not confirmed.
+
+Report Linux issues at [github.com/1Ashes3/knock/issues](https://github.com/1Ashes3/knock/issues).
 
 ## Requirements
 
