@@ -102,7 +102,7 @@ export function SettingsPage({
 					monitors?.length === 1 && <p className="field">{WORDS.oneDisplay}</p>
 				)}
 				<Choice
-					legend="Where the animals live"
+					legend="Where the sprites live"
 					help="On the desktop, Knock stays behind your windows and comes to the front only to show the sessions that need you."
 					options={[
 						{
@@ -132,9 +132,9 @@ export function SettingsPage({
 				/>
 				<Choice
 					legend="Show sessions as"
-					help="An animal that knocks when the session needs you, or a colored label with words."
+					help="A sprite that knocks when the session needs you, or a colored label with words."
 					options={[
-						{ value: "animals", label: "Animals" },
+						{ value: "animals", label: "Sprites" },
 						{ value: "plain", label: "Plain labels" },
 					]}
 					value={s.mode}

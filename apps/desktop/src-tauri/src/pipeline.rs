@@ -486,6 +486,14 @@ impl Core {
                     }
                     _ => {}
                 }
+                // The conversation that just started (or was resumed) is the one
+                // live in this window.
+                if agent == "agy"
+                    && let Some(p) = owner
+                {
+                    let id = event.session_id.clone();
+                    self.end_replaced_agy(&id, p, ts, run);
+                }
             }
             event.context.pid = self.procs.get(id).map(|f| f.process.pid);
         }
@@ -496,6 +504,23 @@ impl Core {
             },
             run,
         );
+    }
+
+    /// agy has no session-end event, and a new conversation (`/new`, or resuming
+    /// another) in the same window leaves the old one's sprite behind. A process
+    /// has one live agy conversation, so a new one in `process` ends the others
+    /// of that process.
+    fn end_replaced_agy(&mut self, new: &str, process: ProcessId, ts: u64, run: &mut Run) {
+        let old: Vec<String> = (self.procs.iter())
+            .filter(|(id, f)| {
+                f.process.pid == process.pid && id.starts_with("agy-") && id.as_str() != new
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in old {
+            tracing::info!(session = ?id, "agy conversation replaced in its window");
+            self.user(Kind::SessionEnded, &id, ts, run);
+        }
     }
 
     /// The user's own test (§10.4 step 5), so its toast shows even when
@@ -1585,6 +1610,45 @@ mod tests {
         t.hook(20, "a", "UserPromptSubmit", "", Some(P1));
         t.hook(30, "a", "Stop", "", None);
         assert_eq!(t.core.owner_warnings, ["a", "b"]);
+    }
+
+    /// agy has no session-end event: a new conversation in the same window ends the
+    /// old one, while another window's conversation (another process) stays.
+    #[test]
+    fn a_new_agy_conversation_replaces_the_old_one_in_its_window() {
+        let mut t = core("agy-replaced");
+        let agy = |t: &mut T, ts: u64, id: &str, owner: ProcessId| {
+            let body = format!(
+                r#"{{"conversationId":"{id}","workspacePaths":["/w/repo"],"hook_event_name":"PreInvocation","invocationNum":0}}"#
+            );
+            let msg = Msg::Hook {
+                ts: T0 + ts,
+                agent: "agy",
+                body: body.into_bytes(),
+                sim: false,
+                owner: Some(owner),
+            };
+            t.core.handle(msg, T0 + ts, t.minute);
+        };
+        let ids = |t: &T| {
+            let mut v: Vec<String> = t
+                .core
+                .views()
+                .into_iter()
+                .filter(|s| s.state != "ended")
+                .map(|s| s.id)
+                .collect();
+            v.sort();
+            v
+        };
+        agy(&mut t, 1, "one", P1);
+        agy(&mut t, 2, "other-window", P2);
+        assert_eq!(ids(&t), ["agy-one", "agy-other-window"]);
+        agy(&mut t, 3, "two", P1);
+        assert_eq!(ids(&t), ["agy-other-window", "agy-two"]);
+        // Going back to the first conversation (resuming it) makes that the live one.
+        agy(&mut t, 4, "one", P1);
+        assert_eq!(ids(&t), ["agy-one", "agy-other-window"]);
     }
 
     /// FR-13: after a restart, sessions whose process still runs come back

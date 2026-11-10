@@ -90,7 +90,7 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
         .iter()
         .map(|(_, i)| i as &dyn tauri::menu::IsMenuItem<Wry>)
         .collect();
-    let animals = Submenu::with_items(app, "Animals", true, &items)?;
+    let animals = Submenu::with_items(app, "Sprites", true, &items)?;
     let pause = CheckMenuItem::with_id(
         app,
         "pause",
