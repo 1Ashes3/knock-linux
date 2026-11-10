@@ -105,6 +105,26 @@ export function dismissRect(
 	};
 }
 
+/**
+ * The "x" that hides a stalled session's "No progress" tag: centred on the chip's top-right
+ * corner, like a badge, and kept inside the strip (`width` wide, top at 0). `shift` is how
+ * far the chips sit below the top of the chip area.
+ */
+export function tagDismissRect(
+	chip: { x: number; y: number; width: number },
+	shift: number,
+	width: number,
+	m: Metrics,
+): HitRegion {
+	const d = Math.round(m.s * 0.25);
+	return {
+		x: Math.max(0, Math.min(chip.x + chip.width - d / 2, width - d)),
+		y: Math.max(0, chip.y + shift - d / 2),
+		width: d,
+		height: d,
+	};
+}
+
 /** What one character contributes to the hit regions. */
 export interface HitInput {
 	slot: number;

@@ -467,6 +467,49 @@ test("size requests, hit regions, jump and dismiss go to the core", async ({
 	).toHaveCount(0);
 });
 
+test("the x on a No progress tag hides only the tag, until the next stall", async ({
+	page,
+}) => {
+	await open(page, "show=stalled");
+	const log = page.locator("#log");
+	const chip = page.locator(".chip");
+	await expect(chip).toHaveText(/No progress for/);
+	const hide = page.getByRole("button", {
+		name: "Hide the no-progress notice for data",
+	});
+	// Its button is a hit region, so it can be clicked through click-through.
+	const box = await hide.boundingBox();
+	await expect
+		.poll(async () => {
+			const text = (await log.textContent()) ?? "";
+			const line = text
+				.split("\n")
+				.find((l) => l.startsWith("set_hit_regions"));
+			return JSON.parse(line?.slice("set_hit_regions ".length) ?? "{}").regions;
+		})
+		.toContainEqual(box);
+	await hide.click();
+	await expect(chip).toHaveCount(0);
+	await expect(hide).toHaveCount(0);
+	// The session stays, still stalled, and nothing went to the core.
+	await expect(
+		page.getByRole("button", { name: /^data, No progress/ }),
+	).toBeVisible();
+	await expect(log).not.toContainText('dismiss {"id":"stalled"}');
+	// Progress, then a new stall: the tag is back.
+	await mock(page, (m) =>
+		m.set("stalled", { state: "working", tier: "working" }),
+	);
+	await mock(page, (m) =>
+		m.set("stalled", {
+			state: "stalled",
+			tier: "needs_you",
+			since: new Date(Date.now()).toISOString(),
+		}),
+	);
+	await expect(chip).toHaveText(/No progress for/);
+});
+
 test("knocking raises the hit region; leaving Needs you steps down and lowers it", async ({
 	page,
 }) => {

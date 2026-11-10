@@ -23,6 +23,7 @@ import {
 	useVisibleSessions,
 } from "../placement";
 import { STALL_DEFAULT, useMinuteClock, useSend } from "../Strip";
+import { tagHidden } from "../stallTag";
 import type { StripStore } from "../store";
 import { clipsFor, packVersion, subscribePack } from "./art";
 import { endsRaised, frameAt } from "./controller";
@@ -39,6 +40,7 @@ import {
 	slotTop,
 	slotX,
 	stripWidth,
+	tagDismissRect,
 	tooltipBox,
 	tooltipLines,
 	tooltipReserve,
@@ -99,6 +101,7 @@ export function AnimalStrip({
 	const placement = useStore(store, (s) => s.settings?.placement);
 	const sessions = useVisibleSessions(all, placement);
 	const away = useStore(store, (s) => s.away);
+	const hiddenTags = useStore(store, (s) => s.hiddenTags);
 	const size = useStore(store, (s) => s.settings?.size ?? "medium");
 	const idleMotion = useStore(store, (s) => s.settings?.idleMotion ?? true);
 	const stallMinutes = useStore(
@@ -180,6 +183,8 @@ export function AnimalStrip({
 	);
 	const chipInputs: ChipInput[] = [];
 	for (const c of shown) {
+		// The user closed this stall's "No progress" tag: the character stays, the chip goes.
+		if (tagHidden(hiddenTags, c.session)) continue;
 		const text = chipText(c.session, now, stallMinutes);
 		if (text)
 			chipInputs.push({
@@ -193,6 +198,19 @@ export function AnimalStrip({
 	const chipShift = chipArea - chips.height;
 	const height = model.slots ? chipArea + m.headroom + m.s : m.s;
 	const raised = (c: Character) => !still && endsRaised(c.plan);
+	const owner = (id: string) => shown.find((c) => c.session.id === id);
+	// A stalled session's chip gets an "x" that hides only the chip.
+	const tagButtons = chips.chips.flatMap((chip) => {
+		const c = owner(chip.id);
+		return c?.session.state === "stalled"
+			? [
+					{
+						session: c.session,
+						rect: tagDismissRect(chip, chipShift, width, m),
+					},
+				]
+			: [];
+	});
 
 	// FR-9: the away card stacks above everything (chips, the tooltip's room, the
 	// characters), right edges level, so it covers nothing and the window only grows up.
@@ -221,8 +239,8 @@ export function AnimalStrip({
 		chipArea,
 		m,
 	);
+	for (const b of tagButtons) local.push(b.rect);
 	if (cardRect) local.push(cardRect);
-	const owner = (id: string) => shown.find((c) => c.session.id === id);
 	const hovered = owner(hover ?? "");
 	const tip =
 		hovered &&
@@ -381,6 +399,19 @@ export function AnimalStrip({
 						</div>
 					);
 				})}
+			{tagButtons.map(({ session, rect: r }) => (
+				<div
+					key={`hide-tag-${session.id}`}
+					className="dismiss"
+					role="button"
+					aria-label={`Hide the no-progress notice for ${session.project}`}
+					data-tag-dismiss={session.id}
+					style={{ left: r.x, top: r.y, width: r.width, height: r.height }}
+					onClick={() => store.getState().hideStallTag(session.id)}
+				>
+					<CloseIcon />
+				</div>
+			))}
 			{model.hidden.length > 0 && (
 				<div
 					className="den-slot"
