@@ -26,7 +26,7 @@ provides=('knock-claude')
 conflicts=('knock-claude')
 # KNOCK_REPO overrides the source, e.g. to build a local checkout:
 #   KNOCK_REPO="file://$PWD/../.." makepkg -si
-source=("$_pkgname::git+${KNOCK_REPO:-$url.git}#branch=sprite-packs")
+source=("$_pkgname::git+${KNOCK_REPO:-$url.git}#branch=main")
 sha256sums=('SKIP')
 
 pkgver() {
