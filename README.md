@@ -29,7 +29,7 @@ When a session needs you, its animal knocks. Click it to jump straight there.</p
 </div>
 
 > [!NOTE]
-> **Beta.** This is v0.3, a public test version. Expect rough edges, and please [tell us how it went](#feedback).
+> **Beta.** This is v0.1 for Linux, a test version. Expect rough edges, and please [tell us how it went](#feedback).
 
 ## What it does
 
@@ -38,13 +38,8 @@ When a session needs you, its animal knocks. Click it to jump straight there.</p
 - 🔍 **Hover** an animal to see the project, what it's waiting for and for how long.
 - 🖱️ **Click** an animal to bring its terminal window to the front.
 - 🏠 **More than 5 sessions?** The extras wait in a little den that shows how many are in each state.
-- 📋 **While you were away**: back after 10 minutes? A card lists what finished, failed or needs you.
 - 🌙 **Pause and quiet hours** for notifications.
 - 🖥️ Handles scaling and multiple monitors.
-
-<p align="center">
-<img src="docs/images/away.png" alt="The &quot;While you were away&quot; card above the strip">
-</p>
 
 ## Linux
 
@@ -97,6 +92,7 @@ Pick a pack in **Settings → Characters**. A pack is one `.knockpack` file. To 
 ### Known limits
 
 - On NVIDIA graphics under Wayland, a possible workaround is to start Knock with `WEBKIT_DISABLE_DMABUF_RENDERER=1` set. This is not confirmed.
+- The "While you were away" card, which is meant to appear after 10 minutes of no input, comes from the original and has not been tested on Linux.
 
 Windows is not supported in this fork. For Windows, use the [original Knock](https://github.com/bandaranayake/knock).
 
@@ -117,11 +113,15 @@ Knock never reads your conversations, prompts or code. No telemetry, no accounts
 
 ## Uninstall
 
-1. Open Knock's **Settings** (tray icon) and click **Remove Knock from Claude Code**. Turn off **Launch at sign-in** too.
-2. Remove the package with `sudo pacman -R knock-claude-git`, or delete the AppImage.
+1. Open Knock's **Settings** (tray icon).
+2. Remove Knock from every agent you connected:
+   - **Claude Code:** click **Remove Knock from Claude Code**.
+   - **Other agents** (Antigravity and the rest): under **Other agents**, click **Remove…** next to each one you connected, then confirm.
+3. Turn off **Launch at sign-in**.
+4. Remove the package with `sudo pacman -R knock-claude-git`, or delete the AppImage.
 
 > [!TIP]
-> Do step 1 first. If you skip it, Knock's hooks stay in Claude Code's settings. They're harmless (they fail silently), but they're clutter.
+> Do steps 1 to 3 first. If you skip them, Knock's hooks stay in each agent's settings. They're harmless (they fail silently), but they're clutter.
 
 ## Feedback
 
