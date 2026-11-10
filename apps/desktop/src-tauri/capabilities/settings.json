@@ -25,6 +25,9 @@
 		"allow-offer-pack-bytes",
 		"allow-take-offered-pack",
 		"allow-install-pack",
-		"allow-remove-pack"
+		"allow-remove-pack",
+		"allow-agents-status",
+		"allow-agent-preview",
+		"allow-agent-apply"
 	]
 }

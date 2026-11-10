@@ -519,3 +519,39 @@ input[aria-invalid="true"] {
 button.link.back {
 	margin-bottom: 8px;
 }
+
+/* Settings → Other agents (ADR 0039). */
+.agents {
+	list-style: none;
+	margin: 0 0 12px;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.agent {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 8px 10px;
+}
+
+.agent:not([data-found]) {
+	opacity: 0.8;
+}
+
+.agent-text {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.agent-actions {
+	display: flex;
+	gap: 8px;
+	flex-shrink: 0;
+}

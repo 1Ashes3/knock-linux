@@ -4,6 +4,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agents;
 mod helper;
 mod hooks;
 mod jump;
@@ -63,6 +64,8 @@ struct Knock {
     moved: Arc<AtomicBool>,
     /// Claude Code hook setup (§8.2).
     hooks: hooks::Setup,
+    /// Hook setup for Codex, Copilot and Antigravity (ADR 0039).
+    agents: agents::Agents,
     server: Arc<Mutex<Listening>>,
     /// One Repair at a time.
     repairing: Mutex<()>,
@@ -581,6 +584,53 @@ async fn setup_remove_hooks(k: tauri::State<'_, Knock>) -> Result<Value, String>
     Ok(reply(r, |backup| json!({ "ok": true, "backup": backup })))
 }
 
+/// ADR 0039: each other agent's line in Settings: found on this computer or not,
+/// connected or not.
+#[tauri::command]
+async fn agents_status(k: tauri::State<'_, Knock>) -> Result<Vec<agents::Status>, String> {
+    Ok(k.agents
+        .setups
+        .iter()
+        .map(agents::AgentSetup::status)
+        .collect())
+}
+
+/// `{ ok: false, message }` for a setup problem of `agent`.
+fn agent_problem(agent: &str, p: hooks::Problem) -> Value {
+    tracing::info!(agent, problem = ?p, "agent hook setup stopped");
+    json!({ "ok": false, "message": agents::message(p, agents::display_name(agent)) })
+}
+
+/// ADR 0039: what connecting `id` (or, with `remove`, disconnecting it) would change.
+#[tauri::command]
+async fn agent_preview(
+    id: String,
+    remove: bool,
+    k: tauri::State<'_, Knock>,
+) -> Result<Value, String> {
+    let setup = k.agents.get(&id).ok_or("Knock doesn't know that agent.")?;
+    Ok(match setup.preview(remove) {
+        Ok(p) => agents::preview_json(&p),
+        Err(p) => agent_problem(setup.agent, p),
+    })
+}
+
+/// ADR 0039: after the user confirmed the preview.
+#[tauri::command]
+async fn agent_apply(
+    id: String,
+    remove: bool,
+    k: tauri::State<'_, Knock>,
+) -> Result<Value, String> {
+    let setup = k.agents.get(&id).ok_or("Knock doesn't know that agent.")?;
+    Ok(match setup.apply(remove, pipeline::now_ms()) {
+        Ok(backup) => {
+            json!({ "ok": true, "backup": backup, "note": agents::after_note(setup.agent) })
+        }
+        Err(p) => agent_problem(setup.agent, p),
+    })
+}
+
 #[derive(serde::Serialize)]
 struct Check {
     id: &'static str,
@@ -841,6 +891,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     );
     let mut hooks = hooks::Setup::new(spec, claude, dir.join("backups"), None);
     hooks.guard = hooks::guarded();
+    let program = platform::own_exe().unwrap_or_else(|_| PathBuf::from("knock-desktop"));
+    let agents = agents::Agents::new(program, dir.join("backups"));
 
     let strip = Arc::new(Mutex::new(Strip {
         rect: strip::Rect {
@@ -861,6 +913,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         strip,
         moved,
         hooks,
+        agents,
         server: listening,
         repairing: Mutex::new(()),
         dir,
@@ -1014,6 +1067,9 @@ fn main() {
             take_offered_pack,
             install_pack,
             remove_pack,
+            agents_status,
+            agent_preview,
+            agent_apply,
         ])
         .setup(setup)
         .run(tauri::generate_context!())

@@ -725,7 +725,7 @@ fn autostart_file() -> std::io::Result<PathBuf> {
 
 /// The program Knock starts as: the AppImage itself when run from one
 /// (`current_exe` is then inside a temporary mount), else this exe.
-fn own_exe() -> std::io::Result<PathBuf> {
+pub fn own_exe() -> std::io::Result<PathBuf> {
     match std::env::var_os("APPIMAGE").filter(|v| !v.is_empty()) {
         Some(p) => Ok(PathBuf::from(p)),
         None => std::env::current_exe(),

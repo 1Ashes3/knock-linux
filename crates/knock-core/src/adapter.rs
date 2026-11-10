@@ -58,17 +58,24 @@ pub struct ClaudeCode {
 /// a string counts as missing.
 #[derive(Deserialize)]
 struct Raw {
+    // Copilot's camelCase payloads (events registered as `agentStop` and so on)
+    // use the same names in camelCase.
+    #[serde(alias = "sessionId")]
     session_id: Option<String>,
     hook_event_name: Option<String>,
     #[serde(default, deserialize_with = "string_or_none")]
     cwd: Option<String>,
-    #[serde(default, deserialize_with = "string_or_none")]
+    #[serde(default, alias = "toolName", deserialize_with = "string_or_none")]
     tool_name: Option<String>,
-    #[serde(default, deserialize_with = "string_or_none")]
+    #[serde(
+        default,
+        alias = "notificationType",
+        deserialize_with = "string_or_none"
+    )]
     notification_type: Option<String>,
     #[serde(default, deserialize_with = "string_or_none")]
     error: Option<String>,
-    #[serde(default, deserialize_with = "string_or_none")]
+    #[serde(default, alias = "agentId", deserialize_with = "string_or_none")]
     agent_id: Option<String>,
 }
 
@@ -174,6 +181,20 @@ impl Dialect {
             Self::Codex => "codex",
             Self::Copilot => "copilot",
             Self::Agy => "agy",
+        }
+    }
+
+    /// The event's name in Claude Code's terms. Copilot's hook files name events in
+    /// camelCase (`agentStop`, `userPromptSubmitted`), and its payloads then carry no
+    /// event name, so the helper adds the registered one; both spellings read the same.
+    fn event(self, name: &str) -> &str {
+        match (self, name) {
+            (Self::Copilot, "userPromptSubmitted") => "UserPromptSubmit",
+            (Self::Copilot, "postToolUse") => "PostToolUse",
+            (Self::Copilot, "notification") => "Notification",
+            (Self::Copilot, "agentStop") => "Stop",
+            (Self::Copilot, "sessionEnd") => "SessionEnd",
+            _ => name,
         }
     }
 
@@ -428,18 +449,20 @@ impl Adapter for Copilot {
             Capability::Idle,
         ]
     }
-    /// Never `PreToolUse` (a failing hook there denies the tool) and never
-    /// `PermissionRequest` (it runs even when nothing asks the user); the
-    /// `Notification` for a permission prompt is the real signal.
+    /// Never `preToolUse` (a failing hook there denies the tool) and never
+    /// `permissionRequest` (it runs even when nothing asks the user); the
+    /// `notification` for a permission prompt is the real signal. The camelCase
+    /// names are the ones Copilot's hook files document; the helper adds the
+    /// name to the payload, and both payload styles are read ([`Dialect::event`]).
     fn hooks(&self) -> HookSpec {
         HookSpec {
             path: "/v1/hooks/copilot",
             events: &[
-                ("UserPromptSubmit", None),
-                ("PostToolUse", Some("*")),
-                ("Notification", None),
-                ("Stop", None),
-                ("SessionEnd", None),
+                ("userPromptSubmitted", None),
+                ("postToolUse", None),
+                ("notification", None),
+                ("agentStop", None),
+                ("sessionEnd", None),
             ],
         }
     }
@@ -517,7 +540,8 @@ fn parse_with(
             tool,
             ..Detail::default()
         };
-        let (kind, detail) = match raw.hook_event_name.as_deref().unwrap_or("") {
+        let event = dialect.event(raw.hook_event_name.as_deref().unwrap_or(""));
+        let (kind, detail) = match event {
             "UserPromptSubmit" => (Kind::TurnStarted, Detail::default()),
             "PreToolUse" | "PermissionRequest" if tool.as_deref() == Some("AskUserQuestion") => {
                 (Kind::NeedsAnswer, Detail::default())

@@ -110,18 +110,18 @@ pub enum J {
 }
 
 impl J {
-    fn get(&self, key: &str) -> Option<&J> {
+    pub fn get(&self, key: &str) -> Option<&J> {
         let J::Obj(m) = self else { return None };
         m.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v)
     }
-    fn get_mut(&mut self, key: &str) -> Option<&mut J> {
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut J> {
         let J::Obj(m) = self else { return None };
         m.iter_mut().rev().find(|(k, _)| k == key).map(|(_, v)| v)
     }
-    fn str(&self) -> Option<&str> {
+    pub fn str(&self) -> Option<&str> {
         if let J::Str(s) = self { Some(s) } else { None }
     }
-    fn arr(&self) -> Option<&[J]> {
+    pub fn arr(&self) -> Option<&[J]> {
         if let J::Arr(a) = self { Some(a) } else { None }
     }
 }
@@ -207,7 +207,7 @@ fn is_knock(h: &J, spec: &HookSpec) -> bool {
 }
 
 /// Every handler in every matcher group of every event.
-fn handlers(root: &J) -> impl Iterator<Item = &J> {
+pub fn handlers(root: &J) -> impl Iterator<Item = &J> {
     let events: &[(String, J)] = match root.get("hooks") {
         Some(J::Obj(m)) => m,
         _ => &[],
@@ -238,6 +238,18 @@ pub fn parse(raw: Option<&[u8]>) -> Result<J, Problem> {
 /// adapter's own event arrays stay, so a re-install keeps their place.
 /// Returns how many handlers were removed.
 fn strip(root: &mut J, spec: &HookSpec, keep: bool) -> Result<usize, Problem> {
+    strip_with(root, spec.events, &|h| is_knock(h, spec), keep)
+}
+
+/// [`strip`] for any agent whose file nests handlers like Claude Code's
+/// (`hooks` → event → matcher groups → `hooks`): `events` are the agent's own,
+/// `knock` says which handler is Knock's.
+pub fn strip_with(
+    root: &mut J,
+    events: &[(&str, Option<&str>)],
+    knock: &dyn Fn(&J) -> bool,
+    keep: bool,
+) -> Result<usize, Problem> {
     let Some(hooks) = root.get_mut("hooks") else {
         return Ok(0);
     };
@@ -255,12 +267,12 @@ fn strip(root: &mut J, spec: &HookSpec, keep: bool) -> Result<usize, Problem> {
                 return true;
             };
             let len = hs.len();
-            hs.retain(|h| !is_knock(h, spec));
+            hs.retain(|h| !knock(h));
             here += len - hs.len();
             !(len > hs.len() && hs.is_empty())
         });
         removed += here;
-        let ours = keep && spec.events.iter().any(|(e, _)| e == event);
+        let ours = keep && events.iter().any(|(e, _)| e == event);
         !(here > 0 && groups.is_empty() && !ours)
     });
     if removed > 0 && hooks.is_empty() && !keep {
@@ -275,7 +287,20 @@ fn strip(root: &mut J, spec: &HookSpec, keep: bool) -> Result<usize, Problem> {
 /// Setup: Knock's old entries (any port or token) replaced by one handler
 /// per event, appended to that event's array.
 pub fn install(root: &mut J, spec: &HookSpec, port: u16, token: &str) -> Result<(), Problem> {
-    strip(root, spec, true)?;
+    install_with(root, spec.events, &|_| handler(spec, port, token), &|h| {
+        is_knock(h, spec)
+    })
+}
+
+/// [`install`] for another agent with the same layout: `make` builds the handler
+/// for an event, `knock` recognises Knock's old ones.
+pub fn install_with(
+    root: &mut J,
+    events: &[(&str, Option<&str>)],
+    make: &dyn Fn(&str) -> J,
+    knock: &dyn Fn(&J) -> bool,
+) -> Result<(), Problem> {
+    strip_with(root, events, knock, true)?;
     let J::Obj(m) = root else {
         return Err(Problem::Shape);
     };
@@ -285,7 +310,7 @@ pub fn install(root: &mut J, spec: &HookSpec, port: u16, token: &str) -> Result<
     let Some(J::Obj(hooks)) = root.get_mut("hooks") else {
         return Err(Problem::Shape);
     };
-    for (event, matcher) in spec.events {
+    for (event, matcher) in events {
         if !hooks.iter().any(|(k, _)| k == event) {
             hooks.push((event.to_string(), J::Arr(Vec::new())));
         }
@@ -297,7 +322,7 @@ pub fn install(root: &mut J, spec: &HookSpec, port: u16, token: &str) -> Result<
         if let Some(m) = matcher {
             g.push(("matcher".into(), J::Str(m.to_string())));
         }
-        g.push(("hooks".into(), J::Arr(vec![handler(spec, port, token)])));
+        g.push(("hooks".into(), J::Arr(vec![make(event)])));
         groups.push(J::Obj(g));
     }
     Ok(())
@@ -346,7 +371,7 @@ fn indent(original: Option<&str>) -> &str {
 /// `v` as the file text: pretty JSON in the original's indentation, with
 /// its trailing newline (a new file gets one) and CRLF line ends if it used
 /// them.
-fn render(v: &J, original: Option<&str>) -> String {
+pub fn render(v: &J, original: Option<&str>) -> String {
     let mut out = Vec::new();
     let f = serde_json::ser::PrettyFormatter::with_indent(indent(original).as_bytes());
     let _ = v.serialize(&mut serde_json::Serializer::with_formatter(&mut out, f));
@@ -402,7 +427,7 @@ impl Plan {
     }
 }
 
-fn text(raw: Option<&[u8]>) -> Option<String> {
+pub fn text(raw: Option<&[u8]>) -> Option<String> {
     raw.map(|b| String::from_utf8_lossy(b.strip_prefix(BOM).unwrap_or(b)).into_owned())
 }
 
@@ -453,7 +478,7 @@ pub fn read(path: &Path) -> Result<Option<Vec<u8>>, Problem> {
 
 /// Copies `original` to `backups\settings.<UTC time>.json`, never over an
 /// existing backup.
-fn backup(dir: &Path, original: &[u8], now_ms: u64) -> io::Result<PathBuf> {
+pub fn backup(dir: &Path, original: &[u8], now_ms: u64) -> io::Result<PathBuf> {
     use std::io::Write;
     std::fs::create_dir_all(dir)?;
     let stamp =
@@ -483,7 +508,7 @@ fn backup(dir: &Path, original: &[u8], now_ms: u64) -> io::Result<PathBuf> {
 }
 
 /// Whether the file still holds exactly `original` (`None`: no file).
-fn unchanged(path: &Path, original: Option<&[u8]>) -> bool {
+pub fn unchanged(path: &Path, original: Option<&[u8]>) -> bool {
     matches!(read(path), Ok(now) if now.as_deref() == original)
 }
 
@@ -491,7 +516,7 @@ fn unchanged(path: &Path, original: Option<&[u8]>) -> bool {
 /// atomically, without a BOM, if `still()` holds just before the replace
 /// (else [`Problem::Stale`]; the backup stays). Returns the backup's path,
 /// or `""` when there was no file to back up.
-fn commit(
+pub fn commit(
     path: &Path,
     backups: &Path,
     original: Option<&[u8]>,
@@ -573,7 +598,7 @@ fn resolved(path: &Path) -> String {
 }
 
 /// `path` as the user knows it: without the `\\?\` prefix `canonicalize` adds.
-fn shown(path: &Path) -> String {
+pub fn shown(path: &Path) -> String {
     let s = path.display().to_string();
     match s.strip_prefix(r"\\?\UNC\") {
         Some(rest) => format!(r"\\{rest}"),

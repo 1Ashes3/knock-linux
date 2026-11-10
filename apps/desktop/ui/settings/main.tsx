@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { useStore } from "zustand";
 import { call, listen, type Settings } from "../overlay/bridge";
 import { createStripStore } from "../overlay/store";
+import { AgentsPage } from "./Agents";
 import { closeWindow, errorText, invoke, type SetupStatus } from "./core";
 import { Characters, type Dropped } from "./Packs";
 import { SettingsPage } from "./SettingsPage";
@@ -37,7 +38,7 @@ const loadStatus = () =>
 		}),
 	);
 
-type View = "setup" | "repair" | "settings" | "packs";
+type View = "setup" | "repair" | "settings" | "packs" | "agents";
 
 function App(props: { status: SetupStatus; view: View }) {
 	const settings = useStore(store, (s) => s.settings);
@@ -53,7 +54,9 @@ function App(props: { status: SetupStatus; view: View }) {
 				? "Repair Knock"
 				: view === "packs"
 					? "Knock Characters"
-					: "Knock Settings";
+					: view === "agents"
+						? "Knock Agents"
+						: "Knock Settings";
 
 	// A .knockpack opened with Knock, or a file dropped on the window, goes to the
 	// Characters page, where it is offered. Never in the middle of setup or Repair.
@@ -102,6 +105,20 @@ function App(props: { status: SetupStatus; view: View }) {
 				<p role="status">Loading your settings…</p>
 			</main>
 		);
+	if (view === "agents")
+		return (
+			<main className="settings">
+				<button
+					type="button"
+					className="link back"
+					onClick={() => setView("settings")}
+				>
+					← Settings
+				</button>
+				<h1>Other agents</h1>
+				<AgentsPage />
+			</main>
+		);
 	if (view === "packs")
 		return (
 			<main className="settings">
@@ -130,6 +147,7 @@ function App(props: { status: SetupStatus; view: View }) {
 			onRunSetup={() => void open("setup")}
 			onRepair={() => void open("repair", true)}
 			onOpenCharacters={() => setView("packs")}
+			onOpenAgents={() => setView("agents")}
 		/>
 	);
 }

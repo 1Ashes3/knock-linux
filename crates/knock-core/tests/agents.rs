@@ -146,6 +146,73 @@ fn copilot_notifications_are_the_permission_and_question_signals() {
     );
 }
 
+/// Copilot's hook files name events in camelCase and its payloads then have no event
+/// name (the helper adds the registered one): `sessionId`, `toolName`, camelCase.
+#[test]
+fn copilot_reads_camel_case_events_and_payloads() {
+    let a = Copilot { users: vec![] };
+    let camel = |event: &str, extra: serde_json::Value| {
+        let mut v = json!({"hook_event_name": event, "sessionId": "c-9", "timestamp": 1,
+                           "cwd": "/w/repo", "prompt": "SECRET"});
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        parse(&a, v).unwrap()
+    };
+    let kind = |e: &str, x| camel(e, x).map(|e| e.kind);
+    assert_eq!(
+        kind("userPromptSubmitted", json!({})),
+        Some(Kind::TurnStarted)
+    );
+    assert_eq!(
+        kind("postToolUse", json!({"toolName": "bash"})),
+        Some(Kind::Activity)
+    );
+    assert_eq!(
+        kind(
+            "notification",
+            json!({"notification_type": "permission_prompt"})
+        ),
+        Some(Kind::NeedsPermission)
+    );
+    assert_eq!(
+        kind(
+            "notification",
+            json!({"notificationType": "elicitation_dialog"})
+        ),
+        Some(Kind::NeedsAnswer)
+    );
+    assert_eq!(
+        kind("notification", json!({"notification_type": "agent_idle"})),
+        None
+    );
+    assert_eq!(kind("agentStop", json!({})), Some(Kind::TurnCompleted));
+    assert_eq!(
+        kind("sessionEnd", json!({"reason": "complete"})),
+        Some(Kind::SessionEnded)
+    );
+    for unused in ["sessionStart", "preToolUse", "errorOccurred"] {
+        assert_eq!(kind(unused, json!({})), None, "{unused}");
+    }
+    let e = camel("postToolUse", json!({"toolName": "bash"})).unwrap();
+    assert_eq!(
+        (e.session_id.as_str(), e.detail.tool.as_deref()),
+        ("copilot-c-9", Some("bash"))
+    );
+    // The registered names are exactly the camelCase ones Copilot documents.
+    let registered: Vec<_> = a.hooks().events.iter().map(|(e, _)| *e).collect();
+    assert_eq!(
+        registered,
+        [
+            "userPromptSubmitted",
+            "postToolUse",
+            "notification",
+            "agentStop",
+            "sessionEnd"
+        ]
+    );
+}
+
 #[test]
 fn sessions_of_different_agents_never_share_an_id() {
     let same = json!({"session_id": "abc", "cwd": "/w/p", "hook_event_name": "UserPromptSubmit"});

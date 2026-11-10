@@ -107,8 +107,6 @@ fn send(agent: &str, body: &[u8]) -> std::io::Result<()> {
 /// The command a hook runs for `agent` (ADR 0039): this program, `hook`, the
 /// agent's id and, for agents whose payloads don't carry it, the event, quoted so
 /// a path with spaces works.
-// Used by the agents' hook setup, which comes next.
-#[allow(dead_code)]
 pub fn command(exe: &std::path::Path, agent: &str, event: Option<&str>) -> String {
     let event = event.map(|e| format!(" {e}")).unwrap_or_default();
     format!("\"{}\" hook {agent}{event}", exe.display())

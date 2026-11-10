@@ -78,6 +78,11 @@ impl WindowsPlatform {
     }
 }
 
+/// The program Knock starts as: this exe (ADR 0039 puts it in other agents' hook files).
+pub fn own_exe() -> std::io::Result<std::path::PathBuf> {
+    std::env::current_exe()
+}
+
 /// Fills `buf` from the system's cryptographic RNG (used for the §8.1 token
 /// and port). Not on [`Platform`] because the server needs it without a window.
 pub fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {

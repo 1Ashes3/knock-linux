@@ -27,6 +27,9 @@ const COMMANDS: &[&str] = &[
     "take_offered_pack",
     "install_pack",
     "remove_pack",
+    "agents_status",
+    "agent_preview",
+    "agent_apply",
 ];
 
 /// Knock's built-in sprite packs (ADR 0038): every file under `art/packs`,

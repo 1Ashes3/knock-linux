@@ -7,9 +7,13 @@ mod linux;
 mod windows;
 
 #[cfg(target_os = "linux")]
-pub use self::linux::{LinuxPlatform as NativePlatform, fill_random, link_count, local_minute};
+pub use self::linux::{
+    LinuxPlatform as NativePlatform, fill_random, link_count, local_minute, own_exe,
+};
 #[cfg(windows)]
-pub use self::windows::{WindowsPlatform as NativePlatform, fill_random, link_count, local_minute};
+pub use self::windows::{
+    WindowsPlatform as NativePlatform, fill_random, link_count, local_minute, own_exe,
+};
 use crate::jump::{ProcessId, Target};
 use crate::strip::{Rect, Region};
 use std::sync::Arc;

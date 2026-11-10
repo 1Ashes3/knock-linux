@@ -3,6 +3,7 @@
 // `sounds` has no control: sounds aren't in v1.
 import { type ReactNode, useEffect, useId, useState } from "react";
 import type { Settings, Size } from "../overlay/bridge";
+import { AgentsSummary } from "./Agents";
 import {
 	type Check,
 	invoke,
@@ -33,6 +34,8 @@ interface Props {
 	onRepair(): void;
 	/** Opens the Characters page (ADR 0038). */
 	onOpenCharacters(): void;
+	/** Opens the Agents page (ADR 0039). */
+	onOpenAgents(): void;
 }
 
 export function SettingsPage({
@@ -42,6 +45,7 @@ export function SettingsPage({
 	onRunSetup,
 	onRepair,
 	onOpenCharacters,
+	onOpenAgents,
 }: Props) {
 	// null until the core answers. Read again whenever the window comes back, so a display
 	// plugged in meanwhile shows up without reopening Settings.
@@ -148,6 +152,8 @@ export function SettingsPage({
 					onChange={(size) => update({ size: size as Size })}
 				/>
 			</section>
+
+			<AgentsSummary onOpen={onOpenAgents} />
 
 			<CharactersSummary
 				value={s.pack}
