@@ -6,7 +6,7 @@
 
 pkgname=knock-claude-git
 _pkgname=knock
-pkgver=0.3.0.beta.1.r0.g0000000
+pkgver=0.1.0.beta.1.r0.g0000000
 pkgrel=1
 pkgdesc="Claude Code sessions as little animals that knock when they need you"
 arch=('x86_64' 'aarch64')

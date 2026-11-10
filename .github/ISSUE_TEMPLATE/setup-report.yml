@@ -95,7 +95,7 @@ body:
     attributes:
       label: Knock version
       description: Shown on the release page you downloaded from, and in the installer's file name.
-      placeholder: 0.3.0-beta.1
+      placeholder: 0.1.0-beta.1
     validations:
       required: true
 
