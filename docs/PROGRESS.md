@@ -16,6 +16,20 @@ Open questions for the user:
 
 ---
 
+## 2026-11-10: Linux port, sprite packs, other agents (fork, private)
+Done:
+- Linux backend, sprite packs (`.knockpack`, four built-in packs, idle motion) and hooks for Antigravity, Codex and Copilot, all on branch `sprite-packs` in the fork. Drafted ADRs 0037, 0038 and 0039 (all `Proposed`).
+- Release checks: path-clean binary, a second agent's read-only review passed, AppImage and AUR package built and run by the user. Autostart `Exec` escaping fixed.
+- Private fork folder made (`knock-fork/`); push is switched off on both remotes.
+Next:
+- User approves or rejects ADRs 0037 to 0039 and the new dependencies, then SPEC.md is updated (§2, §3, §8) before any further code changes in those areas.
+- Test Hyprland, Sway, X11, Codex and Copilot, or keep them labelled untested.
+- Publishing (fork push, AUR, optional upstream PR) only on the user's go-ahead; testers must be told the installer is unsigned (§13.5).
+Dependencies added: gtk, gtk-layer-shell, zbus, libc, wayland-client, wayland-protocols (Linux only); zip, flate2 (pack files). None is in §13.2: awaiting the user's approval (see ADRs 0037, 0038).
+Clarifications: none
+Open questions for the user:
+- Approve ADRs 0037 to 0039 and the dependencies above?
+
 ## 2026-11-06: Phase 4, public beta preparation
 Done:
 - ADR 0035 (approved by the user): v0.3 is a **public** beta via a GitHub pre-release, and the user judges G2 from setup reports. SPEC.md §13.5 and §14 were updated.
