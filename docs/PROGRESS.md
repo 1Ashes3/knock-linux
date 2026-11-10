@@ -16,6 +16,19 @@ Open questions for the user:
 
 ---
 
+## 2026-11-10: Introduce sprites demo
+Done:
+- Tray item "Introduce sprites" (ADR 0040, approved with a safety stop and amended): shows the selected pack asleep, then four sprites in different states that rotate, 18 s in all. The strip is forced on top for the demo, then the placement is restored. A real session asking for the user stops it. Tested by the user; it looks good.
+- SPEC.md §8.5 (`intro-demo` event with `durationMs`) and §9.7 (tray menu) updated.
+Next:
+- Optional: raise above full-screen windows (needs a new layer in the platform trait).
+- Publishing only on the user's go-ahead.
+Dependencies added: none
+Clarifications: none
+Open questions for the user: none
+
+---
+
 ## 2026-11-10: Linux port, sprite packs, other agents (fork, private)
 Done:
 - Linux backend, sprite packs (`.knockpack`, four built-in packs, idle motion) and hooks for Antigravity, Codex and Copilot, all on branch `sprite-packs` in the fork. ADRs 0037, 0038 and 0039 (approved 2026-11-10).

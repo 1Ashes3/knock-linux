@@ -2,7 +2,7 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useStore } from "zustand";
 import { AnimalStrip } from "./animals/AnimalStrip";
-import { setActivePack } from "./animals/art";
+import { packCharacters, setActivePack } from "./animals/art";
 import { createAwayCard } from "./away";
 import {
 	type AwaySummary,
@@ -12,6 +12,7 @@ import {
 	type SessionsChanged,
 	type Settings,
 } from "./bridge";
+import { demoDuration } from "./introDemo";
 import { POINTER_ENTERED, POINTER_LEFT } from "./placement";
 import { Strip } from "./Strip";
 import { createStripStore, type StripStore } from "./store";
@@ -62,6 +63,11 @@ await Promise.all([
 	),
 	listen<null>("pointer-entered", () =>
 		window.dispatchEvent(new Event(POINTER_ENTERED)),
+	),
+	// ADR 0040: tray "Introduce sprites", with the characters sessions get now, for as
+	// long as the core says (§8.5 `{ durationMs }`).
+	listen<{ durationMs?: number }>("intro-demo", (p) =>
+		store.getState().startDemo(packCharacters(), demoDuration(p)),
 	),
 ]);
 const [sessions, settings] = await Promise.all([

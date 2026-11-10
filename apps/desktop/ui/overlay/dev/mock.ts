@@ -174,8 +174,13 @@ const mock = {
 			typeof summary === "number" ? awaySample(summary) : summary,
 		);
 	},
+	/** The tray's "Introduce sprites" (ADR 0040). */
+	introDemo(): void {
+		emit("intro-demo", { durationMs: 18_000 });
+	},
 };
 (globalThis as { __knockMock?: typeof mock }).__knockMock = mock;
 
 await import("../main"); // resolves once it listens and has loaded
 if (params.has("away")) mock.away(Number(params.get("away")) || 3);
+if (params.has("intro")) mock.introDemo();

@@ -101,32 +101,71 @@ fn offer_from_launch(app: &AppHandle, path: PathBuf) {
 }
 
 /// ADR 0037: which layer the strip is on, from the `placement` setting and
-/// whether a knock nobody has seen is waiting. The platform is told only
-/// when the layer changes.
+/// whether a knock nobody has seen is waiting, or on top while the
+/// "Introduce sprites" demo runs (ADR 0040). The platform is told only when
+/// the layer changes. Never changes the saved settings.
 struct StripView {
     platform: Arc<dyn Platform>,
-    /// (placement, knocking, the layer last set)
-    state: Mutex<(Placement, bool, Option<StripLayer>)>,
+    state: Mutex<ViewState>,
+}
+
+struct ViewState {
+    /// The `placement` setting as last heard.
+    placement: Placement,
+    knocking: bool,
+    /// The demo keeps the strip on top until then (ADR 0040).
+    raised_until: Option<Instant>,
+    /// The layer last set.
+    last: Option<StripLayer>,
 }
 
 impl StripView {
     fn new(platform: Arc<dyn Platform>, placement: Placement) -> Self {
         Self {
             platform,
-            state: Mutex::new((placement, false, None)),
+            state: Mutex::new(ViewState {
+                placement,
+                knocking: false,
+                raised_until: None,
+                last: None,
+            }),
         }
     }
 
     fn update(&self, change: impl FnOnce(&mut Placement, &mut bool)) {
+        self.update_with(|s| change(&mut s.placement, &mut s.knocking));
+    }
+
+    /// ADR 0040: on top until `until`, whatever the placement. A second
+    /// call replaces the first's end, so clicks never stack.
+    fn raise(&self, until: Instant) {
+        self.update_with(|s| s.raised_until = Some(until));
+    }
+
+    /// Ends a raise whose time is up at `now`: back to the `placement`
+    /// setting as it is at this moment in `shared`, which the user may have
+    /// changed meanwhile. Nothing while no raise has run out.
+    fn end_raise(&self, shared: &Shared, now: Instant) {
+        self.update_with(|s| {
+            if s.raised_until.is_some_and(|until| now >= until) {
+                s.raised_until = None;
+                // Read under this lock, so a settings change applied at
+                // the same time can't be overwritten by an older value.
+                // The pipeline never holds `shared` while waiting for it.
+                s.placement = pipeline::read(shared).settings.placement;
+            }
+        });
+    }
+
+    fn update_with(&self, change: impl FnOnce(&mut ViewState)) {
         let layer = {
             let mut s = lock(&self.state);
-            let (placement, knocking, last) = &mut *s;
-            change(placement, knocking);
-            let layer = StripLayer::of(*placement, *knocking);
-            if *last == Some(layer) {
+            change(&mut s);
+            let layer = StripLayer::of(s.placement, s.knocking, s.raised_until.is_some());
+            if s.last == Some(layer) {
                 return;
             }
-            *last = Some(layer);
+            s.last = Some(layer);
             layer
         };
         // Outside the lock: the platform may wait for the main thread.
@@ -848,12 +887,16 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     core.set_packs(Arc::clone(&packs));
     app.manage(Arc::clone(&packs));
     let (tx, rx) = std::sync::mpsc::channel();
-    let tray = tray::build(app.handle(), tx.clone(), shared.clone())?;
+    let placement = pipeline::read(&shared).settings.placement;
+    let view = Arc::new(StripView::new(Arc::clone(&platform), placement));
+    // "Introduce sprites" (ADR 0040): on top for the demo's length; the
+    // strip thread puts it back (`end_raise`).
+    let v = Arc::clone(&view);
+    let raise = move || v.raise(Instant::now() + Duration::from_millis(tray::INTRO_DEMO_MS));
+    let tray = tray::build(app.handle(), tx.clone(), shared.clone(), raise)?;
     let listening = Arc::new(Mutex::new(Listening::default()));
     let moved = Arc::new(AtomicBool::new(false));
     let handle = app.handle().clone();
-    let placement = pipeline::read(&shared).settings.placement;
-    let view = Arc::new(StripView::new(Arc::clone(&platform), placement));
     let (l, sh, m, v) = (
         Arc::clone(&listening),
         shared.clone(),
@@ -968,6 +1011,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     rise_check = Instant::now();
                     let on = knocking(&pipeline::read(&sh).sessions, pipeline::now_ms());
                     v.update(|_, k| *k = on);
+                    // The intro demo's time is up (ADR 0040).
+                    v.end_raise(&sh, Instant::now());
                 }
                 // FR-15: within one tick of a change, again shortly after,
                 // and every 5 s anyway.
@@ -1084,6 +1129,114 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use platform::FakePlatform;
+
+    fn strip_view(placement: Placement) -> (Arc<FakePlatform>, StripView) {
+        let fake = Arc::new(FakePlatform::default());
+        let p: Arc<dyn Platform> = fake.clone();
+        let v = StripView::new(p, placement);
+        v.update(|_, _| {});
+        (fake, v)
+    }
+
+    fn layers(fake: &FakePlatform) -> Vec<StripLayer> {
+        std::mem::take(&mut *fake.layers.lock().unwrap())
+    }
+
+    fn shared_with(placement: Placement) -> Shared {
+        let shared = Shared::default();
+        pipeline::read(&shared).settings.placement = placement;
+        shared
+    }
+
+    #[test]
+    fn the_intro_demo_raises_every_placement_then_restores_it() {
+        let ms = Duration::from_millis(tray::INTRO_DEMO_MS);
+        for (placement, before) in [
+            (Placement::Top, StripLayer::Top),
+            (Placement::Desktop, StripLayer::Desktop),
+            (Placement::Hidden, StripLayer::Hidden),
+        ] {
+            let (fake, v) = strip_view(placement);
+            let shared = shared_with(placement);
+            assert_eq!(layers(&fake), [before]);
+            let t0 = Instant::now();
+            v.raise(t0 + ms);
+            let up: &[StripLayer] = match before {
+                StripLayer::Top => &[],
+                _ => &[StripLayer::Top],
+            };
+            assert_eq!(layers(&fake), up, "{placement:?}");
+            // Still up just before the end, and the setting is untouched.
+            v.end_raise(&shared, t0 + ms - Duration::from_millis(1));
+            assert!(layers(&fake).is_empty());
+            assert_eq!(pipeline::read(&shared).settings.placement, placement);
+            v.end_raise(&shared, t0 + ms);
+            let down: &[StripLayer] = match before {
+                StripLayer::Top => &[],
+                _ => &[before],
+            };
+            assert_eq!(layers(&fake), down, "{placement:?}");
+            // Ended: later checks do nothing.
+            v.end_raise(&shared, t0 + 2 * ms);
+            assert!(layers(&fake).is_empty());
+        }
+    }
+
+    #[test]
+    fn the_restore_reads_the_placement_set_during_the_demo() {
+        let ms = Duration::from_millis(tray::INTRO_DEMO_MS);
+        let (fake, v) = strip_view(Placement::Desktop);
+        let t0 = Instant::now();
+        v.raise(t0 + ms);
+        // The user picks "hidden" meanwhile: saved, but the demo keeps it up.
+        let shared = shared_with(Placement::Hidden);
+        v.update(|p, _| *p = Placement::Hidden);
+        layers(&fake);
+        v.end_raise(&shared, t0 + ms);
+        assert_eq!(layers(&fake), [StripLayer::Hidden]);
+        // Only the shared setting changed (no settings event seen yet): the
+        // restore still uses it.
+        let (fake, v) = strip_view(Placement::Desktop);
+        v.raise(t0 + ms);
+        layers(&fake);
+        v.end_raise(&shared_with(Placement::Top), t0 + ms);
+        assert!(layers(&fake).is_empty(), "already on top");
+        v.update(|_, _| {});
+        assert!(layers(&fake).is_empty(), "stays on top: placement is top");
+    }
+
+    #[test]
+    fn clicking_again_restarts_the_demo_timer() {
+        let ms = Duration::from_millis(tray::INTRO_DEMO_MS);
+        let (fake, v) = strip_view(Placement::Desktop);
+        let shared = shared_with(Placement::Desktop);
+        assert_eq!(layers(&fake), [StripLayer::Desktop]);
+        let t0 = Instant::now();
+        v.raise(t0 + ms);
+        let t1 = t0 + Duration::from_secs(10);
+        v.raise(t1 + ms);
+        assert_eq!(layers(&fake), [StripLayer::Top], "one raise, not two");
+        v.end_raise(&shared, t0 + ms);
+        assert!(layers(&fake).is_empty(), "the first click's end is gone");
+        v.end_raise(&shared, t1 + ms);
+        assert_eq!(layers(&fake), [StripLayer::Desktop]);
+    }
+
+    #[test]
+    fn a_knock_during_the_demo_keeps_the_strip_up_after_it() {
+        let ms = Duration::from_millis(tray::INTRO_DEMO_MS);
+        let (fake, v) = strip_view(Placement::Desktop);
+        let shared = shared_with(Placement::Desktop);
+        let t0 = Instant::now();
+        v.raise(t0 + ms);
+        v.update(|_, k| *k = true);
+        layers(&fake);
+        v.end_raise(&shared, t0 + ms);
+        assert!(layers(&fake).is_empty(), "still on top for the knock");
+        v.update(|_, k| *k = false);
+        assert_eq!(layers(&fake), [StripLayer::Desktop]);
+    }
 
     fn view(state: &'static str, since_ms: u64, seen: Option<bool>) -> pipeline::SessionView {
         pipeline::SessionView {

@@ -351,6 +351,7 @@ The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_e
 | `sessions-changed` | `{ rev: number, sessions: SessionView[] }`                                                 |
 | `away-summary`     | `{ since: string, items: [{ id, project, outcome: "ready" \| "failed" \| "needs_you" }] }` |
 | `settings-changed` | `{ settings: Settings }`                                                                   |
+| `intro-demo`       | `{ durationMs }`: tray "Introduce sprites" was clicked; sent to the strip only. For that long the core keeps the strip on top of all windows (ADR 0040) |
 
 `SessionView`:
 
@@ -542,7 +543,7 @@ Windows limits which apps may bring another window to the front.
 | Process liveness  | Check every known PID each tick, matching the start time                                                                                                                                                         |
 | Idle time         | Read the system's last-input time each tick; 10 minutes or more counts as away                                                                                                                                   |
 | Notifications     | Windows toast notifications via the Tauri notification plugin; Windows Do Not Disturb applies automatically. Clicking the on-screen toast jumps to the session; a click in the notification center only informs (ADR 0015) |
-| Tray              | Notification-area icon showing the count of Needs-you sessions (0-9, then 9+). Menu: Pause notifications, Settings, Quit                                                                                         |
+| Tray              | Notification-area icon showing the count of Needs-you sessions (0-9, then 9+). Menu: Pause notifications, Settings, Introduce sprites (ADR 0040), Quit                                                                                         |
 | Single instance   | Only one Knock runs at a time                                                                                                                                                                                    |
 | Launch at sign-in | Only if the user agreed in setup or Settings. Turning it on clears a Task Manager "disabled" mark; turning it off removes any `Run\Knock` value that starts Knock's app, from any folder, and leaves others alone (ADR 0025). While it is on, Knock rewrites its entry at start if the entry is missing or stale (ADR 0027) |
 | Install           | Per-user NSIS installer; never requires administrator rights. Uninstall removes `Run\Knock` and leaves the Task Manager mark (ADR 0028)                                                                          |

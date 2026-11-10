@@ -5,6 +5,14 @@ import type {
 	SessionView,
 	Settings,
 } from "./bridge";
+import {
+	DEMO_MS,
+	type Demo,
+	type DemoCharacter,
+	demoEnd,
+	interrupts,
+	startDemo,
+} from "./introDemo";
 import { type HiddenTags, hideTag, pruneTags } from "./stallTag";
 
 /** An `away-summary` the card is showing, and when it arrived (the user's return). */
@@ -44,10 +52,29 @@ export interface StripState {
 	hiddenTags: HiddenTags;
 	/** The user closed the "No progress" tag of session `id`. */
 	hideStallTag(id: string): void;
+	/**
+	 * "Introduce sprites" (ADR 0040), while it runs. Overlay-local: the real sessions stay
+	 * as the core sent them, only hidden from the strip.
+	 */
+	demo: Demo | null;
+	/**
+	 * `intro-demo`: starts the demo with the pack's `characters`, or starts it again if one
+	 * is running, lasting `durationMs` (the event's payload; DEMO_MS if missing). Only in
+	 * animals mode: the plain strip has no sprites.
+	 */
+	startDemo(
+		characters: readonly DemoCharacter[],
+		durationMs?: number,
+		now?: number,
+		random?: () => number,
+	): void;
+	/** Ends the demo now; the real strip shows again. */
+	stopDemo(): void;
 }
 
-export const createStripStore = () =>
-	createStore<StripState>()((set, get) => ({
+export const createStripStore = () => {
+	let demoTimer: ReturnType<typeof setTimeout> | undefined;
+	return createStore<StripState>()((set, get) => ({
 		rev: null,
 		sessions: [],
 		settings: null,
@@ -61,12 +88,17 @@ export const createStripStore = () =>
 				sessions: payload.sessions,
 				hiddenTags: pruneTags(get().hiddenTags, payload.sessions),
 			});
+			// The safety stop: Knock's main job comes first.
+			const { demo } = get();
+			if (demo && interrupts(demo, payload.sessions)) get().stopDemo();
 		},
 		applyInitialSessions(result) {
 			if (Array.isArray(result)) {
 				if (get().rev === null) {
 					const sessions = result as SessionView[];
 					set({ sessions, hiddenTags: pruneTags(get().hiddenTags, sessions) });
+					const { demo } = get();
+					if (demo && interrupts(demo, sessions)) get().stopDemo();
 				}
 			} else if (result && typeof result === "object" && "rev" in result) {
 				get().applySessions(result as SessionsChanged);
@@ -74,6 +106,7 @@ export const createStripStore = () =>
 		},
 		applySettings(settings) {
 			set({ settings });
+			if (settings.mode !== "animals" && get().demo) get().stopDemo();
 		},
 		applyInitialSettings(settings) {
 			if (settings && typeof settings === "object" && get().settings === null)
@@ -89,6 +122,34 @@ export const createStripStore = () =>
 			const s = get().sessions.find((x) => x.id === id);
 			if (s) set({ hiddenTags: hideTag(get().hiddenTags, s) });
 		},
+		demo: null,
+		startDemo(
+			characters,
+			durationMs = DEMO_MS,
+			now = Date.now(),
+			random = Math.random,
+		) {
+			clearTimeout(demoTimer);
+			const { settings, sessions } = get();
+			// A real session asking for the user comes first: no demo then.
+			const asking = sessions.some(
+				(s) => s.state === "needs_input" && s.needs?.seen !== true,
+			);
+			const demo =
+				settings?.mode === "animals" && !asking
+					? startDemo(characters, now, sessions, random, durationMs)
+					: null;
+			set({ demo });
+			if (!demo) return;
+			demoTimer = setTimeout(() => {
+				if (get().demo === demo) set({ demo: null });
+			}, demoEnd(demo) - now);
+		},
+		stopDemo() {
+			clearTimeout(demoTimer);
+			set({ demo: null });
+		},
 	}));
+};
 
 export type StripStore = ReturnType<typeof createStripStore>;

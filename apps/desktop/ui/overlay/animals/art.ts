@@ -68,6 +68,8 @@ export type Look = { kind: "rig"; rig: Rig } | SheetLook;
 
 interface ActivePack {
 	id: string;
+	/** Its characters in the pack's order: the list sessions get characters from. */
+	characters: PackCharacter[];
 	/** Its overflow den's URL, or null for Knock's own mound. */
 	den: string | null;
 	rigs: Map<string, Rig>;
@@ -111,6 +113,10 @@ export function setActivePack(data: PackData | null): void {
 		}
 		active = {
 			id: data.id,
+			characters: data.characters.map(({ id, displayName }) => ({
+				id,
+				displayName,
+			})),
 			den: data.den ? packUrl(data.id, "den.svg") : null,
 			rigs,
 			sheets,
@@ -134,6 +140,27 @@ export function packVersion(): number {
 /** The active pack's overflow den, or null for Knock's own mound. */
 export function denUrl(): string | null {
 	return active?.den ?? null;
+}
+
+/** One character a session can get: its id (a session's `animal`) and its name. */
+export interface PackCharacter {
+	id: string;
+	displayName: string;
+}
+
+/** Knock's own animals in the order the core assigns them (`ANIMALS` in the engine). */
+export const CLASSIC_ORDER = ["fox", "rabbit", "cat", "owl"] as const;
+
+/**
+ * The characters of the active pack, in its order; Knock's own animals for classic
+ * (ADR 0040: the sprite introduction shows these).
+ */
+export function packCharacters(): PackCharacter[] {
+	if (active) return active.characters;
+	return CLASSIC_ORDER.map((id) => ({
+		id,
+		displayName: RIGS.get(id)?.displayName ?? id,
+	}));
 }
 
 /** The clips every character plays now. */

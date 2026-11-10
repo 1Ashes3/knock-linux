@@ -67,9 +67,11 @@ export function step(
 	clipsFor: (animal: string) => Clips,
 	/** The `idleMotion` setting: working sprites flourish now and then. */
 	idle = false,
+	/** Characters with a slot; the rest go into the den (the demo shows them all). */
+	cap = MAX_VISIBLE,
 ): { model: Model; memory: Memory } {
 	const live = sessions.filter((s) => !faded(s, now, still));
-	const { visible, hidden } = layout(live);
+	const { visible, hidden } = layout(live, cap);
 	const ids = new Set(sessions.map((s) => s.id));
 
 	// A session that leaves the list fades out where it was (motion only).
@@ -115,7 +117,7 @@ export function step(
 		(a, b) => a.character.slot - b.character.slot,
 	);
 	for (const g of byOldSlot) {
-		if (order.length >= MAX_VISIBLE) {
+		if (order.length >= cap) {
 			ghosts.delete(g.character.session.id);
 			continue;
 		}

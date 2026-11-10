@@ -1,6 +1,7 @@
 //! The notification-area icon (SPEC.md §9.7): the Needs-you count as a
 //! badge (0-9, then 9+) and in the tooltip, and a menu with Pause
-//! notifications, where the animals live (ADR 0037), Settings and Quit. The badges are 32 px PNGs made from
+//! notifications, where the animals live (ADR 0037), Settings, Introduce
+//! sprites (ADR 0040) and Quit. The badges are 32 px PNGs made from
 //! `art/icon/tray-*.svg` with `pnpm tauri icon <svg> --png 32`.
 
 use crate::pipeline::{self, Msg, Shared};
@@ -9,7 +10,7 @@ use std::sync::mpsc::Sender;
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::{AppHandle, Wry};
+use tauri::{AppHandle, Emitter, Wry};
 
 /// `icons/tray/tray-<n>.png` for 0-9, then `tray-9plus.png`.
 const BADGES: [&[u8]; 11] = [
@@ -41,6 +42,18 @@ pub struct Tray {
     pub fade: Vec<(u32, CheckMenuItem<Wry>)>,
 }
 
+/// The menu id of "Introduce sprites" (ADR 0040).
+const INTRO: &str = "intro";
+
+/// How long the "Introduce sprites" demo runs and keeps the strip on top
+/// (ADR 0040): the `intro-demo` event's `durationMs` (§8.5).
+pub const INTRO_DEMO_MS: u64 = 18_000;
+
+/// The `intro-demo` payload (§8.5).
+fn intro_payload() -> serde_json::Value {
+    serde_json::json!({ "durationMs": INTRO_DEMO_MS })
+}
+
 /// The tray's hover-card fade choices, in seconds.
 const FADES: [u32; 4] = [1, 3, 5, 10];
 
@@ -61,7 +74,15 @@ const PLACES: [(&str, Placement, &str, &str); 3] = [
     ),
 ];
 
-pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<Tray> {
+/// `raise` keeps the strip on top for [`INTRO_DEMO_MS`]; called on each
+/// "Introduce sprites" click, before the strip is told.
+pub fn build(
+    app: &AppHandle,
+    tx: Sender<Msg>,
+    shared: Shared,
+    raise: impl Fn() + Send + Sync + 'static,
+) -> tauri::Result<Tray> {
+    let raise = std::sync::Arc::new(raise);
     let (paused, placed, faded) = {
         let s = &pipeline::read(&shared).settings;
         (s.pause_notifications, s.placement, s.card_fade_seconds)
@@ -103,9 +124,13 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
         None::<&str>,
     )?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+    let intro = MenuItem::with_id(app, INTRO, "Introduce sprites", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let line = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&pause, &animals, &fades, &settings, &line, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&pause, &animals, &fades, &settings, &intro, &line, &quit],
+    )?;
     let mut icon = TrayIconBuilder::with_id("knock")
         .tooltip(tooltip(0, false))
         .menu(&menu)
@@ -120,6 +145,15 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
                 // handler deadlocks on Windows.
                 let app = app.clone();
                 std::thread::spawn(move || crate::open_settings(&app, ""));
+            }
+            // Raises the strip and tells it to run its demo (ADR 0040); no
+            // setting changes. Off the main thread like Settings.
+            INTRO => {
+                let (app, raise) = (app.clone(), std::sync::Arc::clone(&raise));
+                std::thread::spawn(move || {
+                    raise();
+                    let _ = app.emit_to("strip", "intro-demo", intro_payload());
+                });
             }
             "quit" => app.exit(0),
             // Saved like any setting; `settings-changed` then sets the
@@ -173,6 +207,19 @@ mod tests {
         assert_eq!(badge(10).unwrap().rgba(), badge(250).unwrap().rgba());
         assert_ne!(badge(9).unwrap().rgba(), badge(10).unwrap().rgba());
         assert_ne!(badge(0).unwrap().rgba(), badge(1).unwrap().rgba());
+    }
+
+    #[test]
+    fn intro_id_is_not_taken_by_a_setting_item() {
+        assert!(PLACES.iter().all(|(id, ..)| *id != INTRO));
+        assert!(INTRO.strip_prefix("fade-").is_none());
+        assert!(!["pause", "settings", "quit"].contains(&INTRO));
+    }
+
+    #[test]
+    fn intro_demo_payload_carries_its_duration() {
+        assert_eq!(INTRO_DEMO_MS, 18_000);
+        assert_eq!(intro_payload(), serde_json::json!({ "durationMs": 18000 }));
     }
 
     #[test]
