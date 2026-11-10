@@ -224,15 +224,17 @@ impl Adapter for Agy {
             Capability::Idle,
         ]
     }
-    /// All six agy events; the app knows agy's file layout (flat lists for the
-    /// lifecycle events, matcher groups for the two tool events).
+    /// agy's events, never `PreToolUse`: agy treats that hook as a gate and denied
+    /// every tool call when Knock's answer (`{}`) wasn't an explicit allow, which
+    /// stopped the agent working. Knock only watches, so it stays out of the way.
+    /// The app knows agy's file layout (flat lists for lifecycle events, matcher
+    /// groups for `PostToolUse`).
     fn hooks(&self) -> HookSpec {
         HookSpec {
             path: "/v1/hooks/agy",
             events: &[
                 ("SessionStart", None),
                 ("PreInvocation", None),
-                ("PreToolUse", Some("*")),
                 ("PostToolUse", Some("*")),
                 ("PostInvocation", None),
                 ("Stop", None),

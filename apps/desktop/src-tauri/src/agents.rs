@@ -875,12 +875,14 @@ mod tests {
         let flat = &k["Stop"][0];
         assert_eq!(flat["command"], format!("\"{EXE}\" hook agy Stop"));
         assert_eq!(flat["timeout"], TIMEOUT);
-        let grouped = &k["PreToolUse"][0];
+        let grouped = &k["PostToolUse"][0];
         assert_eq!(grouped["matcher"], "*");
         assert_eq!(
             grouped["hooks"][0]["command"],
-            format!("\"{EXE}\" hook agy PreToolUse")
+            format!("\"{EXE}\" hook agy PostToolUse")
         );
+        // Never PreToolUse: agy denies every tool call unless it answers "allow".
+        assert!(k.get("PreToolUse").is_none());
         for event in [
             "SessionStart",
             "PreInvocation",
