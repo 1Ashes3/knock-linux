@@ -82,7 +82,9 @@ export function Characters({
 		setPacks(list);
 		const entries = await Promise.all(
 			list
-				.filter((p) => p.valid && !p.builtin)
+				// Built-in packs need their data too, for the previews; only Knock's own
+				// classic cast is drawn from the app's own art.
+				.filter((p) => p.valid && p.id !== CLASSIC)
 				.map(
 					async (p) =>
 						[
