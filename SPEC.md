@@ -37,13 +37,13 @@ Animals are a skin over this status model. Every state MUST also be readable as 
 
 **In scope (Stage A):**
 
-- Windows 11 only.
+- Windows 11, and Linux (ADR 0037, §18).
 - Claude Code CLI running natively on Windows (PowerShell, Command Prompt or Git Bash), in any terminal or editor.
 
 **Out of scope — do not build, do not add code paths for:**
 
 - WSL2 sessions, the Claude Code panel inside VS Code, the Claude desktop app.
-- macOS and Linux (Stage B, deferred) and other agent platforms (Stage C, deferred). Keep the adapter interface (§7.3) and the platform layer interface (§9) clean so these can be added later, but write no implementations for them.
+- macOS (deferred). Other agents: only Antigravity, Codex and Copilot, as described in §18 (ADR 0039); Cursor and the rest stay deferred. Keep the adapter interface (§7.3) and the platform layer interface (§9) clean.
 - Approving, denying or answering anything on the agent's behalf.
 - Showing or storing agent messages, prompts, tool inputs, transcripts or file contents.
 - Logs viewers, usage meters, launching or orchestrating agents, team features, cloud services, telemetry, mobile apps.
@@ -408,13 +408,16 @@ Stored in `%APPDATA%\Knock\settings.json`:
   "pauseNotifications": false,
   "quietHours": { "enabled": false, "start": "22:00", "end": "08:00" },
   "launchAtSignIn": null,
-  "animalOverrides": {}
+  "animalOverrides": {},
+  "pack": "classic",
+  "idleMotion": true
 }
 ```
 
 - `monitor` is `"primary"` or a stable monitor id. Setup asks the user when more than one display is connected.
 - `launchAtSignIn` stays `null` until setup asks the user.
 - `animalOverrides` maps a project key to an animal id. The project key is a hash of the lower-cased `cwd`.
+- `pack` is the id of the active sprite pack (default `"classic"`, ADR 0038). `idleMotion` turns the occasional idle flourish while a session works on or off (ADR 0038). Both have serde defaults, so older files still load. On Linux the file lives in `$XDG_CONFIG_HOME/knock` (ADR 0037).
 
 ### 8.7 Art and animation contract
 
@@ -688,7 +691,7 @@ knock/
 - Rust stable, pinned with `rust-toolchain.toml`. Cargo workspace.
 - Node LTS and pnpm, pinned in `package.json` (`engines`, `packageManager`). pnpm workspace.
 - Formatting and linting: rustfmt, clippy (warnings are errors), Biome, TypeScript strict mode.
-- Libraries named in this spec: Tauri 2 (notification, updater, single-instance, autostart plugins), axum, tokio, tracing, the `windows` crate, PixiJS 8, React, Zustand, Vitest, Playwright, proptest, insta. Adding any other runtime dependency requires the lead's approval and a line in `docs/PROGRESS.md`.
+- Libraries named in this spec: Tauri 2 (notification, updater, single-instance, autostart plugins), axum, tokio, tracing, the `windows` crate, PixiJS 8, React, Zustand, Vitest, Playwright, proptest, insta. Approved later (ADRs 0037, 0038): `gtk`, `gtk-layer-shell`, `zbus`, `libc`, `wayland-client`, `wayland-protocols` (Linux only), and `zip`, `flate2` (reading `.knockpack` files). Adding any other runtime dependency requires the lead's approval and a line in `docs/PROGRESS.md`.
 
 ### 13.3 Commands
 
@@ -837,3 +840,13 @@ Agents MUST NOT change a §8 contract, touch another agent's paths, add runtime 
 | Smart App Control         | https://support.microsoft.com/en-us/topic/what-is-smart-app-control-285ea03d-fa88-4d56-882e-6698afdb7003               |
 
 Re-check the official Claude Code, Tauri and Microsoft documentation at the start of each phase; all three change often.
+
+## 18. Linux, sprite packs and other agents (ADRs 0037 to 0039)
+
+Added after Stage A. Where this section and an earlier one disagree about Linux, packs or non-Claude agents, this section wins.
+
+**18.1 Linux (ADR 0037).** A `linux.rs` implementation of the platform layer (§9), selected by `cfg(target_os = "linux")`; Windows behaviour is unchanged. The strip is a layer-shell surface on Wayland desktops that support it, an always-on-top window on X11, and absent on GNOME Wayland (tray and notifications only, and Settings says so). Click-through uses an input region instead of a cursor poll. Jump follows the §9.4 process chain from `/proc`, then KWin, Hyprland or Sway. Files are private (0600 and 0700). The server port stays fixed as in §8.1.
+
+**18.2 Sprite packs (ADR 0038).** A pack is one `.knockpack` file (a zip) holding a cast of characters, each a vector rig (§8.7) or a PNG sprite sheet, with an optional themed den. Packs are validated before use and served only through a `knockpack` protocol that refuses paths outside the pack; scripts, `foreignObject`, external references and `on*` attributes in SVG are rejected, and zip entries are checked for traversal, symlinks and size. New commands list, install and remove packs and are granted in the Settings window only; reading a pack's art is also granted to the strip. The pack format is described in `docs/adr/0038-sprite-packs.md`; a standalone authoring guide is not written yet.
+
+**18.3 Other agents (ADR 0039).** `/v1/hooks/{agent}` accepts the agent's own hook payload, and `knock-desktop hook <agent> [event]` posts it from a command hook. The helper always exits 0 and prints `{}` only for Antigravity. Sessions are named `<agent>-<id>`. Setup for each agent follows §8.2 (preview, backup, confirm). Knock never registers Antigravity's `PreToolUse` and never answers `Stop` with `block` or `continue`. Antigravity is beta, partly working; Codex and Copilot are untested and not offered in the UI.

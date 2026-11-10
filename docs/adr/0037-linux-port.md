@@ -1,6 +1,6 @@
 # 0037: Linux port
 
-- **Status:** Proposed
+- **Status:** Approved by user on 2026-11-10
 - **Date:** 2026-11-10
 - **Spec sections:** §2, §3 (platform scope), §7.1, §9 (jump), §13.2 (tooling), §13.4
 - **VERIFY item:** none (verified by use on one desktop, see Evidence)

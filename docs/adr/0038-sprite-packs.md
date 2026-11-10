@@ -1,6 +1,6 @@
 # 0038: Sprite packs
 
-- **Status:** Proposed
+- **Status:** Approved by user on 2026-11-10
 - **Date:** 2026-11-10
 - **Spec sections:** §3 (settings), §8 (commands and the pack protocol), §8.7 (art), §11 (security)
 - **VERIFY item:** none

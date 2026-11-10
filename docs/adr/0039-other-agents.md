@@ -1,6 +1,6 @@
 # 0039: Other agents (Antigravity, Codex, Copilot)
 
-- **Status:** Proposed
+- **Status:** Approved by user on 2026-11-10
 - **Date:** 2026-11-10
 - **Spec sections:** §8.1, §8.2, §8.5 (hook routes and setup), §9.4, §11
 - **VERIFY item:** V-new (agent hook behaviour, see Evidence)
