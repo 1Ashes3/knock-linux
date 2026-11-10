@@ -46,7 +46,7 @@ export interface Words {
 const WINDOWS: Words = {
 	where: "the taskbar",
 	welcome:
-		"Knock shows each Claude Code session as a small figure on your taskbar, near the clock. When a session needs you, it knocks and Windows shows one notification. Everything else stays calm.",
+		"Knock shows each Claude Code session as a small sprite on your taskbar, near the clock. When a session needs you, it knocks and Windows shows one notification. Everything else stays calm.",
 	pickTitle: "Which taskbar should Knock sit on?",
 	pickLegend:
 		"You have more than one display. Knock rests on one taskbar, near the clock. Pick the one you look at most; Knock moves there right away.",
@@ -75,7 +75,7 @@ const WINDOWS: Words = {
 const LINUX: Words = {
 	where: "your screen",
 	welcome:
-		"Knock shows each Claude Code session as a small figure in the bottom-right corner of your screen, just above your panel. When a session needs you, it knocks and your desktop shows one notification. Everything else stays calm.",
+		"Knock shows each Claude Code session as a small sprite in the bottom-right corner of your screen, just above your panel. When a session needs you, it knocks and your desktop shows one notification. Everything else stays calm.",
 	pickTitle: "Which display should Knock sit on?",
 	pickLegend:
 		"You have more than one display. Knock rests in the bottom-right corner of one of them. Pick the one you look at most; Knock moves there right away.",

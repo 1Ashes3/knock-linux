@@ -2,9 +2,19 @@
 // Antigravity. The same promise as for Claude Code: show the exact change, save a
 // copy first, write only after the user confirms, and removing takes out only Knock's
 // own entries.
-import { type ReactNode, useCallback, useEffect, useId, useState } from "react";
+import {
+	type MouseEvent,
+	type ReactNode,
+	type RefObject,
+	useCallback,
+	useEffect,
+	useId,
+	useRef,
+	useState,
+} from "react";
 import { errorText, invoke } from "./core";
 import { lineDiff } from "./flow";
+import { usePanelFocus } from "./focus";
 import { Backup } from "./Setup";
 
 /** `agents_status`: one line per agent. */
@@ -68,6 +78,8 @@ export function AgentsPage() {
 	const [step, setStep] = useState<Step>({ kind: "idle" });
 	const [working, setWorking] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	/** The button that opened the question; focus goes back to it (§10.5). */
+	const opener = useRef<HTMLElement | null>(null);
 
 	const load = useCallback(
 		() =>
@@ -78,7 +90,12 @@ export function AgentsPage() {
 	);
 	useEffect(load, [load]);
 
-	const ask = async (agent: AgentStatus, remove: boolean) => {
+	const ask = async (
+		agent: AgentStatus,
+		remove: boolean,
+		from: HTMLElement,
+	) => {
+		opener.current = from;
 		setError(null);
 		setWorking(true);
 		try {
@@ -122,6 +139,7 @@ export function AgentsPage() {
 				<Change
 					step={step}
 					working={working}
+					opener={opener}
 					onConfirm={() => void confirm(step.agent, step.remove)}
 					onCancel={() => setStep({ kind: "idle" })}
 				/>
@@ -138,8 +156,8 @@ export function AgentsPage() {
 							key={a.id}
 							agent={a}
 							busy={working || step.kind === "asking"}
-							onConnect={() => void ask(a, false)}
-							onRemove={() => void ask(a, true)}
+							onConnect={(e) => void ask(a, false, e.currentTarget)}
+							onRemove={(e) => void ask(a, true, e.currentTarget)}
 						/>
 					))}
 				</ul>
@@ -161,8 +179,8 @@ function AgentRow({
 }: {
 	agent: AgentStatus;
 	busy: boolean;
-	onConnect(): void;
-	onRemove(): void;
+	onConnect(e: MouseEvent<HTMLElement>): void;
+	onRemove(e: MouseEvent<HTMLElement>): void;
 }) {
 	const state = a.state;
 	const support = SUPPORT[a.id];
@@ -228,15 +246,21 @@ function AgentRow({
 function Change({
 	step,
 	working,
+	opener,
 	onConfirm,
 	onCancel,
 }: {
 	step: Extract<Step, { kind: "asking" }>;
 	working: boolean;
+	/** Where focus goes back to when the question closes. */
+	opener: RefObject<HTMLElement | null>;
 	onConfirm(): void;
 	onCancel(): void;
 }) {
 	const { agent, remove, preview } = step;
+	// Keyboard focus moves to the question, and back when it closes (§10.5).
+	const box = useRef<HTMLFieldSetElement>(null);
+	usePanelFocus(box, opener);
 	let body: ReactNode;
 	if (!preview.ok) {
 		body = <p role="alert">{preview.message}</p>;
@@ -281,7 +305,7 @@ function Change({
 		);
 	}
 	return (
-		<fieldset className="offer">
+		<fieldset className="offer" ref={box} tabIndex={-1}>
 			<legend>
 				{remove ? "Remove Knock from" : "Connect Knock to"} {agent.name}?
 			</legend>

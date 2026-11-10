@@ -6,6 +6,7 @@
 // asks before installing, showing the cast it would add.
 import {
 	type CSSProperties,
+	type RefObject,
 	useCallback,
 	useEffect,
 	useId,
@@ -16,11 +17,13 @@ import type { Rig } from "../gallery/format.ts";
 import { CLASSIC, classicPartUrl, packUrl, RIGS } from "../overlay/animals/art";
 import {
 	listen,
+	listening,
 	type PackCharacterInfo,
 	type PackData,
 	type PackSummary,
 } from "../overlay/bridge";
 import { errorText, invoke, invokeBytes } from "./core";
+import { usePanelFocus } from "./focus";
 
 /** `offer_pack_*`: a pack waiting for the user's yes (ADR 0038). */
 interface Offer {
@@ -77,6 +80,7 @@ export function Characters({
 	const [removing, setRemoving] = useState<string | null>(null);
 	const [dragging, setDragging] = useState(false);
 	const picker = useRef<HTMLInputElement>(null);
+	const addButton = useRef<HTMLButtonElement>(null);
 
 	const show = useCallback(async (list: PackSummary[]) => {
 		setPacks(list);
@@ -122,7 +126,6 @@ export function Characters({
 
 	useEffect(() => {
 		load();
-		void listen<null>("packs-changed", load);
 		// A .knockpack Knock was opened with (a double-click), now or later.
 		const take = () =>
 			void invoke<Offer | null>("take_offered_pack").then(
@@ -130,10 +133,13 @@ export function Characters({
 				() => {},
 			);
 		take();
-		void listen<null>("pack-offered", take);
-		void listen<null>("tauri://drag-enter", () => setDragging(true));
-		void listen<null>("tauri://drag-leave", () => setDragging(false));
-		void listen<null>("tauri://drag-drop", () => setDragging(false));
+		return listening(
+			listen<null>("packs-changed", load),
+			listen<null>("pack-offered", take),
+			listen<null>("tauri://drag-enter", () => setDragging(true)),
+			listen<null>("tauri://drag-leave", () => setDragging(false)),
+			listen<null>("tauri://drag-drop", () => setDragging(false)),
+		);
 	}, [load]);
 
 	// A file or folder dropped on the window (on this page or on Settings).
@@ -190,13 +196,14 @@ export function Characters({
 		>
 			<h2 id={`${id}t`}>Packs</h2>
 			<p className="help">
-				Which cast your sessions get. Switching changes the characters on screen
+				Which sprites your sessions get. Switching changes the sprites on screen
 				at once. To add a pack, choose Add a pack, drop a .knockpack file on
 				this window, or double-click it in your files.
 			</p>
 			{offer && (
 				<OfferPanel
 					offer={offer}
+					opener={addButton}
 					onInstall={(use) => void install(offer, use)}
 					onCancel={() => setOffer(null)}
 				/>
@@ -256,6 +263,7 @@ export function Characters({
 			)}
 			<div className="actions start">
 				<button
+					ref={addButton}
 					type="button"
 					className="primary"
 					onClick={() => picker.current?.click()}
@@ -286,10 +294,13 @@ export function Characters({
 /** "Add this pack?": the cast it would add, or why it can't be added. */
 function OfferPanel({
 	offer: o,
+	opener,
 	onInstall,
 	onCancel,
 }: {
 	offer: Offer;
+	/** Where focus goes on close if nothing had it before (a drop, a double-click). */
+	opener: RefObject<HTMLElement | null>;
 	onInstall(use: boolean): void;
 	onCancel(): void;
 }) {
@@ -299,12 +310,14 @@ function OfferPanel({
 		.join(" · ");
 	// Settings is long: the question comes into view however it arrived.
 	const box = useRef<HTMLFieldSetElement>(null);
+	// Keyboard focus moves to the question, and back when it closes (§10.5).
+	usePanelFocus(box, opener);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: once per new offer
 	useEffect(() => {
 		box.current?.scrollIntoView({ block: "center" });
 	}, [o]);
 	return (
-		<fieldset className="offer" ref={box}>
+		<fieldset className="offer" ref={box} tabIndex={-1}>
 			<legend className="visually-hidden">Add {p.displayName}</legend>
 			{o.token ? (
 				<>
@@ -579,7 +592,7 @@ export function CharactersSummary({
 				() => {},
 			);
 		load();
-		void listen<null>("packs-changed", load);
+		return listening(listen<null>("packs-changed", load));
 	}, [value, hidden]);
 	return (
 		<section aria-labelledby={`${id}t`}>

@@ -449,12 +449,12 @@ export function Setup({
 				>
 					<p>
 						So you know what to look for: press the button, then watch{" "}
-						{WORDS.testLook}. A test figure knocks and {WORDS.notifier} shows a
+						{WORDS.testLook}. A test sprite knocks and {WORDS.notifier} shows a
 						notification. It's only a test; none of your sessions are involved.
 					</p>
 					{!status.stripAvailable && (
 						<p className="help">
-							This desktop can't show Knock's figures on screen, so you'll get
+							This desktop can't show Knock's sprites on screen, so you'll get
 							the tray icon and notifications only.
 						</p>
 					)}

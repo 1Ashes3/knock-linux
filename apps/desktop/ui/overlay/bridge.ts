@@ -154,15 +154,37 @@ export async function call(
 	}
 }
 
-/** Subscribes to a §8.5 event. Without Tauri, logs once and does nothing. */
+/**
+ * Subscribes to a §8.5 event; resolves to the function that unsubscribes. Without Tauri,
+ * logs once, does nothing and resolves to a no-op.
+ */
 export async function listen<T>(
 	event: string,
 	handler: (payload: T) => void,
-): Promise<void> {
+): Promise<() => void> {
 	const on = globalThis.__TAURI__?.event.listen;
 	if (!on) {
 		logOnce(event, `Tauri not available; not listening for ${event}.`);
-		return;
+		return () => {};
 	}
-	await on<T>(event, (e) => handler(e.payload));
+	return await on<T>(event, (e) => handler(e.payload));
+}
+
+/**
+ * For an effect's cleanup: returns one function that removes every listener in `subs`,
+ * including one whose `listen` resolves only after the cleanup ran (it is removed as soon
+ * as it arrives). A listen that fails is ignored.
+ */
+export function listening(...subs: Promise<() => void>[]): () => void {
+	let stopped = false;
+	const offs: (() => void)[] = [];
+	for (const sub of subs)
+		sub.then(
+			(off) => (stopped ? off() : offs.push(off)),
+			() => {},
+		);
+	return () => {
+		stopped = true;
+		for (const off of offs.splice(0)) off();
+	};
 }

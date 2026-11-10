@@ -122,7 +122,7 @@ export function SettingsPage({
 				/>
 				<Choice
 					legend="Hover card fades after"
-					help="How long a figure's card stays once the mouse moves away from it."
+					help="How long a sprite's card stays once the mouse moves away from it."
 					options={[1, 3, 5, 10].map((n) => ({
 						value: String(n),
 						label: `${n} second${n === 1 ? "" : "s"}`,
@@ -148,7 +148,7 @@ export function SettingsPage({
 				/>
 				<Choice
 					legend="Size"
-					help={`How big Knock's figures are on ${WORDS.where}.`}
+					help={`How big Knock's sprites are on ${WORDS.where}.`}
 					options={[
 						{ value: "small", label: "Small" },
 						{ value: "medium", label: "Medium" },
@@ -171,7 +171,7 @@ export function SettingsPage({
 				<h2 id="notify">Notifications</h2>
 				<Toggle
 					label="Pause notifications"
-					help={`Stops all ${WORDS.notifications} from Knock. Its figures still show everything.`}
+					help={`Stops all ${WORDS.notifications} from Knock. Its sprites still show everything.`}
 					checked={s.pauseNotifications}
 					onChange={(pauseNotifications) => update({ pauseNotifications })}
 				/>
@@ -199,7 +199,7 @@ export function SettingsPage({
 				/>
 				<Toggle
 					label="Quiet hours"
-					help="No notifications between the times below, every day. Knock's figures still show everything."
+					help="No notifications between the times below, every day. Knock's sprites still show everything."
 					checked={s.quietHours.enabled}
 					onChange={(enabled) =>
 						update(quietHoursPatch(s.quietHours, { enabled }))

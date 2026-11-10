@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useStore } from "zustand";
-import { call, listen, type Settings } from "../overlay/bridge";
+import { call, listen, listening, type Settings } from "../overlay/bridge";
 import { createStripStore } from "../overlay/store";
 import { AgentsPage } from "./Agents";
 import { closeWindow, errorText, invoke, type SetupStatus } from "./core";
@@ -64,13 +64,15 @@ function App(props: { status: SetupStatus; view: View }) {
 	useEffect(() => {
 		const toPacks = () =>
 			setView((v) => (v === "settings" || v === "packs" ? "packs" : v));
-		void listen<null>("pack-offered", toPacks);
-		void listen<{ paths: string[] }>("tauri://drag-drop", (p) => {
-			const path = p.paths[0];
-			if (!path) return;
-			toPacks();
-			setDropped((d) => ({ path, n: (d?.n ?? 0) + 1 }));
-		});
+		return listening(
+			listen<null>("pack-offered", toPacks),
+			listen<{ paths: string[] }>("tauri://drag-drop", (p) => {
+				const path = p.paths[0];
+				if (!path) return;
+				toPacks();
+				setDropped((d) => ({ path, n: (d?.n ?? 0) + 1 }));
+			}),
+		);
 	}, []);
 
 	// Back on Settings, the status is read again: a repair may have fixed the connection.
