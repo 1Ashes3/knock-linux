@@ -6,6 +6,7 @@ import type {
 	Settings,
 } from "./bridge";
 import {
+	DEMO_MS,
 	type Demo,
 	type DemoCharacter,
 	demoEnd,
@@ -58,10 +59,12 @@ export interface StripState {
 	demo: Demo | null;
 	/**
 	 * `intro-demo`: starts the demo with the pack's `characters`, or starts it again if one
-	 * is running. Only in animals mode: the plain strip has no sprites.
+	 * is running, lasting `durationMs` (the event's payload; DEMO_MS if missing). Only in
+	 * animals mode: the plain strip has no sprites.
 	 */
 	startDemo(
 		characters: readonly DemoCharacter[],
+		durationMs?: number,
 		now?: number,
 		random?: () => number,
 	): void;
@@ -120,7 +123,12 @@ export const createStripStore = () => {
 			if (s) set({ hiddenTags: hideTag(get().hiddenTags, s) });
 		},
 		demo: null,
-		startDemo(characters, now = Date.now(), random = Math.random) {
+		startDemo(
+			characters,
+			durationMs = DEMO_MS,
+			now = Date.now(),
+			random = Math.random,
+		) {
 			clearTimeout(demoTimer);
 			const { settings, sessions } = get();
 			// A real session asking for the user comes first: no demo then.
@@ -129,7 +137,7 @@ export const createStripStore = () => {
 			);
 			const demo =
 				settings?.mode === "animals" && !asking
-					? startDemo(characters, now, sessions, random)
+					? startDemo(characters, now, sessions, random, durationMs)
 					: null;
 			set({ demo });
 			if (!demo) return;

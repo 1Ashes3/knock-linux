@@ -351,7 +351,7 @@ The adapter MUST read only the allow-listed fields (`session_id`, `cwd`, `hook_e
 | `sessions-changed` | `{ rev: number, sessions: SessionView[] }`                                                 |
 | `away-summary`     | `{ since: string, items: [{ id, project, outcome: "ready" \| "failed" \| "needs_you" }] }` |
 | `settings-changed` | `{ settings: Settings }`                                                                   |
-| `intro-demo`       | `{}`: tray "Introduce sprites" was clicked; sent to the strip only (ADR 0040)             |
+| `intro-demo`       | `{ durationMs }`: tray "Introduce sprites" was clicked; sent to the strip only. For that long the core keeps the strip on top of all windows (ADR 0040) |
 
 `SessionView`:
 

@@ -176,7 +176,7 @@ const mock = {
 	},
 	/** The tray's "Introduce sprites" (ADR 0040). */
 	introDemo(): void {
-		emit("intro-demo", {});
+		emit("intro-demo", { durationMs: 18_000 });
 	},
 };
 (globalThis as { __knockMock?: typeof mock }).__knockMock = mock;

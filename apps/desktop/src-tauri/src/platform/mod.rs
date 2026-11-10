@@ -30,9 +30,12 @@ pub enum StripLayer {
 
 impl StripLayer {
     /// `desktop` rises to the top while a knock nobody has seen is waiting.
-    pub fn of(placement: crate::settings::Placement, knocking: bool) -> Self {
+    /// While `raised` (the "Introduce sprites" demo, ADR 0040) the strip is
+    /// on top whatever the placement, even `hidden`.
+    pub fn of(placement: crate::settings::Placement, knocking: bool, raised: bool) -> Self {
         use crate::settings::Placement;
         match placement {
+            _ if raised => Self::Top,
             Placement::Top => Self::Top,
             Placement::Hidden => Self::Hidden,
             Placement::Desktop if knocking => Self::Top,
@@ -284,6 +287,8 @@ pub struct FakePlatform {
     pub idle: std::sync::Mutex<Option<u64>>,
     /// What `agent_process` returns (the agent above a hook helper).
     pub agent: std::sync::Mutex<Option<ProcessId>>,
+    /// Every `set_strip_layer` call.
+    pub layers: std::sync::Mutex<Vec<StripLayer>>,
 }
 
 /// The fake's own `Run\Knock` value: the installed app (`mainBinaryName`
@@ -311,6 +316,9 @@ impl Platform for FakePlatform {
         None
     }
     fn set_click_through(&self, _: bool) {}
+    fn set_strip_layer(&self, layer: StripLayer) {
+        self.layers.lock().unwrap().push(layer);
+    }
     fn connection_owner(&self, client: u16, server: u16) -> Option<ProcessId> {
         self.lookups.lock().unwrap().push((client, server));
         Some(self.owner.lock().unwrap().unwrap_or(ProcessId {
@@ -382,18 +390,23 @@ mod tests {
     #[test]
     fn desktop_placement_rises_only_while_a_knock_is_unseen() {
         use crate::settings::Placement;
+        let of = |p, k| StripLayer::of(p, k, false);
         for knocking in [false, true] {
-            assert_eq!(StripLayer::of(Placement::Top, knocking), StripLayer::Top);
-            assert_eq!(
-                StripLayer::of(Placement::Hidden, knocking),
-                StripLayer::Hidden
-            );
+            assert_eq!(of(Placement::Top, knocking), StripLayer::Top);
+            assert_eq!(of(Placement::Hidden, knocking), StripLayer::Hidden);
         }
-        assert_eq!(
-            StripLayer::of(Placement::Desktop, false),
-            StripLayer::Desktop
-        );
-        assert_eq!(StripLayer::of(Placement::Desktop, true), StripLayer::Top);
+        assert_eq!(of(Placement::Desktop, false), StripLayer::Desktop);
+        assert_eq!(of(Placement::Desktop, true), StripLayer::Top);
+    }
+
+    #[test]
+    fn the_intro_demo_puts_every_placement_on_top() {
+        use crate::settings::Placement;
+        for p in [Placement::Top, Placement::Desktop, Placement::Hidden] {
+            for knocking in [false, true] {
+                assert_eq!(StripLayer::of(p, knocking, true), StripLayer::Top);
+            }
+        }
     }
 
     #[test]

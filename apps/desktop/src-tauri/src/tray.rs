@@ -45,6 +45,15 @@ pub struct Tray {
 /// The menu id of "Introduce sprites" (ADR 0040).
 const INTRO: &str = "intro";
 
+/// How long the "Introduce sprites" demo runs and keeps the strip on top
+/// (ADR 0040): the `intro-demo` event's `durationMs` (§8.5).
+pub const INTRO_DEMO_MS: u64 = 18_000;
+
+/// The `intro-demo` payload (§8.5).
+fn intro_payload() -> serde_json::Value {
+    serde_json::json!({ "durationMs": INTRO_DEMO_MS })
+}
+
 /// The tray's hover-card fade choices, in seconds.
 const FADES: [u32; 4] = [1, 3, 5, 10];
 
@@ -65,7 +74,15 @@ const PLACES: [(&str, Placement, &str, &str); 3] = [
     ),
 ];
 
-pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<Tray> {
+/// `raise` keeps the strip on top for [`INTRO_DEMO_MS`]; called on each
+/// "Introduce sprites" click, before the strip is told.
+pub fn build(
+    app: &AppHandle,
+    tx: Sender<Msg>,
+    shared: Shared,
+    raise: impl Fn() + Send + Sync + 'static,
+) -> tauri::Result<Tray> {
+    let raise = std::sync::Arc::new(raise);
     let (paused, placed, faded) = {
         let s = &pipeline::read(&shared).settings;
         (s.pause_notifications, s.placement, s.card_fade_seconds)
@@ -129,12 +146,13 @@ pub fn build(app: &AppHandle, tx: Sender<Msg>, shared: Shared) -> tauri::Result<
                 let app = app.clone();
                 std::thread::spawn(move || crate::open_settings(&app, ""));
             }
-            // Tells the strip to run its demo (ADR 0040); nothing else
-            // changes here. Off the main thread like Settings.
+            // Raises the strip and tells it to run its demo (ADR 0040); no
+            // setting changes. Off the main thread like Settings.
             INTRO => {
-                let app = app.clone();
+                let (app, raise) = (app.clone(), std::sync::Arc::clone(&raise));
                 std::thread::spawn(move || {
-                    let _ = app.emit_to("strip", "intro-demo", serde_json::json!({}));
+                    raise();
+                    let _ = app.emit_to("strip", "intro-demo", intro_payload());
                 });
             }
             "quit" => app.exit(0),
@@ -196,6 +214,12 @@ mod tests {
         assert!(PLACES.iter().all(|(id, ..)| *id != INTRO));
         assert!(INTRO.strip_prefix("fade-").is_none());
         assert!(!["pause", "settings", "quit"].contains(&INTRO));
+    }
+
+    #[test]
+    fn intro_demo_payload_carries_its_duration() {
+        assert_eq!(INTRO_DEMO_MS, 18_000);
+        assert_eq!(intro_payload(), serde_json::json!({ "durationMs": 18000 }));
     }
 
     #[test]

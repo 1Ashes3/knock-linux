@@ -14,17 +14,20 @@ import type { SessionView, Settings } from "./bridge";
 import { SAMPLES } from "./dev/samples";
 import {
 	DEMO_ID,
+	DEMO_MS,
 	DEMO_STATES,
 	DEMO_TOOL,
 	type DemoCharacter,
 	demoAt,
+	demoDuration,
 	demoEnd,
 	INTRO_MS,
 	interrupts,
 	PICKED,
 	pick,
-	STATE_MS,
+	roundMs,
 	startDemo,
+	stateOf,
 } from "./introDemo";
 import { stateLabel } from "./pill";
 import { createStripStore } from "./store";
@@ -45,6 +48,8 @@ function seeded(seed: number): () => number {
 }
 
 const T0 = 1_000_000;
+/** With the core's 18 s: 3 s of introduction, then 5 rounds of 3 s. */
+const STATE_MS = 3000;
 
 describe("pick", () => {
 	test("4 different characters out of many", () => {
@@ -106,40 +111,74 @@ describe("timeline", () => {
 		}
 	});
 
-	test("then the picked ones go through sleep, work, knock, failed, done", () => {
-		const seen: string[] = [];
+	test("each round: every picked character in a different state", () => {
+		expect(roundMs(demo)).toBe(STATE_MS);
 		for (let i = 0; i < DEMO_STATES.length; i++) {
 			const at = T0 + INTRO_MS + i * STATE_MS;
 			for (const t of [at, at + STATE_MS - 1]) {
 				const f = demoAt(demo, t);
 				expect(f.phase).toBe("states");
+				expect(f.round).toBe(i);
 				expect(f.sessions.map((s) => s.animal)).toEqual(
 					demo.picked.map((c) => c.id),
 				);
-				expect(new Set(f.sessions.map((s) => s.state)).size).toBe(1);
+				expect(f.sessions).toHaveLength(PICKED);
+				expect(new Set(f.sessions.map((s) => s.state)).size).toBe(PICKED);
+				for (const s of f.sessions)
+					expect(DEMO_STATES as readonly string[]).toContain(s.state);
 				expect(f.nextAt).toBe(at + STATE_MS);
 				for (const s of f.sessions) expect(Date.parse(s.since)).toBe(at);
 			}
-			seen.push(demoAt(demo, at).sessions[0]?.state ?? "");
 		}
-		expect(seen).toEqual(["idle", "working", "needs_input", "failed", "ready"]);
+	});
+
+	test("over the 5 rounds each character goes through all 5 states", () => {
+		const visited = new Map<string, string[]>();
+		for (let i = 0; i < DEMO_STATES.length; i++)
+			for (const s of demoAt(demo, T0 + INTRO_MS + i * STATE_MS).sessions)
+				visited.set(s.animal ?? "", [
+					...(visited.get(s.animal ?? "") ?? []),
+					s.state,
+				]);
+		expect(visited.size).toBe(PICKED);
+		for (const states of visited.values())
+			expect([...states].sort()).toEqual([...DEMO_STATES].sort());
+	});
+
+	test("the rotation: sleep, work, knock, failed, done, in that order", () => {
+		expect([0, 1, 2, 3, 4].map((i) => stateOf(0, i))).toEqual([
+			"idle",
+			"working",
+			"needs_input",
+			"failed",
+			"ready",
+		]);
+		for (let i = 0; i < 5; i++)
+			expect(new Set([0, 1, 2, 3, 4].map((k) => stateOf(k, i))).size).toBe(5);
 	});
 
 	test("each state has the tier and the chip text the real one has", () => {
-		const at = (i: number) => demoAt(demo, T0 + INTRO_MS + i * STATE_MS);
-		const one = (i: number) => at(i).sessions[0] as SessionView;
-		expect(one(1).tier).toBe("working");
-		expect(one(2).tier).toBe("needs_you");
-		expect(one(2).needs).toEqual({
+		const in_ = (state: string) =>
+			demoAt(demo, T0 + INTRO_MS)
+				.sessions.concat(demoAt(demo, T0 + INTRO_MS + STATE_MS).sessions)
+				.find((s) => s.state === state) as SessionView;
+		expect(in_("idle").tier).toBe("resting");
+		expect(in_("idle").needs).toBeNull();
+		expect(in_("working").tier).toBe("working");
+		expect(in_("needs_input").tier).toBe("needs_you");
+		expect(in_("needs_input").needs).toEqual({
 			kind: "permission",
 			label: DEMO_TOOL,
 			seen: false,
 		});
-		expect(stateLabel(one(2), 0, 10)).toBe(`Needs permission: ${DEMO_TOOL}`);
-		expect(one(3).tier).toBe("needs_you");
-		expect(stateLabel(one(3), 0, 10)).toBe("Stopped with an error");
-		expect(one(4).tier).toBe("ready");
-		expect(stateLabel(one(4), 0, 10)).toBe("Done, ready to review");
+		expect(stateLabel(in_("needs_input"), 0, 10)).toBe(
+			`Needs permission: ${DEMO_TOOL}`,
+		);
+		expect(in_("failed").tier).toBe("needs_you");
+		expect(in_("failed").needs).toBeNull();
+		expect(stateLabel(in_("failed"), 0, 10)).toBe("Stopped with an error");
+		expect(in_("ready").tier).toBe("ready");
+		expect(stateLabel(in_("ready"), 0, 10)).toBe("Done, ready to review");
 	});
 
 	test("demo sprites are named after the character and marked as made up", () => {
@@ -155,6 +194,7 @@ describe("timeline", () => {
 
 	test("then it is over: nothing to draw", () => {
 		const end = demoEnd(demo);
+		expect(end).toBe(T0 + DEMO_MS);
 		expect(end).toBe(T0 + INTRO_MS + 5 * STATE_MS);
 		expect(demoAt(demo, end - 1).phase).toBe("states");
 		const f = demoAt(demo, end);
@@ -163,10 +203,65 @@ describe("timeline", () => {
 		expect(f.nextAt).toBe(Number.POSITIVE_INFINITY);
 	});
 
-	test("a pack of 2: both go through the states", () => {
-		const d = startDemo(chars(2), T0, [], seeded(2));
+	test("fewer than 4: each still in a different state, and visits all 5", () => {
+		for (const n of [1, 2, 3]) {
+			const d = startDemo(chars(n), T0, [], seeded(2));
+			if (!d) throw new Error("no demo");
+			const visited = new Map<string, Set<string>>();
+			for (let i = 0; i < DEMO_STATES.length; i++) {
+				const f = demoAt(d, T0 + INTRO_MS + i * STATE_MS);
+				expect(f.sessions).toHaveLength(n);
+				expect(new Set(f.sessions.map((s) => s.state)).size).toBe(n);
+				for (const s of f.sessions)
+					visited.set(
+						s.animal ?? "",
+						(visited.get(s.animal ?? "") ?? new Set()).add(s.state),
+					);
+			}
+			for (const states of visited.values()) expect(states.size).toBe(5);
+		}
+	});
+});
+
+describe("duration from the event", () => {
+	test("durationMs from the payload; 18 000 when missing or unusable", () => {
+		expect(demoDuration({ durationMs: 18_000 })).toBe(18_000);
+		expect(demoDuration({ durationMs: 28_000 })).toBe(28_000);
+		for (const p of [
+			undefined,
+			null,
+			{},
+			{ durationMs: "18000" },
+			{ durationMs: Number.NaN },
+			{ durationMs: -1 },
+			{ durationMs: INTRO_MS },
+		])
+			expect(demoDuration(p)).toBe(DEMO_MS);
+		expect(DEMO_MS).toBe(18_000);
+	});
+
+	test("intro stays 3 s; the rest splits evenly into 5 rounds", () => {
+		const d = startDemo(chars(6), T0, [], seeded(5), 28_000);
 		if (!d) throw new Error("no demo");
-		expect(demoAt(d, T0 + INTRO_MS).sessions).toHaveLength(2);
+		expect(roundMs(d)).toBe(5000);
+		expect(demoAt(d, T0 + INTRO_MS - 1).phase).toBe("intro");
+		for (let i = 0; i < 5; i++) {
+			const at = T0 + INTRO_MS + i * 5000;
+			expect(demoAt(d, at).round).toBe(i);
+			expect(demoAt(d, at + 4999).round).toBe(i);
+			expect(demoAt(d, at).nextAt).toBe(at + 5000);
+		}
+		expect(demoEnd(d)).toBe(T0 + 28_000);
+		expect(demoAt(d, T0 + 28_000 - 1).phase).toBe("states");
+		expect(demoAt(d, T0 + 28_000).phase).toBe("over");
+	});
+
+	test("an uneven split still ends exactly at durationMs", () => {
+		const d = startDemo(chars(4), T0, [], seeded(5), 10_001);
+		if (!d) throw new Error("no demo");
+		expect(demoAt(d, T0 + 10_000).phase).toBe("states");
+		expect(demoAt(d, T0 + 10_000).nextAt).toBe(T0 + 10_001);
+		expect(demoAt(d, T0 + 10_001).phase).toBe("over");
 	});
 });
 
@@ -217,7 +312,7 @@ describe("store", () => {
 		vi.useFakeTimers();
 		const store = running();
 		const sessions = store.getState().sessions;
-		store.getState().startDemo(chars(5), Date.now(), seeded(4));
+		store.getState().startDemo(chars(5), 18_000, Date.now(), seeded(4));
 		const demo = store.getState().demo;
 		expect(demo).not.toBeNull();
 		expect(store.getState().sessions).toBe(sessions);
@@ -226,6 +321,36 @@ describe("store", () => {
 		vi.advanceTimersByTime(1);
 		expect(store.getState().demo).toBeNull();
 		expect(store.getState().sessions).toBe(sessions);
+	});
+
+	test("lasts the durationMs it was given", () => {
+		vi.useFakeTimers();
+		const store = running();
+		store.getState().startDemo(chars(5), 28_000, Date.now(), seeded(4));
+		vi.advanceTimersByTime(27_999);
+		expect(store.getState().demo).not.toBeNull();
+		vi.advanceTimersByTime(1);
+		expect(store.getState().demo).toBeNull();
+	});
+
+	test("without a duration: 18 s", () => {
+		vi.useFakeTimers();
+		const store = running();
+		store.getState().startDemo(chars(5));
+		vi.advanceTimersByTime(17_999);
+		expect(store.getState().demo).not.toBeNull();
+		vi.advanceTimersByTime(1);
+		expect(store.getState().demo).toBeNull();
+	});
+
+	test("no start while a real session is asking", () => {
+		const store = running();
+		store.getState().applySessions({
+			rev: 2,
+			sessions: [SAMPLES.working, SAMPLES.permission],
+		});
+		store.getState().startDemo(chars(5));
+		expect(store.getState().demo).toBeNull();
 	});
 
 	test("the safety stop ends it at once", () => {
@@ -250,10 +375,10 @@ describe("store", () => {
 	test("intro-demo again mid-demo restarts it", () => {
 		vi.useFakeTimers();
 		const store = running();
-		store.getState().startDemo(chars(5), Date.now());
+		store.getState().startDemo(chars(5), 18_000, Date.now());
 		const first = store.getState().demo;
 		vi.advanceTimersByTime(10_000);
-		store.getState().startDemo(chars(5), Date.now());
+		store.getState().startDemo(chars(5), 18_000, Date.now());
 		const second = store.getState().demo;
 		expect(second).not.toBe(first);
 		expect(second?.startedAt).toBe((first?.startedAt ?? 0) + 10_000);

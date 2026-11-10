@@ -21,6 +21,11 @@ The user chose that the demo **replaces** the strip while it runs (real sprites 
 
 The demo is local to the overlay and driven by the app. It does not go through the hook server, so it needs no session ids from agents and never touches §8.1 or §8.2.
 
+## Amendment (2026-11-10, user request)
+
+- While the demo runs, the core forces the strip on top of all windows, even with placement "desktop", and shows it even with placement "hidden", then restores the setting. The event carries `{ durationMs }` (18 000); the core restores after that long. A safety stop ends the demo early but the strip stays raised until the time is up, which also keeps the real knock visible.
+- The picked characters no longer share one state. Each shows a different state at the same time (sleeping, working, knocking, failed, done), and the states rotate between the characters every few seconds so each one passes through all of them.
+
 ## Consequences
 
 - §9.7 Tray menu row gains "Introduce sprites".
