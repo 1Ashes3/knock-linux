@@ -1,6 +1,9 @@
 {
 	"bundle": {
 		"targets": ["appimage"],
+		"category": "Utility",
+		"shortDescription": "Your Claude Code sessions as little animals that knock when they need you",
+		"longDescription": "Knock shows one small animated animal for each AI coding session. When a session needs you, its animal knocks, and a click takes you to that terminal.",
 		"icon": [
 			"icons/32x32.png",
 			"icons/128x128.png",
