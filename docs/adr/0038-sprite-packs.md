@@ -25,7 +25,7 @@ A pack is a full cast of characters that the user picks in **Settings → Charac
 
 - SPEC.md needs the pack format, the two new settings and the new commands (not edited yet; needs the user's approval).
 - The idle flourish reuses each character's `work` clip; a per-pack `idle` clip is possible later.
-- Pack art authors follow `art/README.md`; a separate authoring guide is not written yet.
+- Pack art authors follow `art/README.md` and the authoring guide `art/PACKS.md`.
 
 ## Evidence
 
