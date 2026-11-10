@@ -85,6 +85,8 @@ export interface Settings {
 	pack: string;
 	/** ADR 0038: built-in packs the user removed; hidden and never used. */
 	hiddenPacks: string[];
+	/** Working sprites move a little every few seconds. Sleeping ones never do. */
+	idleMotion: boolean;
 }
 
 /** ADR 0038: one character of a pack, as `list_packs` and `get_pack` give it. */

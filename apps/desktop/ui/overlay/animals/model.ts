@@ -4,6 +4,7 @@ import type { SessionView } from "../bridge";
 import { layout, MAX_VISIBLE } from "../pill";
 import {
 	type Clips,
+	changesAt,
 	endedFadeStart,
 	FADE_MS,
 	nextPlan,
@@ -64,6 +65,8 @@ export function step(
 	now: number,
 	/** Each character's clips: a sprite sheet times them by its own frames (ADR 0038). */
 	clipsFor: (animal: string) => Clips,
+	/** The `idleMotion` setting: working sprites flourish now and then. */
+	idle = false,
 ): { model: Model; memory: Memory } {
 	const live = sessions.filter((s) => !faded(s, now, still));
 	const { visible, hidden } = layout(live);
@@ -97,6 +100,7 @@ export function step(
 				still,
 				now,
 				clipsFor(session.animal),
+				idle,
 			),
 		);
 	const order: Character[] = visible.map((session) => ({
@@ -131,7 +135,10 @@ export function step(
 		if (t > now && t < wakeAt) wakeAt = t;
 	};
 	for (const c of characters) {
-		later(settlesAt(c.plan, clipsFor(c.session.animal)));
+		const clips = clipsFor(c.session.animal);
+		later(settlesAt(c.plan, clips));
+		// Idle motion pauses between flourishes: wake for each one.
+		later(changesAt(c.plan, now, clips));
 		if (c.fadeFrom !== null) {
 			later(c.fadeFrom);
 			later(c.fadeFrom + FADE_MS);

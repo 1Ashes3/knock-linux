@@ -32,12 +32,16 @@ export interface Segment {
 	play: "once" | "loop" | "hold";
 	/** Extra lift in viewBox units, up positive. */
 	lift: number;
+	/** A `hold` with this is a pause of this many ms, then the next segment starts. */
+	ms?: number;
 }
 
 export interface Plan {
 	/** What the plan was made for; the same key keeps the running plan. */
 	key: string;
 	still: boolean;
+	/** Whether the plan has idle motion (the `idleMotion` setting). */
+	idle: boolean;
 	/** ms, same clock as `now` everywhere in this module. */
 	start: number;
 	segments: Segment[];
@@ -58,6 +62,47 @@ const hold = (clip: ClipName | null, lift = 0): Segment => ({
 	play: "hold",
 	lift,
 });
+
+const pause = (clip: ClipName, ms: number): Segment => ({
+	clip,
+	play: "hold",
+	lift: 0,
+	ms,
+});
+
+/** Idle motion (the `idleMotion` setting): a flourish every 3 to 8 seconds, of 2 or 3 cycles. */
+export const IDLE_GAP_MS: readonly [number, number] = [3000, 8000];
+/** About five hours of flourishes; after that the sprite holds still until the next state change. */
+const IDLE_FLOURISHES = 2400;
+
+/** A small seeded generator, so a plan is the same every time it is made for the same input. */
+function seeded(seed: string, salt: number): () => number {
+	let h = 2166136261 ^ salt;
+	for (let i = 0; i < seed.length; i++)
+		h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
+	return () => {
+		h = (h + 0x6d2b79f5) | 0;
+		let t = Math.imul(h ^ (h >>> 15), 1 | h);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+/**
+ * The working sprite after its first cycle: pause 3 to 8 s, play the clip 2 or 3 times,
+ * again and again. Each sprite has its own rhythm, so a row of them doesn't flap together.
+ */
+function flourishes(clip: ClipName, id: string, salt: number): Segment[] {
+	const rnd = seeded(id, salt);
+	const [lo, hi] = IDLE_GAP_MS;
+	const out: Segment[] = [];
+	for (let i = 0; i < IDLE_FLOURISHES; i++) {
+		out.push(pause(clip, lo + Math.floor(rnd() * (hi - lo + 1))));
+		for (let n = 2 + Math.floor(rnd() * 2); n > 0; n--) out.push(once(clip));
+	}
+	out.push(hold(clip));
+	return out;
+}
 
 /** Which look a session gets. Only `state` and `needs.seen` matter. */
 export function poseKey(s: SessionView): string {
@@ -81,8 +126,16 @@ const LOOPING: Partial<Record<string, ClipName>> = {
 	stalled: "pace",
 };
 
-/** The segments for a key, with Windows "Animation effects" on (`still` false) or off. */
-export function segmentsFor(key: string, still: boolean): Segment[] {
+/**
+ * The segments for a key, with Windows "Animation effects" on (`still` false) or off.
+ * `idle` (with effects on) gives a working sprite its flourishes; sleep and every other
+ * look are unchanged.
+ */
+export function segmentsFor(
+	key: string,
+	still: boolean,
+	idle?: { id: string; salt: number },
+): Segment[] {
 	const calm = CALM[key];
 	const looping = LOOPING[key];
 	if (still) {
@@ -96,6 +149,8 @@ export function segmentsFor(key: string, still: boolean): Segment[] {
 	if (key === "needs_unseen")
 		return [once("step_up"), loop("knock", LIFT_UNITS)];
 	if (key === "ready") return [once("present"), once("rest"), hold("rest")];
+	if (calm === "work" && idle)
+		return [once(calm), ...flourishes(calm, idle.id, idle.salt)];
 	if (calm) return [once(calm), hold(calm)];
 	if (looping) return [loop(looping)];
 	// needs_seen (ADR 0016), ended_unexpectedly, blocked_fixable, paused, cancelled
@@ -113,13 +168,19 @@ export function nextPlan(
 	still: boolean,
 	now: number,
 	clips: Clips,
+	idle = false,
 ): Plan {
 	const key = poseKey(s);
-	if (prev && prev.key === key && prev.still === still) return prev;
-	const segments = segmentsFor(key, still);
+	if (prev && prev.key === key && prev.still === still && prev.idle === idle)
+		return prev;
+	const segments = segmentsFor(
+		key,
+		still,
+		idle ? { id: s.id, salt: now } : undefined,
+	);
 	if (!still && prev && isRaised(prev, now, clips) && !raisedAtStart(segments))
 		segments.unshift(once("step_down"));
-	return { key, still, start: now, segments };
+	return { key, still, idle, start: now, segments };
 }
 
 const raisedAtStart = (segs: Segment[]) =>
@@ -150,6 +211,13 @@ function current(plan: Plan, now: number, clips: Clips): Current {
 	const last = plan.segments.length - 1;
 	for (let i = 0; i <= last; i++) {
 		const segment = plan.segments[i] as Segment;
+		if (segment.play === "hold" && segment.ms !== undefined) {
+			// A pause: nothing moves, then the next segment starts.
+			if (now - start < segment.ms || i === last)
+				return { segment, t: 0, endsAt: start + segment.ms };
+			start += segment.ms;
+			continue;
+		}
 		if (segment.play === "hold" || !segment.clip)
 			return { segment, t: 0, endsAt: Number.POSITIVE_INFINITY };
 		const d = clips[segment.clip].durationMs;
@@ -187,11 +255,36 @@ export function frameAt(plan: Plan, now: number, clips: Clips): Frame {
 export function settlesAt(plan: Plan, clips: Clips): number {
 	let at = plan.start;
 	for (const seg of plan.segments) {
+		if (seg.play === "hold" && seg.ms !== undefined) {
+			at += seg.ms;
+			continue;
+		}
 		if (seg.play === "hold" || !seg.clip) return at;
 		if (seg.play === "loop") return Number.POSITIVE_INFINITY;
 		at += clips[seg.clip].durationMs;
 	}
 	return at;
+}
+
+/**
+ * When a sprite with idle motion next starts to move: the end of the pause it is in, or
+ * of the next one. Infinity for a plan without pauses. The render loop sleeps between
+ * flourishes, so this is the time to wake it.
+ */
+export function changesAt(plan: Plan, now: number, clips: Clips): number {
+	let at = plan.start;
+	for (const seg of plan.segments) {
+		if (seg.play === "loop") return Number.POSITIVE_INFINITY;
+		if (seg.play === "hold" && seg.ms === undefined)
+			return Number.POSITIVE_INFINITY;
+		if (seg.play === "hold") {
+			at += seg.ms ?? 0;
+			if (at > now) return at;
+			continue;
+		}
+		if (seg.clip) at += clips[seg.clip].durationMs;
+	}
+	return Number.POSITIVE_INFINITY;
 }
 
 /** How long a character takes to fade out (ended, or gone from the list). */

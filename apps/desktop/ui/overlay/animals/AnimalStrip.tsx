@@ -100,6 +100,7 @@ export function AnimalStrip({
 	const sessions = useVisibleSessions(all, placement);
 	const away = useStore(store, (s) => s.away);
 	const size = useStore(store, (s) => s.settings?.size ?? "medium");
+	const idleMotion = useStore(store, (s) => s.settings?.idleMotion ?? true);
 	const stallMinutes = useStore(
 		store,
 		(s) => s.settings?.stallMinutes ?? STALL_DEFAULT,
@@ -167,6 +168,7 @@ export function AnimalStrip({
 		still,
 		now,
 		clipsFor,
+		idleMotion,
 	);
 	memory.current = next;
 

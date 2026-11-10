@@ -4,12 +4,14 @@ import { SAMPLES } from "../dev/samples";
 import { CLIPS, FALLBACK_ANIMAL, RIGS, rigFor } from "./art";
 import {
 	anyAnimating,
+	changesAt,
 	ENDED_FADE_AFTER_MS,
 	endedFadeStart,
 	endsRaised,
 	FADE_MS,
 	fadeAlpha,
 	frameAt,
+	IDLE_GAP_MS,
 	LIFT_UNITS,
 	nextPlan,
 	type Plan,
@@ -314,4 +316,77 @@ test("segmentsFor returns fresh arrays (plans never share segments)", () => {
 	const a = segmentsFor("ready", false);
 	a.pop();
 	expect(segmentsFor("ready", false)).toHaveLength(3);
+});
+
+// Idle motion (the `idleMotion` setting).
+const idlePlan = (s: SessionView, now = T0, prev?: Plan) =>
+	nextPlan(prev, s, false, now, CLIPS, true);
+
+test("a working sprite with idle motion flaps every 3 to 8 seconds, 2 or 3 cycles at a time", () => {
+	const p = idlePlan(SAMPLES.working);
+	const segs = p.segments;
+	expect(segs[0]).toMatchObject({ clip: "work", play: "once" });
+	// pause, 2 or 3 plays, pause, ...
+	let i = 1;
+	let flourishes = 0;
+	while (segs[i]?.ms !== undefined && flourishes < 50) {
+		const gap = segs[i]?.ms as number;
+		expect(gap).toBeGreaterThanOrEqual(IDLE_GAP_MS[0]);
+		expect(gap).toBeLessThanOrEqual(IDLE_GAP_MS[1]);
+		i++;
+		let plays = 0;
+		while (segs[i]?.play === "once") {
+			plays++;
+			i++;
+		}
+		expect([2, 3]).toContain(plays);
+		flourishes++;
+	}
+	expect(flourishes).toBe(50);
+});
+
+test("between flourishes nothing moves, and the render loop is told when the next one starts", () => {
+	const p = idlePlan(SAMPLES.working);
+	const work = CLIPS.work.durationMs;
+	const gap = p.segments[1]?.ms as number;
+	const inPause = T0 + work + gap / 2;
+	expect(frame(p, inPause).settled).toBe(true);
+	expect(anyAnimating([{ plan: p, fadeFrom: null }], inPause, CLIPS)).toBe(
+		false,
+	);
+	expect(changesAt(p, inPause, CLIPS)).toBe(T0 + work + gap);
+	// The pause ends and the clip plays again.
+	const flap = T0 + work + gap + 100;
+	expect(frame(p, flap)).toMatchObject({ clip: "work", settled: false });
+	// While a flourish plays, the next wake is the end of the pause after it.
+	const next = changesAt(p, flap, CLIPS);
+	expect(next).toBeGreaterThan(flap + 2 * work);
+	expect(frame(p, next - 1).settled).toBe(true);
+});
+
+test("each sprite has its own rhythm, and a plan is the same every time it is made", () => {
+	const a = idlePlan(SAMPLES.working);
+	const b = idlePlan({ ...SAMPLES.working, id: "another-session" });
+	expect(a.segments.map((x) => x.ms)).toEqual(
+		idlePlan(SAMPLES.working).segments.map((x) => x.ms),
+	);
+	expect(a.segments.map((x) => x.ms)).not.toEqual(b.segments.map((x) => x.ms));
+});
+
+test("sleep, the needs-you looks and effects-off are unchanged by idle motion", () => {
+	for (const s of Object.values(SAMPLES)) {
+		if (s.state === "working") continue;
+		expect(idlePlan(s).segments).toEqual(plan(s).segments);
+	}
+	// Animation effects off: a working sprite holds still.
+	const still = nextPlan(undefined, SAMPLES.working, true, T0, CLIPS, true);
+	expect(still.segments).toEqual([{ clip: "work", play: "hold", lift: 0 }]);
+});
+
+test("turning idle motion on or off remakes a working plan, and a repeat keeps it", () => {
+	const off = plan(SAMPLES.working);
+	const on = idlePlan(SAMPLES.working, T0 + 10, off);
+	expect(on).not.toBe(off);
+	expect(idlePlan(SAMPLES.working, T0 + 20, on)).toBe(on);
+	expect(plan(SAMPLES.working, false, on, T0 + 30).segments.length).toBe(2);
 });

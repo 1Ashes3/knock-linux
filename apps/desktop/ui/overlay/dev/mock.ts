@@ -48,6 +48,7 @@ const settings: Settings = {
 	cardFadeSeconds: 3,
 	pack: "classic",
 	hiddenPacks: [],
+	idleMotion: true,
 };
 
 let rev = 1;

@@ -140,6 +140,12 @@ export function SettingsPage({
 					value={s.mode}
 					onChange={(mode) => update({ mode: mode as Settings["mode"] })}
 				/>
+				<Toggle
+					label="Idle motion while working"
+					help="A working sprite moves a little every few seconds, like a few flaps, instead of staying still. Sleeping sprites never move. It stays off when Animation effects are off."
+					checked={s.idleMotion}
+					onChange={(idleMotion) => update({ idleMotion })}
+				/>
 				<Choice
 					legend="Size"
 					help={`How big Knock's figures are on ${WORDS.where}.`}

@@ -208,3 +208,21 @@ test("a den session that becomes Ready stays in the den, and its plan still foll
 	// The visible animals have settled; a den plan never asks for a wake-up.
 	expect(b.model.wakeAt).toBe(Number.POSITIVE_INFINITY);
 });
+
+test("a working sprite with idle motion wakes the render loop for each pause", () => {
+	const r = step([SAMPLES.working], EMPTY_MEMORY, false, T0, () => CLIPS, true);
+	// After its first cycle: the end of the first pause.
+	const first = r.memory.plans.get(SAMPLES.working.id);
+	expect(first?.idle).toBe(true);
+	expect(r.model.wakeAt).toBeGreaterThan(T0 + CLIPS.work.durationMs);
+	// A sleeping sprite is not given one.
+	const sleep = step(
+		[SAMPLES.idle],
+		EMPTY_MEMORY,
+		false,
+		T0,
+		() => CLIPS,
+		true,
+	);
+	expect(sleep.model.wakeAt).toBe(T0 + CLIPS.sleep.durationMs);
+});

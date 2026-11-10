@@ -555,3 +555,16 @@ button.link.back {
 	gap: 8px;
 	flex-shrink: 0;
 }
+
+.agent[data-held] {
+	opacity: 0.5;
+}
+
+.badge {
+	font-weight: 400;
+	font-size: 0.85em;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	padding: 0 8px;
+	margin-left: 8px;
+}

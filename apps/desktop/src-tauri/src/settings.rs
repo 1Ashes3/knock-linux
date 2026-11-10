@@ -47,6 +47,14 @@ pub struct Settings {
     /// are part of the app, so removing one can't delete it.
     #[serde(default)]
     pub hidden_packs: Vec<String>,
+    /// A working sprite moves a little every few seconds instead of freezing after
+    /// its first cycle. Sleeping sprites never do. Missing from older files.
+    #[serde(default = "default_true")]
+    pub idle_motion: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_pack() -> String {
@@ -142,6 +150,7 @@ impl Default for Settings {
             card_fade_seconds: default_card_fade(),
             pack: default_pack(),
             hidden_packs: Vec::new(),
+            idle_motion: true,
         }
     }
 }
@@ -471,6 +480,7 @@ mod tests {
         spec["cardFadeSeconds"] = Value::from(3);
         spec["pack"] = Value::from("classic");
         spec["hiddenPacks"] = serde_json::json!([]);
+        spec["idleMotion"] = Value::from(true);
         assert_eq!(saved, spec);
         assert!(!dir.join("settings.json.tmp").exists());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -527,6 +537,14 @@ mod tests {
         assert!(merged(&s, &serde_json::json!({ "hiddenPacks": ["fairies"] })).is_ok());
         assert!(merged(&s, &serde_json::json!({ "hiddenPacks": ["classic"] })).is_err());
         assert!(merged(&s, &serde_json::json!({ "hiddenPacks": ["../x"] })).is_err());
+        // Idle motion is a plain on/off; a file from before it existed turns it on.
+        assert!(s.idle_motion);
+        assert!(
+            !merged(&s, &serde_json::json!({ "idleMotion": false }))
+                .unwrap()
+                .idle_motion
+        );
+        assert!(merged(&s, &serde_json::json!({ "idleMotion": "yes" })).is_err());
     }
 
     #[test]

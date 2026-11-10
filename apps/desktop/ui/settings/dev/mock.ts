@@ -41,6 +41,7 @@ let settings: Settings = {
 	cardFadeSeconds: 3,
 	pack: "classic",
 	hiddenPacks: [],
+	idleMotion: true,
 };
 let installed = q.get("installed") === "1";
 const SERVER_ERROR =

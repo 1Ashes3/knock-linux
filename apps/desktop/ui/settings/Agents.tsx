@@ -33,6 +33,29 @@ type Step =
 	| { kind: "asking"; agent: AgentStatus; remove: boolean; preview: Preview }
 	| { kind: "done"; agent: AgentStatus; remove: boolean; result: Applied };
 
+/**
+ * How far each agent works. Codex and Copilot are built but haven't been tried against the
+ * real programs, so Settings holds them back; Antigravity works in part.
+ */
+const SUPPORT: Record<string, { label: string; detail: string } | undefined> = {
+	agy: {
+		label: "Beta, partly working",
+		detail:
+			"Shows when Antigravity is working and when it finishes. It can't tell when Antigravity is waiting for your permission.",
+	},
+	codex: {
+		label: "Not available yet",
+		detail: "Not tested with the real Codex yet.",
+	},
+	copilot: {
+		label: "Not available yet",
+		detail: "Not tested with the real GitHub Copilot CLI yet.",
+	},
+};
+
+/** Only Antigravity can be connected for now. */
+const available = (id: string) => id === "agy";
+
 const STATE_WORDS = {
 	installed: "Connected",
 	stale: "Needs updating",
@@ -90,10 +113,10 @@ export function AgentsPage() {
 		<section aria-labelledby={`${id}t`}>
 			<h2 id={`${id}t`}>Agents</h2>
 			<p className="help">
-				Knock always watches Claude Code. It can also watch these. Connecting
-				adds Knock's hooks to the agent's own hooks file: Knock shows you the
-				change, saves a copy of the file first, and writes only when you
-				confirm.
+				Knock always watches Claude Code. Antigravity is a beta, and the others
+				aren't available yet. Connecting adds Knock's hooks to the agent's own
+				hooks file: Knock shows you the change, saves a copy of the file first,
+				and writes only when you confirm.
 			</p>
 			{step.kind === "asking" && (
 				<Change
@@ -142,15 +165,33 @@ function AgentRow({
 	onRemove(): void;
 }) {
 	const state = a.state;
+	const support = SUPPORT[a.id];
+	const held = !available(a.id) && state !== "installed";
 	return (
-		<li className="agent" data-found={a.found ? "" : undefined}>
+		<li
+			className="agent"
+			data-found={a.found ? "" : undefined}
+			data-held={held ? "" : undefined}
+		>
 			<span className="agent-text">
-				<strong>{a.name}</strong>
-				<span className="help">
-					{state ? STATE_WORDS[state] : "Can't be changed"}
-					{!a.found && state !== "installed" && " · not found on this computer"}
-				</span>
-				{a.problem && <span className="error">{a.problem}</span>}
+				<strong>
+					{a.name}
+					{support && <span className="badge">{support.label}</span>}
+				</strong>
+				{held ? (
+					<span className="help">{support?.detail}</span>
+				) : (
+					<>
+						<span className="help">
+							{state ? STATE_WORDS[state] : "Can't be changed"}
+							{!a.found &&
+								state !== "installed" &&
+								" · not found on this computer"}
+						</span>
+						{support && <span className="help">{support.detail}</span>}
+					</>
+				)}
+				{a.problem && !held && <span className="error">{a.problem}</span>}
 			</span>
 			<span className="agent-actions">
 				{state !== "installed" && (
@@ -158,7 +199,10 @@ function AgentRow({
 						type="button"
 						className={state === "stale" ? "primary" : undefined}
 						disabled={
-							busy || state === null || (!a.found && state === "missing")
+							held ||
+							busy ||
+							state === null ||
+							(!a.found && state === "missing")
 						}
 						onClick={onConnect}
 					>
@@ -313,7 +357,7 @@ export function AgentsSummary({ onOpen }: { onOpen(): void }) {
 			<p className="help">
 				{connected.length > 0
 					? `Knock also watches ${connected.map((a) => a.name).join(", ")}.`
-					: "Knock watches Claude Code. It can also watch Codex, GitHub Copilot and Antigravity."}
+					: "Knock watches Claude Code. Antigravity works in part (beta); Codex and GitHub Copilot aren't available yet."}
 			</p>
 			<div className="actions start">
 				<button type="button" onClick={onOpen}>
